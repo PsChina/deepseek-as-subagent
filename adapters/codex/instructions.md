@@ -13,31 +13,43 @@ deepseek MCP server). It runs a full sub-agent loop inside a sandboxed
 workspace — DeepSeek does its own Read / Write / Edit / Bash / Glob / Grep
 and returns a final summary.
 
-### When to delegate ✅
+### Core principle: delegate by default
 
-Hand off to DeepSeek when at least two of these apply:
-- **Batch**: ≥10 files involved, or ≥1 MB of data
-- **Mechanical pattern**: each file/item handled the same way (no per-item
-  judgment needed)
-- **High tolerance for retry**: if it fails partially, rerunning is cheap
-- **Heavy on token-budget**: reading all the files yourself would burn
-  significant context
+DeepSeek v4-pro is ~10x cheaper per token than top-tier models. Your scarce
+resource is the user's session token budget; DeepSeek's scarce resource is just
+¥ (already paid). **Default: delegate.** Only keep tasks yourself when one of
+these hard constraints applies:
+
+- ❌ Task depends on context from `AGENTS.md` or other repo files DeepSeek
+  can't see
+- ❌ Cross-domain architectural design / tech selection / ADR
+- ❌ Bug root-cause analysis (reasoning-heavy)
+- ❌ Single file < 200 lines, simple edit (DS reasoning overhead > savings)
+- ❌ User explicitly said "do it yourself" / "don't delegate"
+
+### Difficulty tiers (delegate green/yellow/orange, keep red/tiny)
+
+| Tier | Examples | Default |
+|---|---|---|
+| 🟢 Easy | Write hello world / single script, test scaffolding, single CRUD endpoint, single component | ✅ delegate |
+| 🟡 Medium | 3-10 file batch, feature impl with clear spec, fill test gaps, generate boilerplate, simple refactor | ✅ delegate |
+| 🟠 Medium-hard | 10+ file batch, single-domain refactor, perf opt (data given), i18n extraction, protocol conversion | ✅ delegate (split if needed) |
+| 🔴 Hard | Cross-domain design, tech selection, ADR, root-cause analysis, deep project context | ❌ keep yourself |
+| 🌶️ Tiny | Single file < 200 lines, typo / rename / add comment | ❌ keep yourself (overhead) |
+
+**Easy / Medium / Medium-hard all go to DeepSeek.** Don't skip delegation just
+because "it's quick to do myself" — that "quick" still burns 10-20k of your
+own context tokens.
 
 Typical fits:
 - "Extract i18n keys from 50 .strings files into a JSON"
 - "Scan 200 MB of logs for EXC_BAD_ACCESS stacks"
-- "Translate all README.md files in this folder to English"
+- "Translate all README.md files to English"
 - "Add docstrings to these 30 legacy Python files"
 - "Replace every call to old_api() with new_api() across the codebase"
-
-### When NOT to delegate ❌
-
-Do it yourself when:
-- Single file under ~500 lines
-- Cross-file design / architectural judgment / refactor decisions
-- Bug root-cause analysis (reasoning task)
-- Tasks needing project-specific idioms from `AGENTS.md` or other repo context
-- User explicitly says "do it yourself" / "don't delegate"
+- "Write a fastapi endpoint that returns user JSON"
+- "Add unit tests for the parser module"
+- "Convert these argparse calls to click"
 
 ### Critical rule: don't read before deciding
 
