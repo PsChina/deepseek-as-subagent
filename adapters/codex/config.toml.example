@@ -1,0 +1,19 @@
+# Codex MCP server registration for deepseek-as-subagent.
+#
+# Either:
+#   1. Run: codex mcp add deepseek -- /absolute/path/to/.venv/bin/deepseek-mcp
+#   2. Or copy the [mcp_servers.deepseek] block below into ~/.codex/config.toml
+#
+# Replace the command path with the actual absolute path to deepseek-mcp on
+# your machine (typically <repo>/.venv/bin/deepseek-mcp after running
+# `pip install -e .`).
+
+[mcp_servers.deepseek]
+command = "/absolute/path/to/deepseek-as-subagent/.venv/bin/deepseek-mcp"
+
+# Optional: pass env vars to override config.json fields per invocation.
+# env = { DEEPSEEK_MODE = "auto" }
+
+# Optional: project-scoped instead of user-scoped — put this block in
+# <project>/.codex/config.toml. Codex only loads project configs from
+# trusted directories.
