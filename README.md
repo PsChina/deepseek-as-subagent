@@ -110,7 +110,7 @@ Sweet spot for delegation:
 │  Claude Code (CLI or VSCode extension, your Max OAuth)          │
 │    ↓ stdio (MCP protocol, no network)                           │
 │  deepseek-as-subagent (this project, Python subprocess)         │
-│    ↓ HTTPS                                                       │
+│    ↓ HTTPS                                                      │
 │  api.deepseek.com (your API key, paid per token)                │
 └─────────────────────────────────────────────────────────────────┘
 
