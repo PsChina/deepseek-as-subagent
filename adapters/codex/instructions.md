@@ -136,10 +136,41 @@ DeepSeek's self-report "done" is not proof of correctness. Always:
 | Agent loop hit max_turns | Task too big; split it and delegate in smaller batches |
 | Output quality poor twice in a row | Stop delegating in this session; do it yourself |
 
+### Granularity rule: complete logical units, not micro-steps
+
+**Counter-intuitive**: splitting tasks finer ≠ saving more money. Past a
+point, finer splits cost *more* than not delegating at all.
+
+5 "anti-delegation taxes" that scale with split count:
+1. **Split tax** — your tokens spent deciding how to split + what context to send
+2. **Context re-read tax** — DeepSeek can't reuse context across delegations; same files re-read N times
+3. **Verification tax** — every DS completion → you sample-read to verify
+4. **Startup fee** — v4-pro thinking mode burns ~5-10k reasoning tokens per call just to "warm up"
+5. **Fragment rework tax** — micro-tasks lack global view; outputs inconsistent
+
+Rough math (in your-model-equivalent cost, X = doing it yourself):
+- Delegate 1 complete unit → ~0.13X (87% savings) ✅
+- Split into 5 sub-tasks → ~0.50X (50% savings)
+- Split into 10 micro-tasks → ~0.95X (barely any savings)
+- Split into 20 fine steps → ~1.88X (**worse than not delegating**)
+
+**Right shape**: delegate "implement this entire feature" or "process all
+these files" as one call — let DS run its own 10-30 turn loop internally.
+
+**Wrong shape**: delegate "step 1", verify, delegate "step 2", verify,
+delegate "step 3"... — you pay all 5 taxes 3 times.
+
+**Test before splitting further**: "Could I hand this sub-task to a 1-week
+new hire with all context up front and have them finish independently?"
+- Yes → delegate
+- No (they'd need to come back asking questions or check earlier outputs)
+  → don't split it out, merge it with the parent unit
+
 ### Cost intuition
 
 DeepSeek v4-pro runs thinking mode → every call carries reasoning token
 overhead. For small tasks (<5k tokens of work), that overhead can exceed
 the work itself. Don't delegate tiny tasks just because you *can*.
 
-Sweet spot: 10–50 files, 50KB–500KB total, mechanical pattern.
+Sweet spot: 10–50 files, 50KB–500KB total, mechanical pattern — one delegate
+call, not five.

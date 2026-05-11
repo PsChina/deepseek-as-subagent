@@ -1,6 +1,6 @@
 ---
 name: delegate-to-deepseek
-description: 把所有"中等难度及以下"的任务派给 DeepSeek 跑完整 sub-agent loop（DeepSeek 比 Claude 便宜得多，能派就派）。包括：批量改文件、扫日志、翻译、ETL、写脚本、补测试、写文档、CRUD 增删、单领域 refactor、单组件 / 单 endpoint 实现。**铁律：派工决策必须在 Claude 读源码之前做** —— 一旦 Read 了源码再派工就是双倍消耗。调用 mcp__deepseek__delegate_to_deepseek 工具前只能用 Glob/LS 看范围，不能 Read 文件内容（WebSearch/WebFetch 允许，因为是外部资料）。**DeepSeek sub-agent 不能联网** —— 任务需要外部文档 / 新 API / 错误码 / spec 时，Claude 必须用自己的 WebSearch / WebFetch 先查好，把摘要塞进 context 传给 DS（Anthropic 包了费用，免费）。调用后必须验证结果（不盲信 DeepSeek 自报"完成"），抽样 Read 几个产物确认质量。**只有以下场景才自己干**：(1) 跨领域架构设计 / 选型 ADR；(2) bug 根因分析（推理密集）；(3) 强依赖 CLAUDE.md / dev-cases 上下文；(4) 用户明确说"自己干"；(5) 单文件 < 200 行的微调（DS reasoning overhead 不划算）。环境变量 DEEPSEEK_MODE=off 时跳过本 skill。
+description: 把所有"中等难度及以下"的任务派给 DeepSeek 跑完整 sub-agent loop（DeepSeek 比 Claude 便宜 ~50x，能派就派）。包括：批量改文件、扫日志、翻译、ETL、写脚本、补测试、写文档、CRUD 增删、单领域 refactor、单组件 / 单 endpoint 实现。**派工粒度铁律：每次派"完整逻辑单元"（DS 内部跑 10-30 turns 一次到位），不要拆"步骤"分多次派 —— 拆太细会被 5 个反派工税（拆任务/上下文重读/验证/起步费/返工）吃掉省钱效果，甚至比不派还贵。** **决策铁律：派工决策必须在 Claude 读源码之前做** —— 一旦 Read 了源码再派工就是双倍消耗。调用 mcp__deepseek__delegate_to_deepseek 工具前只能用 Glob/LS 看范围，不能 Read 文件内容（WebSearch/WebFetch 允许，因为是外部资料）。**DeepSeek sub-agent 不能联网** —— 任务需要外部文档 / 新 API / 错误码 / spec 时，Claude 必须用自己的 WebSearch / WebFetch 先查好，把摘要塞进 context 传给 DS（Anthropic 包了费用，免费）。调用后必须验证结果（不盲信 DeepSeek 自报"完成"），抽样 Read 几个产物确认质量。**只有以下场景才自己干**：(1) 跨领域架构设计 / 选型 ADR；(2) bug 根因分析（推理密集）；(3) 强依赖 CLAUDE.md / dev-cases 上下文；(4) 用户明确说"自己干"；(5) 单文件 < 200 行的微调（DS reasoning overhead 不划算）。环境变量 DEEPSEEK_MODE=off 时跳过本 skill。
 ---
 
 # delegate-to-deepseek — Claude 派工给 DeepSeek 的准则
@@ -82,6 +82,55 @@ Claude Read 50 个文件 ─ 烧 100k     Claude Glob 看范围 ─ 烧 500
 | "你自己干" / "别派" | 强制不派 |
 
 ---
+
+## 🧩 派工粒度：完整逻辑单元 > 细颗粒步骤
+
+**核心反直觉**：拆得越细 ≠ 越省钱。拆过头反而比不派还贵。
+
+### 5 个"反派工税"（拆越细，越亏）
+
+| 税种 | 机制 |
+|---|---|
+| **拆任务税** | Claude 想"怎么拆 / 给什么 context / 怎么 task" 本身烧 Claude tokens |
+| **上下文重读税** | Claude 一个对话里读过的文件下次还能引用；DS 每次 delegate 是独立进程，**同样的文件要重新读 N 遍** |
+| **验证税** | DS 每完成一次 Claude 要 Read 抽样验证；拆越多次 → 验证越多 |
+| **DS 起步费** | v4-pro thinking mode 每次启动 ~5-10k reasoning tokens 起步；拆 10 次 = 50-100k 起步费 |
+| **碎片返工税** | 子任务之间缺全局视野，产物不一致；返工时拆+重做+重验全来一遍 |
+
+### 数学直觉（按 Claude Opus 等价成本）
+
+| 策略 | 总成本 |
+|---|---|
+| Claude 自己干完 | 1.0X |
+| 派 1 个完整逻辑单元给 DS | ~0.13X ✅ **省 87%** |
+| 派 5 个子任务（拆步骤） | ~0.50X 省 50% |
+| 派 10 个微任务 | ~0.95X ❌ 几乎不省 |
+| 派 20 个细任务 | ~1.88X ❌ **比不派还贵** |
+
+### 真省钱的形态
+
+✅ **派"完整逻辑单元"**，DS 内部 loop 自己跑 10-30 turns 一次到位：
+- "实现这个 feature 端到端" → 1 次 delegate，DS 自己 Read/Write/Test 循环
+- "把这 50 个文件批量改一遍" → 1 次 delegate，DS 内部跑文件循环
+- "扫整个 logs/ 目录提取错误栈" → 1 次 delegate，DS 跑遍所有日志文件
+
+❌ **不要**拆"做 feature 的第 1 步、第 2 步、第 3 步"分别派：
+- 每步都要 Claude 拆 + 验证 + DS 重读上下文，5 个税全中
+- 不如让 DS 一次性接管整个 feature
+
+### 拆分原则（Claude 干这部分）
+
+Claude 的活是**"识别逻辑单元 + 设计接口 + 整合"**，DS 的活是**"单元的完整实现"**：
+
+1. **识别**：什么是"完整逻辑单元"？接口清晰、可独立验证、自包含（不依赖另一个 DS 任务的产物）
+2. **设计**：单元之间的输入输出格式（schema / 文件路径），Claude 定，DS 实现
+3. **整合**：DS 干完后 Claude 串起来，必要时做最后的胶水代码 / 验证
+
+### 一个测试：要不要再拆？
+
+派工前问自己：**"这个子任务能给一个 1 周新人，一次性给完所有 context，让他独立完成吗？"**
+- 能 → 派给 DS 没问题
+- 不能（需要中途回来问问题 / 看前序结果）→ **不要拆出来**，让它和前序合并成一个更大的单元
 
 ## 💰 token 经济学（让 Claude 心里有账）
 
