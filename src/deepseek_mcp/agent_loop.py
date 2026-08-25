@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import httpx
 from openai import APIConnectionError, APIError, OpenAI, RateLimitError
 
 from .config import Config
@@ -18,8 +19,14 @@ from .tools import build_tool_schemas, execute_tool
 logger = logging.getLogger(__name__)
 
 # 单次 API 调用最多重试次数（不含首次）。只对网络 / 限流类瞬态错误生效。
+# OpenAI SDK 自带重试必须关闭，否则会和这里的外层重试叠加，尤其在代理/TLS
+# handshake 超时环境下导致一次逻辑请求被放大成多轮长等待。
 API_RETRY_ATTEMPTS = 2
 API_RETRY_BACKOFF_SECONDS = 2.0
+API_CONNECT_TIMEOUT_SECONDS = 15.0
+API_READ_TIMEOUT_SECONDS = 180.0
+API_WRITE_TIMEOUT_SECONDS = 30.0
+API_POOL_TIMEOUT_SECONDS = 30.0
 
 # 工具参数日志：含敏感内容的字段（避免写到 server.log）
 SENSITIVE_TOOL_ARG_KEYS = {"content", "new_string"}
@@ -75,7 +82,18 @@ def run_agent(
       - tool_calls: int
       - duration_seconds: float
     """
-    client = OpenAI(api_key=config.api_key, base_url=config.base_url)
+    timeout = httpx.Timeout(
+        connect=API_CONNECT_TIMEOUT_SECONDS,
+        read=API_READ_TIMEOUT_SECONDS,
+        write=API_WRITE_TIMEOUT_SECONDS,
+        pool=API_POOL_TIMEOUT_SECONDS,
+    )
+    client = OpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url,
+        timeout=timeout,
+        max_retries=0,
+    )
     tools = build_tool_schemas(config.allowed_tools)
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
@@ -216,12 +234,16 @@ def _append_control_messages(
 
 
 def _call_with_retry(client, config, messages, tools, turn):
-    """带瞬态错误重试的单次 API 调用。
+    """Call DeepSeek with one explicit outer retry policy.
 
-    只对 network / rate-limit / 5xx 这类瞬态错误重试；4xx 等永久错误直接抛。
+    The OpenAI SDK client's own retry layer is disabled in ``run_agent``. Only
+    network errors, rate limits, and 5xx responses are retried here; permanent
+    4xx errors fail immediately.
     """
     last_exc = None
-    for attempt in range(1 + API_RETRY_ATTEMPTS):
+    max_attempts = 1 + API_RETRY_ATTEMPTS
+
+    for attempt in range(max_attempts):
         try:
             return client.chat.completions.create(
                 model=config.model,
@@ -231,10 +253,16 @@ def _call_with_retry(client, config, messages, tools, turn):
             )
         except (APIConnectionError, RateLimitError) as e:
             last_exc = e
+            if attempt >= API_RETRY_ATTEMPTS:
+                break
             wait = API_RETRY_BACKOFF_SECONDS * (attempt + 1)
             logger.warning(
                 "Turn %d API transient error (attempt %d/%d): %s — retry in %.1fs",
-                turn, attempt + 1, 1 + API_RETRY_ATTEMPTS, e, wait,
+                turn,
+                attempt + 1,
+                max_attempts,
+                e,
+                wait,
             )
             time.sleep(wait)
         except APIError as e:
@@ -242,18 +270,25 @@ def _call_with_retry(client, config, messages, tools, turn):
             status = getattr(e, "status_code", None)
             if status and 500 <= status < 600:
                 last_exc = e
+                if attempt >= API_RETRY_ATTEMPTS:
+                    break
                 wait = API_RETRY_BACKOFF_SECONDS * (attempt + 1)
                 logger.warning(
                     "Turn %d API 5xx (attempt %d/%d): %s — retry in %.1fs",
-                    turn, attempt + 1, 1 + API_RETRY_ATTEMPTS, e, wait,
+                    turn,
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                    wait,
                 )
                 time.sleep(wait)
                 continue
             raise AgentLoopError(f"DeepSeek API error on turn {turn}: {e}") from e
         except Exception as e:
             raise AgentLoopError(f"DeepSeek API error on turn {turn}: {e}") from e
+
     raise AgentLoopError(
-        f"DeepSeek API unreachable after {1 + API_RETRY_ATTEMPTS} attempts on turn {turn}: {last_exc}"
+        f"DeepSeek API unreachable after {max_attempts} attempts on turn {turn}: {last_exc}"
     ) from last_exc
 
 
