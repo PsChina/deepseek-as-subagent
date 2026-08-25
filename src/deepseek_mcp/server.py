@@ -57,21 +57,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _HOST_INSTRUCTIONS = """
-DeepSeek is available as a delegated coding sub-agent through the
-`delegate_to_deepseek` tool. Treat delegation as an execution optimization,
-not as a replacement for the host agent's judgment.
+Use `delegate_to_deepseek` for self-contained, execution-heavy work. Decide
+whether to delegate BEFORE reading repository source; lightweight file
+listing/counting is fine. Keep architecture, ambiguous root-cause analysis,
+security-sensitive judgment, and tiny edits in the host agent. DeepSeek cannot
+see host chat, AGENTS.md, or CLAUDE.md, so pass all required context explicitly.
+Always verify delegated output and relevant tests before declaring success.
 
-Delegate when the work is a self-contained logical unit with clear success
-criteria and is mostly implementation, batch editing, test generation,
-mechanical refactoring, data/code transformation, repetitive repository work,
-or other execution-heavy work that DeepSeek can finish inside the workspace.
+Treat delegation as an execution optimization, not as a replacement for the
+host agent's judgment. Good delegation units have clear success criteria and
+are mostly implementation, batch editing, test generation, mechanical
+refactoring, data/code transformation, repetitive repository work, or other
+execution-heavy work that DeepSeek can finish inside the workspace.
 
-Keep the work in the host agent when it depends on conversation-only context,
-architectural trade-offs, ambiguous product decisions, root-cause analysis,
-security-sensitive judgment, or a very small edit where delegation overhead is
-larger than the task.
-
-Important: decide whether to delegate before reading large amounts of source.
 If the host reads all relevant files first and then delegates, both agents pay
 the repository-reading cost. Lightweight discovery such as directory listing,
 file counting, or locating candidate paths is fine before the decision.
@@ -87,10 +85,10 @@ that requires substantial judgment to repair.
 """.strip()
 
 
-# MCP protocol supports server-level instructions during initialization. Modern
-# Codex clients consume these instructions, so Codex can learn delegation policy
-# immediately after MCP registration instead of requiring a pasted AGENTS.md
-# block. Older clients simply ignore this field and still work with the tools.
+# MCP protocol supports server-level instructions during initialization. Codex
+# reads them as server-wide guidance. Keep the first ~512 characters
+# self-contained because clients may surface/truncate instructions differently.
+# AGENTS.md remains an optional stronger/project-specific policy layer.
 mcp = FastMCP("deepseek-mcp", instructions=_HOST_INSTRUCTIONS)
 
 
