@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -39,7 +40,13 @@ class _Client:
 
 
 def _connection_error() -> APIConnectionError:
-    return APIConnectionError(request=httpx.Request("POST", "https://api.deepseek.com/chat/completions"))
+    return APIConnectionError(
+        request=httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+    )
+
+
+def _config() -> Config:
+    return Config(api_key="sk-test", workspace=Path.cwd())
 
 
 class RetryPolicyTests(unittest.TestCase):
@@ -47,10 +54,9 @@ class RetryPolicyTests(unittest.TestCase):
         sentinel = object()
         create = _Create([_connection_error(), _connection_error(), sentinel])
         client = _Client(create)
-        config = Config(api_key="sk-test", workspace=httpx.URL("https://example.com"))  # type: ignore[arg-type]
 
         with patch("deepseek_mcp.agent_loop.time.sleep") as sleep:
-            result = _call_with_retry(client, config, [], [], 0)
+            result = _call_with_retry(client, _config(), [], [], 0)
 
         self.assertIs(result, sentinel)
         self.assertEqual(create.calls, 3)
@@ -59,11 +65,10 @@ class RetryPolicyTests(unittest.TestCase):
     def test_final_failure_does_not_sleep_after_last_attempt(self) -> None:
         create = _Create([_connection_error(), _connection_error(), _connection_error()])
         client = _Client(create)
-        config = Config(api_key="sk-test", workspace=httpx.URL("https://example.com"))  # type: ignore[arg-type]
 
         with patch("deepseek_mcp.agent_loop.time.sleep") as sleep:
             with self.assertRaises(AgentLoopError):
-                _call_with_retry(client, config, [], [], 0)
+                _call_with_retry(client, _config(), [], [], 0)
 
         self.assertEqual(create.calls, 3)
         self.assertEqual([c.args[0] for c in sleep.call_args_list], [2.0, 4.0])
