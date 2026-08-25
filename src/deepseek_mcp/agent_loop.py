@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Callable
 
 from openai import APIConnectionError, APIError, OpenAI, RateLimitError
 
@@ -48,8 +49,22 @@ class AgentLoopError(Exception):
     """Agent loop failed (max turns exceeded, API error, etc)."""
 
 
-def run_agent(task: str, config: Config) -> dict:
+class AgentLoopCancelled(AgentLoopError):
+    """Agent loop was cancelled by the parent agent at a safe point."""
+
+
+def run_agent(
+    task: str,
+    config: Config,
+    *,
+    control_poll: Callable[[], list[str]] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict:
     """跑完整 agent loop。
+
+    Optional control hooks are checked only at safe points between model/tool
+    operations. They do not interrupt an in-flight API request or a currently
+    executing tool call.
 
     返回 dict:
       - final_message: str (DeepSeek 给的最终答复)
@@ -77,6 +92,9 @@ def run_agent(task: str, config: Config) -> dict:
     started = time.time()
 
     for turn in range(config.max_turns):
+        _check_cancel(cancel_check)
+        _append_control_messages(messages, control_poll)
+
         response = _call_with_retry(client, config, messages, tools, turn)
 
         usage = response.usage
@@ -92,8 +110,13 @@ def run_agent(task: str, config: Config) -> dict:
         msg_dict = raw["choices"][0]["message"]
         messages.append(msg_dict)
 
-        # 没有 tool_calls 说明 DeepSeek 决定结束
+        _check_cancel(cancel_check)
+
+        # 没有 tool_calls 通常说明 DeepSeek 决定结束。但如果 parent 在这次
+        # in-flight generation 期间发来了 steering message，先消费消息并继续一轮。
         if not msg.tool_calls:
+            if _append_control_messages(messages, control_poll):
+                continue
             return {
                 "final_message": msg.content or "(empty response)",
                 "turns_used": turn + 1,
@@ -106,8 +129,11 @@ def run_agent(task: str, config: Config) -> dict:
                 "duration_seconds": round(time.time() - started, 2),
             }
 
-        # 依次执行 tool calls
+        # 依次执行 tool calls。cancel 可以在任意两个 tool call 之间生效；
+        # steering message 则等这一组 tool responses 完整写回后，在下一轮消费，
+        # 避免破坏 OpenAI tool-call / tool-response 配对协议。
         for tc in msg.tool_calls:
+            _check_cancel(cancel_check)
             tool_call_count += 1
             tool_name = tc.function.name
             try:
@@ -130,6 +156,7 @@ def run_agent(task: str, config: Config) -> dict:
                     "content": result,
                 }
             )
+            _check_cancel(cancel_check)
 
     # 跑到 max_turns 没收敛 —— 只展示最后一条 assistant content，不夹带完整 tool_calls blob
     last_text = ""
@@ -141,6 +168,47 @@ def run_agent(task: str, config: Config) -> dict:
         f"Agent loop exceeded max_turns ({config.max_turns}). "
         f"Last assistant text: {last_text or '(none)'}"
     )
+
+
+def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
+    if cancel_check is None:
+        return
+    try:
+        cancelled = cancel_check()
+    except Exception as e:
+        raise AgentLoopError(f"cancel channel failed: {e}") from e
+    if cancelled:
+        raise AgentLoopCancelled("DeepSeek job cancelled by parent agent")
+
+
+def _append_control_messages(
+    messages: list[dict],
+    control_poll: Callable[[], list[str]] | None,
+) -> int:
+    if control_poll is None:
+        return 0
+    try:
+        updates = [m.strip() for m in control_poll() if m and m.strip()]
+    except Exception as e:
+        raise AgentLoopError(f"control channel failed: {e}") from e
+    if not updates:
+        return 0
+
+    body = "\n\n".join(f"Update {i + 1}:\n{text}" for i, text in enumerate(updates))
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "# Parent agent steering update\n"
+                "The parent agent sent the following instructions while you were working. "
+                "Apply the newest instructions from this point forward; they override earlier "
+                "task details where they conflict.\n\n"
+                f"{body}"
+            ),
+        }
+    )
+    logger.info("Applied %d parent steering message(s)", len(updates))
+    return len(updates)
 
 
 def _call_with_retry(client, config, messages, tools, turn):
