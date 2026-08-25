@@ -32,7 +32,7 @@ API_POOL_TIMEOUT_SECONDS = 30.0
 SENSITIVE_TOOL_ARG_KEYS = {"content", "new_string"}
 
 
-SYSTEM_PROMPT_TEMPLATE = """You are DeepSeek working as a sub-agent for Claude.
+SYSTEM_PROMPT_TEMPLATE = """You are DeepSeek working as a sub-agent for a parent coding agent.
 
 You're given a focused task to complete autonomously within a workspace.
 You have local tools: {tools}
@@ -44,7 +44,7 @@ Rules:
 4. When done, return a final message summarizing:
    - What you did (file paths affected)
    - Any issues / files you couldn't process
-   - A brief summary the parent (Claude) can use without re-reading everything
+   - A brief summary the parent agent can use without re-reading everything
 5. Don't ask clarifying questions back to the parent. Make reasonable assumptions
    and document them in your final message.
 6. If a tool returns "ERROR: ...", read the error and decide: retry with fixed input,
@@ -137,7 +137,9 @@ def run_agent(
         # 保证调用方不会收到“message queued”但任务已经提交 final result 的假成功。
         if not msg.tool_calls:
             final_poll = control_finalize or control_poll
-            if _append_control_messages(messages, final_poll):
+            updates = _poll_control_messages(final_poll)
+            if updates:
+                _append_steering_update(messages, updates)
                 continue
             return {
                 "final_message": msg.content or "(empty response)",
@@ -151,11 +153,21 @@ def run_agent(
                 "duration_seconds": round(time.time() - started, 2),
             }
 
-        # 依次执行 tool calls。cancel 可以在任意两个 tool call 之间生效；
-        # steering message 则等这一组 tool responses 完整写回后，在下一轮消费，
-        # 避免破坏 OpenAI tool-call / tool-response 配对协议。
-        for tc in msg.tool_calls:
+        # Steering received after the model planned tool calls must not allow stale
+        # actions to run first. Before each not-yet-executed tool call, poll the
+        # parent mailbox. If a new instruction exists, synthesize tool responses
+        # for the remaining calls so the tool-call protocol stays valid, append
+        # the steering message, and let DeepSeek re-plan on the next model turn.
+        steering_preempted = False
+        for index, tc in enumerate(msg.tool_calls):
             _check_cancel(cancel_check)
+            updates = _poll_control_messages(control_poll)
+            if updates:
+                _append_skipped_tool_responses(messages, msg.tool_calls[index:])
+                _append_steering_update(messages, updates)
+                steering_preempted = True
+                break
+
             tool_call_count += 1
             tool_name = tc.function.name
             try:
@@ -180,6 +192,9 @@ def run_agent(
             )
             _check_cancel(cancel_check)
 
+        if steering_preempted:
+            continue
+
     # 跑到 max_turns 没收敛 —— 只展示最后一条 assistant content，不夹带完整 tool_calls blob
     last_text = ""
     for m in reversed(messages):
@@ -203,19 +218,20 @@ def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
         raise AgentLoopCancelled("DeepSeek job cancelled by parent agent")
 
 
-def _append_control_messages(
-    messages: list[dict],
+def _poll_control_messages(
     control_poll: Callable[[], list[str]] | None,
-) -> int:
+) -> list[str]:
     if control_poll is None:
-        return 0
+        return []
     try:
-        updates = [m.strip() for m in control_poll() if m and m.strip()]
+        return [m.strip() for m in control_poll() if m and m.strip()]
     except Exception as e:
         raise AgentLoopError(f"control channel failed: {e}") from e
+
+
+def _append_steering_update(messages: list[dict], updates: list[str]) -> int:
     if not updates:
         return 0
-
     body = "\n\n".join(f"Update {i + 1}:\n{text}" for i, text in enumerate(updates))
     messages.append(
         {
@@ -231,6 +247,28 @@ def _append_control_messages(
     )
     logger.info("Applied %d parent steering message(s)", len(updates))
     return len(updates)
+
+
+def _append_control_messages(
+    messages: list[dict],
+    control_poll: Callable[[], list[str]] | None,
+) -> int:
+    return _append_steering_update(messages, _poll_control_messages(control_poll))
+
+
+def _append_skipped_tool_responses(messages: list[dict], tool_calls) -> None:
+    for tc in tool_calls:
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": (
+                    "SKIPPED: the parent agent sent a newer steering instruction "
+                    "before this tool call executed. Re-plan using the latest instruction."
+                ),
+            }
+        )
+    logger.info("Skipped %d stale tool call(s) due to parent steering", len(tool_calls))
 
 
 def _call_with_retry(client, config, messages, tools, turn):
