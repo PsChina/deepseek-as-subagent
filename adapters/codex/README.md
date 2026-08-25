@@ -46,6 +46,45 @@ The most important rules are deliberately front-loaded in the first ~512 charact
 
 `AGENTS.md` is still useful as an optional stronger/project-specific policy layer. If you want predictable, aggressive automatic delegation in a particular repository, add the relevant policy there. `instructions.md` remains available as a template.
 
+## Two delegation modes
+
+### Simple synchronous delegation
+
+Use `delegate_to_deepseek(task, context)` when the task can run to completion without mid-flight intervention.
+
+```text
+Codex
+  │ delegate_to_deepseek(...)
+  ▼
+DeepSeek agent loop
+  │ Read / Edit / Bash / ...
+  ▼
+final result
+  │
+  ▼
+Codex verifies output/tests
+```
+
+The MCP call stays open until DeepSeek finishes.
+
+### Steerable background job
+
+For longer work that may need new instructions or cancellation, use the background-job API:
+
+```text
+start_deepseek(task, context) -> job_id
+send_deepseek_message(job_id, message)
+get_deepseek_status(job_id)
+cancel_deepseek(job_id)
+get_deepseek_result(job_id)
+```
+
+`start_deepseek` returns quickly and DeepSeek continues in a background worker. This lets later MCP requests reach the server while the agent is still running.
+
+Steering and cancellation are **cooperative**. They take effect at safe points between model/tool operations; they do not force-interrupt an already in-flight model request or a currently executing tool command.
+
+V1 intentionally permits only **one DeepSeek execution at a time**, shared across synchronous delegation and background jobs, so two agents cannot concurrently modify the same workspace through this server.
+
 ## Manual install
 
 ### 1. Build the MCP server
@@ -86,25 +125,9 @@ Or configure the same command in `~/.codex/config.toml`; see `config.toml.exampl
 
 If you move or re-clone this repository, re-run `bash adapters/codex/install.sh`; it will replace the stale MCP executable path with the current one.
 
-## How the flow works
+## Network retry behavior
 
-```text
-Codex (main agent)
-  │
-  │ decides a task is a good delegation unit
-  ▼
-delegate_to_deepseek(task, context)
-  │
-  ▼
-DeepSeek sub-agent
-  │ Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
-  │ owns its own multi-turn loop
-  ▼
-summary + usage metadata
-  │
-  ▼
-Codex verifies output/tests and continues the main task
-```
+The OpenAI-compatible SDK retry layer is disabled for DeepSeek calls. The project owns one explicit outer retry policy instead, with bounded connect/read/write/pool timeouts. This avoids nested retry amplification in proxy environments where TLS handshakes can time out.
 
 ## Disable delegation temporarily
 
