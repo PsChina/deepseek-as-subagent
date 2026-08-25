@@ -37,12 +37,14 @@ class JobRecord:
     job_id: str
     task: str
     context: str
+    task_summary: str
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    usage_recorded: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _control_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _control_messages: deque[str] = field(default_factory=deque, repr=False)
@@ -123,7 +125,12 @@ class DeepSeekJobManager:
             self._ensure_slot_available_locked()
 
             job_id = uuid.uuid4().hex[:12]
-            job = JobRecord(job_id=job_id, task=task, context=context)
+            job = JobRecord(
+                job_id=job_id,
+                task=task,
+                context=context,
+                task_summary=task[:60],
+            )
             self._jobs[job_id] = job
             self._active_job_id = job_id
 
@@ -176,6 +183,15 @@ class DeepSeekJobManager:
             payload["ready"] = True
             return payload
 
+    def claim_usage_record(self, job_id: str) -> tuple[str, dict[str, Any]] | None:
+        """Claim one completed job usage record exactly once."""
+        with self._lock:
+            job = self._get_locked(job_id)
+            if job.status != "completed" or not job.result or job.usage_recorded:
+                return None
+            job.usage_recorded = True
+            return job.task_summary, job.result
+
     def _run_job(self, job_id: str, config: Config) -> None:
         with self._lock:
             job = self._get_locked(job_id)
@@ -184,8 +200,8 @@ class DeepSeekJobManager:
             full_task = job.task
             if job.context:
                 full_task = f"{job.task}\n\n# Additional context\n{job.context}"
-            # Do not retain task/context/config secrets longer than needed in the
-            # manager's persistent job record.
+            # Do not retain full task/context/config secrets longer than needed in
+            # the manager's persistent job record. Keep only a short usage summary.
             job.task = ""
             job.context = ""
 
