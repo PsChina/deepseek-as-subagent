@@ -1,8 +1,7 @@
 """MCP server entrypoint.
 
-Exposes two tools to MCP-capable hosts such as Claude Code and Codex CLI:
-  - ping: health check
-  - delegate_to_deepseek: run DeepSeek as a real sub-agent with its own tool loop
+Exposes synchronous delegation plus an optional steerable background-job API to
+MCP-capable hosts such as Claude Code and Codex CLI.
 
 Environment variables:
   - DEEPSEEK_MODE=off: disable delegation for this process
@@ -12,6 +11,7 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -27,6 +27,7 @@ from mcp.server.fastmcp import FastMCP
 from . import __version__
 from .agent_loop import AgentLoopError, run_agent
 from .config import Config
+from .job_manager import DeepSeekJobManager, JobError
 
 _LOG_DIR = Path.home() / ".deepseek-mcp"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,6 +65,13 @@ security-sensitive judgment, and tiny edits in the host agent. DeepSeek cannot
 see host chat, AGENTS.md, or CLAUDE.md, so pass all required context explicitly.
 Always verify delegated output and relevant tests before declaring success.
 
+For work that may need mid-flight steering or cancellation, prefer the
+background-job API: `start_deepseek` returns a job_id immediately; then use
+`send_deepseek_message`, `get_deepseek_status`, `cancel_deepseek`, and
+`get_deepseek_result`. Steering/cancellation takes effect at safe points between
+model/tool operations, not by interrupting an in-flight model request or tool.
+V1 intentionally permits only one active background DeepSeek job at a time.
+
 Treat delegation as an execution optimization, not as a replacement for the
 host agent's judgment. Good delegation units have clear success criteria and
 are mostly implementation, batch editing, test generation, mechanical
@@ -74,10 +82,9 @@ If the host reads all relevant files first and then delegates, both agents pay
 the repository-reading cost. Lightweight discovery such as directory listing,
 file counting, or locating candidate paths is fine before the decision.
 
-When calling `delegate_to_deepseek`, pass a complete task description with file
-paths, constraints, and success criteria. DeepSeek does not see the host's chat
-history or project instruction files unless that information is explicitly put
-in `task` or `context`.
+When delegating, pass a complete task description with file paths, constraints,
+and success criteria. DeepSeek does not see the host's chat history or project
+instruction files unless that information is explicitly put in task/context.
 
 After delegation, verify the result. Read a representative sample, run relevant
 tests/checks, and take over locally if DeepSeek fails twice or produces a result
@@ -90,6 +97,7 @@ that requires substantial judgment to repair.
 # self-contained because clients may surface/truncate instructions differently.
 # AGENTS.md remains an optional stronger/project-specific policy layer.
 mcp = FastMCP("deepseek-mcp", instructions=_HOST_INSTRUCTIONS)
+job_manager = DeepSeekJobManager()
 
 
 @mcp.tool()
@@ -121,31 +129,26 @@ def _shorten_path(p: Path) -> str:
     return s
 
 
+def _json(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _load_config() -> Config:
+    if os.getenv("DEEPSEEK_MODE", "auto") == "off":
+        raise JobError("DeepSeek delegation is disabled (DEEPSEEK_MODE=off)")
+    try:
+        return Config.load()
+    except Exception as e:
+        raise JobError(f"deepseek-mcp not configured: {e}") from e
+
+
 @mcp.tool()
 def delegate_to_deepseek(task: str, context: str = "") -> str:
-    """Delegate a focused task to DeepSeek as a real sub-agent.
+    """Delegate a focused task synchronously to DeepSeek as a real sub-agent.
 
-    DeepSeek runs its own agent loop with Read/Write/Edit/Bash/Glob/Grep/
-    NotebookEdit tools inside the configured workspace. Prefer this for
-    self-contained execution-heavy work such as batch changes, mechanical
-    refactors, test generation, scripted transformations, and other tasks with
-    clear success criteria.
-
-    Avoid delegating architecture decisions, ambiguous root-cause analysis,
-    security-sensitive judgment, or tiny edits where orchestration overhead is
-    larger than the work.
-
-    Args:
-        task: Complete description of what DeepSeek should accomplish,
-              including relevant file paths, boundaries, and success criteria.
-        context: Optional project conventions or external facts DeepSeek needs.
-                 DeepSeek cannot see the host conversation or AGENTS.md/
-                 CLAUDE.md unless those details are copied here.
-
-    Returns:
-        DeepSeek's final message plus turns/tool-calls/token/duration metadata.
-        The host agent should verify representative output and relevant tests
-        before declaring the task complete.
+    The MCP call remains open until DeepSeek finishes. Prefer this simple API
+    when no mid-flight steering/cancellation is needed. For steerable long work,
+    use `start_deepseek` and the background-job tools instead.
     """
     mode = os.getenv("DEEPSEEK_MODE", "auto")
     if mode == "off":
@@ -186,6 +189,94 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
         result["duration_seconds"],
     )
 
+    _record_usage(task, result)
+
+    return (
+        f"{result['final_message']}\n\n"
+        f"---\n"
+        f"[deepseek-mcp] {result['turns_used']} turns, "
+        f"{result['tool_calls']} tool calls, "
+        f"{result['tokens']['total']} tokens, "
+        f"{result['duration_seconds']}s"
+    )
+
+
+@mcp.tool()
+def start_deepseek(task: str, context: str = "") -> str:
+    """Start one steerable DeepSeek background job and return its job_id quickly.
+
+    V1 permits only one active background job at a time. The job continues in a
+    daemon worker thread after this MCP request returns.
+    """
+    try:
+        payload = job_manager.start(task, context, _load_config())
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+    logger.info("Background DeepSeek job started: %s", payload["job_id"])
+    return _json({"ok": True, **payload})
+
+
+@mcp.tool()
+def get_deepseek_status(job_id: str) -> str:
+    """Get state for a background DeepSeek job without waiting for completion."""
+    try:
+        payload = job_manager.status(job_id)
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+    return _json({"ok": True, **payload})
+
+
+@mcp.tool()
+def send_deepseek_message(job_id: str, message: str) -> str:
+    """Queue a steering instruction for a running DeepSeek background job.
+
+    The instruction is consumed at the next safe point between model/tool
+    operations. It does not interrupt an already in-flight model request/tool.
+    """
+    try:
+        payload = job_manager.send_message(job_id, message)
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+    logger.info("Queued steering message for DeepSeek job %s", job_id)
+    return _json({"ok": True, **payload})
+
+
+@mcp.tool()
+def cancel_deepseek(job_id: str) -> str:
+    """Request cancellation of a running DeepSeek background job.
+
+    Cancellation is cooperative and becomes final at the next agent-loop safe
+    point; a currently executing API request or tool call is not force-killed.
+    """
+    try:
+        payload = job_manager.cancel(job_id)
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+    logger.info("Cancellation requested for DeepSeek job %s", job_id)
+    return _json({"ok": True, **payload})
+
+
+@mcp.tool()
+def get_deepseek_result(job_id: str) -> str:
+    """Return final result for a background DeepSeek job, or ready=false if running."""
+    try:
+        payload = job_manager.result(job_id)
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+
+    result = payload.get("result")
+    if payload.get("ready") and payload.get("status") == "completed" and result:
+        logger.info(
+            "Background DeepSeek job %s completed. turns=%d tools=%d tokens=%d",
+            job_id,
+            result["turns_used"],
+            result["tool_calls"],
+            result["tokens"]["total"],
+        )
+    return _json({"ok": True, **payload})
+
+
+def _record_usage(task: str, result: dict) -> None:
     try:
         if _USAGE_LOG.exists() and _USAGE_LOG.stat().st_size > 10 * 1024 * 1024:
             try:
@@ -206,15 +297,6 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
             pass
     except Exception:
         pass
-
-    return (
-        f"{result['final_message']}\n\n"
-        f"---\n"
-        f"[deepseek-mcp] {result['turns_used']} turns, "
-        f"{result['tool_calls']} tool calls, "
-        f"{result['tokens']['total']} tokens, "
-        f"{result['duration_seconds']}s"
-    )
 
 
 def main() -> None:
