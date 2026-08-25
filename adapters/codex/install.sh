@@ -19,32 +19,41 @@ if ! command -v codex >/dev/null 2>&1; then
     exit 1
 fi
 
+# Match the root installer closely so Codex support is not weaker on Windows.
 PYTHON_CMD=""
-for candidate in python3 python; do
-    if command -v "$candidate" >/dev/null 2>&1 && \
-       "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
-        PYTHON_CMD="$candidate"
-        break
-    fi
-done
+find_python() {
+    for candidate in python3 python "py -3"; do
+        bin="${candidate%% *}"
+        if command -v "$bin" >/dev/null 2>&1; then
+            if $candidate -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+                PYTHON_CMD="$candidate"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
 
-if [ -z "$PYTHON_CMD" ]; then
+if ! find_python; then
     echo "✗ Python 3.10+ was not found in PATH"
     echo "  Install Python 3.10+ and re-run this script."
     exit 1
 fi
 
 if [ ! -d "$VENV" ]; then
-    echo "[1/4] Creating Python venv..."
-    "$PYTHON_CMD" -m venv "$VENV"
+    echo "[1/5] Creating Python venv..."
+    $PYTHON_CMD -m venv "$VENV"
 else
-    echo "[1/4] Python venv already exists"
+    echo "[1/5] Python venv already exists"
 fi
 
 if [ -d "$VENV/Scripts" ]; then
     VENV_BIN="$VENV/Scripts"
-else
+elif [ -d "$VENV/bin" ]; then
     VENV_BIN="$VENV/bin"
+else
+    echo "✗ venv exists but neither Scripts/ nor bin/ was found in $VENV"
+    exit 1
 fi
 
 PYBIN="$VENV_BIN/python"
@@ -52,7 +61,7 @@ PYBIN="$VENV_BIN/python"
 CLI="$VENV_BIN/deepseek-mcp"
 [ ! -x "$CLI" ] && [ -x "$CLI.exe" ] && CLI="$CLI.exe"
 
-echo "[2/4] Installing deepseek-as-subagent..."
+echo "[2/5] Installing deepseek-as-subagent..."
 "$PYBIN" -m pip install --quiet --upgrade pip 2>/dev/null || true
 "$PYBIN" -m pip install --quiet -e "$PROJECT_ROOT"
 
@@ -62,9 +71,18 @@ if [ ! -e "$CLI" ]; then
     exit 1
 fi
 
+# Catch dependency/import incompatibilities immediately rather than reporting a
+# successful install that will fail only when Codex launches the MCP process.
+echo "[3/5] Running MCP import smoke test..."
+if ! "$PYBIN" -c 'from deepseek_mcp.server import mcp; print("       MCP import OK")'; then
+    echo "✗ deepseek-mcp import smoke test failed"
+    echo "  Check the Python dependency installation above before retrying."
+    exit 1
+fi
+
 mkdir -p "$CONFIG_DIR"
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "[3/4] Creating DeepSeek config template..."
+    echo "[4/5] Creating DeepSeek config template..."
     (
         umask 077
         cat > "$CONFIG_FILE" <<'EOF'
@@ -78,14 +96,29 @@ EOF
     )
     chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 else
-    echo "[3/4] DeepSeek config already exists"
+    echo "[4/5] DeepSeek config already exists"
 fi
 
-echo "[4/4] Registering MCP server with Codex..."
+# Re-register instead of merely skipping an existing entry. This repairs stale
+# paths when the repository was moved/re-cloned and makes reruns self-healing.
+echo "[5/5] Registering MCP server with Codex..."
 if codex mcp get deepseek >/dev/null 2>&1; then
-    echo "       deepseek MCP server is already registered; keeping existing entry"
-else
-    codex mcp add deepseek -- "$CLI"
+    echo "       replacing existing deepseek MCP registration"
+    if ! codex mcp remove deepseek >/dev/null 2>&1; then
+        echo "✗ existing deepseek MCP registration could not be removed"
+        echo "  Run 'codex mcp remove deepseek' manually, then retry."
+        exit 1
+    fi
+fi
+
+if ! codex mcp add deepseek -- "$CLI"; then
+    echo "✗ failed to register deepseek MCP server with Codex"
+    exit 1
+fi
+
+if ! codex mcp get deepseek >/dev/null 2>&1; then
+    echo "✗ Codex registration verification failed"
+    exit 1
 fi
 
 echo ""
@@ -105,5 +138,5 @@ else
 fi
 
 echo ""
-echo "Codex will receive delegation guidance directly from the MCP server."
-echo "No AGENTS.md copy/paste is required for the default behavior."
+echo "Codex receives delegation guidance from the MCP server by default."
+echo "For stricter or project-specific auto-delegation behavior, also use AGENTS.md."
