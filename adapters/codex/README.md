@@ -1,19 +1,61 @@
 # Codex Adapter
 
-Use `delegate_to_deepseek` from [OpenAI Codex CLI](https://developers.openai.com/codex/cli).
+Use DeepSeek as a **real delegated sub-agent inside Codex CLI**.
 
-## Install
+Codex remains the main agent: it owns the conversation, planning, judgment, and verification. DeepSeek receives self-contained execution tasks through MCP and runs its own Read / Write / Edit / Bash / Glob / Grep / NotebookEdit loop inside the same workspace.
+
+## Recommended install
+
+From the repository root:
+
+```bash
+bash adapters/codex/install.sh
+```
+
+The installer:
+
+1. creates/reuses the repo-local Python virtual environment;
+2. installs `deepseek-as-subagent`;
+3. creates `~/.deepseek-mcp/config.json` if needed;
+4. registers the `deepseek` MCP server with Codex.
+
+Then edit `~/.deepseek-mcp/config.json` and add your DeepSeek API key if the file still contains the placeholder.
+
+Verify:
+
+```bash
+codex mcp list
+codex
+```
+
+Inside Codex, ask it to call the DeepSeek `ping` tool.
+
+## No AGENTS.md copy/paste required
+
+The MCP server now publishes host-level delegation instructions during MCP initialization. Modern Codex clients receive the policy automatically when they connect to the server.
+
+That policy tells Codex to:
+
+- delegate self-contained implementation, batch editing, mechanical refactors, test generation, and other execution-heavy work;
+- keep architecture, ambiguous root-cause analysis, security-sensitive judgment, and tiny edits in Codex;
+- decide whether to delegate **before** reading large amounts of repository source;
+- send DeepSeek a complete task + context because DeepSeek cannot see Codex conversation history;
+- verify representative output and relevant tests after delegation.
+
+You can still add project-specific rules to `AGENTS.md`. Use `instructions.md` as an optional, more aggressive policy template if you want Codex to delegate more often than the built-in default.
+
+## Manual install
 
 ### 1. Build the MCP server
 
-From repo root:
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
-.venv/bin/pip install 'httpx[socks]'    # if you use a SOCKS proxy
 ```
 
-### 2. Configure DeepSeek API key
+On Windows, use the equivalent `.venv/Scripts/...` paths.
+
+### 2. Configure DeepSeek
 
 ```bash
 mkdir -p ~/.deepseek-mcp
@@ -26,61 +68,48 @@ cat > ~/.deepseek-mcp/config.json <<'EOF'
 }
 EOF
 chmod 600 ~/.deepseek-mcp/config.json
-# Edit the file to paste your real DeepSeek API key
 ```
 
-Get a key at [platform.deepseek.com](https://platform.deepseek.com).
+Workspace sandboxing auto-follows the directory where Codex launches unless you explicitly set `"workspace"` in the DeepSeek config.
 
-**Note**: workspace (sandbox root) auto-follows the directory where you launch
-`codex` — no need to configure it. To lock the sandbox to a specific path
-regardless of cwd, add `"workspace": "/abs/path"` to the config.
+### 3. Register with Codex
 
-### 3. Register MCP server with Codex
-
-Pick one:
-
-**Option A — CLI**:
 ```bash
 codex mcp add deepseek -- /absolute/path/to/deepseek-as-subagent/.venv/bin/deepseek-mcp
 ```
 
-**Option B — Edit `~/.codex/config.toml`** (copy from `config.toml.example`):
-```toml
-[mcp_servers.deepseek]
-command = "/absolute/path/to/deepseek-as-subagent/.venv/bin/deepseek-mcp"
+Or configure the same command in `~/.codex/config.toml`; see `config.toml.example`.
+
+## How the flow works
+
+```text
+Codex (main agent)
+  │
+  │ decides a task is a good delegation unit
+  ▼
+delegate_to_deepseek(task, context)
+  │
+  ▼
+DeepSeek sub-agent
+  │ Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
+  │ owns its own multi-turn loop
+  ▼
+summary + usage metadata
+  │
+  ▼
+Codex verifies output/tests and continues the main task
 ```
 
-### 4. Teach Codex when to delegate
+## Disable delegation temporarily
 
-Codex doesn't have Claude Code's skill system. Copy `instructions.md` content
-into one of these (in order of preference):
-
-- **Project-scoped** (recommended): paste into `AGENTS.md` at your project root
-- **Global**: append to `~/.codex/instructions.md`
-
-Without this step, Codex *can* invoke the tool, but won't know *when* to —
-delegation quality drops to "user must explicitly request it every time".
-
-## Verify
+Launch Codex with:
 
 ```bash
-codex mcp list                                 # deepseek should appear
-codex
-> please call the deepseek delegate_to_deepseek tool to write a hello world Python
-  script to /tmp/codex-hello.py
+DEEPSEEK_MODE=off codex
 ```
 
-Expected: tool invokes, DeepSeek runs its agent loop, returns a summary with
-turns/tokens/duration. Then run `cat /tmp/codex-hello.py` to verify the output.
+The MCP server remains registered, but delegation requests immediately return a disabled response and Codex can continue the task itself.
 
-## Differences vs Claude Code adapter
+## Advanced delegation policy
 
-| Feature | Claude Code | Codex |
-|---|---|---|
-| MCP tool `delegate_to_deepseek` | ✅ | ✅ identical |
-| Auto-decide when to delegate | ✅ via skill | ⚠️ via your `AGENTS.md` |
-| Slash command `/ds` | ✅ | ❌ (Codex has no equivalent) |
-| Pure mode (disable for one session) | ✅ via `pure` alias | ⚠️ run `DEEPSEEK_MODE=off codex` manually |
-| One-shot installer | ✅ `./install.sh` (root) | ❌ manual steps above |
-
-PRs welcome to add a Codex auto-installer (`adapters/codex/install.sh`).
+`instructions.md` remains available for users who want an explicit project/global policy in addition to the MCP server's built-in instructions. It is optional rather than required.
