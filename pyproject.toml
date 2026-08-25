@@ -22,7 +22,10 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "mcp[cli]>=1.0.0",
+    # This codebase still uses the MCP Python SDK v1 FastMCP import path.
+    # MCP SDK v2 is a breaking release (`FastMCP` -> `MCPServer`), so keep the
+    # v1 maintenance line until a dedicated v2 migration is completed.
+    "mcp[cli]>=1.28,<2",
     "openai>=1.40.0",
     "httpx[socks]>=0.27.0",  # 兼容 SOCKS 代理（科学上网环境常见）
 ]
