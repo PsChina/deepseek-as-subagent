@@ -83,7 +83,19 @@ get_deepseek_result(job_id)
 
 Steering and cancellation are **cooperative**. They take effect at safe points between model/tool operations; they do not force-interrupt an already in-flight model request or a currently executing tool command.
 
+If a steering instruction arrives after DeepSeek has already planned tool calls but before a not-yet-executed tool runs, the stale remaining tool calls are completed with synthetic `SKIPPED` tool responses and DeepSeek re-plans on the next model turn using the latest parent instruction.
+
 V1 intentionally permits only **one DeepSeek execution at a time**, shared across synchronous delegation and background jobs, so two agents cannot concurrently modify the same workspace through this server.
+
+## Local tests
+
+The job manager and retry behavior have network-free unit tests:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+They cover steering, cooperative cancellation, the single-execution slot, atomic steering finalization, one-shot usage recording, explicit SDK retry disabling, and outer retry/backoff behavior.
 
 ## Manual install
 
