@@ -58,13 +58,15 @@ def run_agent(
     config: Config,
     *,
     control_poll: Callable[[], list[str]] | None = None,
+    control_finalize: Callable[[], list[str]] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict:
     """跑完整 agent loop。
 
     Optional control hooks are checked only at safe points between model/tool
     operations. They do not interrupt an in-flight API request or a currently
-    executing tool call.
+    executing tool call. ``control_finalize`` should atomically return any
+    last-minute messages or close the mailbox when the model is ready to finish.
 
     返回 dict:
       - final_message: str (DeepSeek 给的最终答复)
@@ -112,10 +114,12 @@ def run_agent(
 
         _check_cancel(cancel_check)
 
-        # 没有 tool_calls 通常说明 DeepSeek 决定结束。但如果 parent 在这次
-        # in-flight generation 期间发来了 steering message，先消费消息并继续一轮。
+        # 没有 tool_calls 通常说明 DeepSeek 决定结束。后台 job 在这里使用
+        # control_finalize：若有最后一刻 steering 就继续；若没有则原子关闭邮箱，
+        # 保证调用方不会收到“message queued”但任务已经提交 final result 的假成功。
         if not msg.tool_calls:
-            if _append_control_messages(messages, control_poll):
+            final_poll = control_finalize or control_poll
+            if _append_control_messages(messages, final_poll):
                 continue
             return {
                 "final_message": msg.content or "(empty response)",
