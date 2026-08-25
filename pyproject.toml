@@ -1,6 +1,6 @@
 [project]
 name = "deepseek-as-subagent"
-version = "0.0.1"
+version = "0.1.0"
 description = "MCP server that runs DeepSeek as a real sub-agent for Claude Code / Codex CLI — DeepSeek gets its own Read/Edit/Bash agent loop, not just a Q&A endpoint."
 readme = "README.md"
 requires-python = ">=3.10"
