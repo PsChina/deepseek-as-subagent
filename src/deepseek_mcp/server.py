@@ -264,6 +264,7 @@ def get_deepseek_result(job_id: str) -> str:
     """Return final result for a background DeepSeek job, or ready=false if running."""
     try:
         payload = job_manager.result(job_id)
+        usage_record = job_manager.claim_usage_record(job_id)
     except JobError as e:
         return _json({"ok": False, "error": str(e)})
 
@@ -276,6 +277,9 @@ def get_deepseek_result(job_id: str) -> str:
             result["tool_calls"],
             result["tokens"]["total"],
         )
+        if usage_record:
+            task_summary, usage_result = usage_record
+            _record_usage(task_summary, usage_result)
     return _json({"ok": True, **payload})
 
 
