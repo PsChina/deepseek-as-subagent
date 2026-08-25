@@ -1,13 +1,13 @@
-"""MCP server 入口。
+"""MCP server entrypoint.
 
-暴露两个工具给 Claude Code:
-  - ping: 健康检查
-  - delegate_to_deepseek: 真正的 sub-agent，把任务外包给 DeepSeek 跑完整 agent loop
+Exposes two tools to MCP-capable hosts such as Claude Code and Codex CLI:
+  - ping: health check
+  - delegate_to_deepseek: run DeepSeek as a real sub-agent with its own tool loop
 
-环境变量:
-  - DEEPSEEK_MODE=off: delegate 工具会立即返回 disabled 提示，Claude 不会再调
-  - DEEPSEEK_API_KEY: 覆盖配置文件中的 api_key
-  - DEEPSEEK_WORKSPACE: 覆盖配置文件中的 workspace
+Environment variables:
+  - DEEPSEEK_MODE=off: disable delegation for this process
+  - DEEPSEEK_API_KEY: override api_key from config.json
+  - DEEPSEEK_WORKSPACE: override workspace from config.json
 """
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ import os
 import sys
 from pathlib import Path
 
-# Windows 上 asyncio 默认用 ProactorEventLoop，跟 stdio 子进程不兼容会卡死
-# 必须在 import FastMCP / 启动事件循环之前切到 SelectorEventLoopPolicy
+# Windows defaults to ProactorEventLoop, which can deadlock with stdio subprocesses.
+# Switch before importing/starting FastMCP.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -28,20 +28,16 @@ from . import __version__
 from .agent_loop import AgentLoopError, run_agent
 from .config import Config
 
-# 日志写到 ~/.deepseek-mcp/（不污染 stdout，stdout 是 MCP 协议通道）
-# log 目录 700、文件 600 —— 含路径 / task 摘要，多用户机器上不该世界可读
 _LOG_DIR = Path.home() / ".deepseek-mcp"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 _SERVER_LOG = _LOG_DIR / "server.log"
 _USAGE_LOG = _LOG_DIR / "usage.log"
 
-# Windows 不支持 POSIX 权限位，os.chmod 是 no-op；失败不致命
 try:
     os.chmod(_LOG_DIR, 0o700)
 except OSError:
     pass
 
-# 创建文件后立即 chmod（basicConfig 用 default umask 创建，可能是 644）
 for _p in (_SERVER_LOG, _USAGE_LOG):
     if not _p.exists():
         try:
@@ -60,16 +56,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_HOST_INSTRUCTIONS = """
+DeepSeek is available as a delegated coding sub-agent through the
+`delegate_to_deepseek` tool. Treat delegation as an execution optimization,
+not as a replacement for the host agent's judgment.
 
-mcp = FastMCP("deepseek-mcp")
+Delegate when the work is a self-contained logical unit with clear success
+criteria and is mostly implementation, batch editing, test generation,
+mechanical refactoring, data/code transformation, repetitive repository work,
+or other execution-heavy work that DeepSeek can finish inside the workspace.
+
+Keep the work in the host agent when it depends on conversation-only context,
+architectural trade-offs, ambiguous product decisions, root-cause analysis,
+security-sensitive judgment, or a very small edit where delegation overhead is
+larger than the task.
+
+Important: decide whether to delegate before reading large amounts of source.
+If the host reads all relevant files first and then delegates, both agents pay
+the repository-reading cost. Lightweight discovery such as directory listing,
+file counting, or locating candidate paths is fine before the decision.
+
+When calling `delegate_to_deepseek`, pass a complete task description with file
+paths, constraints, and success criteria. DeepSeek does not see the host's chat
+history or project instruction files unless that information is explicitly put
+in `task` or `context`.
+
+After delegation, verify the result. Read a representative sample, run relevant
+tests/checks, and take over locally if DeepSeek fails twice or produces a result
+that requires substantial judgment to repair.
+""".strip()
+
+
+# MCP protocol supports server-level instructions during initialization. Modern
+# Codex clients consume these instructions, so Codex can learn delegation policy
+# immediately after MCP registration instead of requiring a pasted AGENTS.md
+# block. Older clients simply ignore this field and still work with the tools.
+mcp = FastMCP("deepseek-mcp", instructions=_HOST_INSTRUCTIONS)
 
 
 @mcp.tool()
 def ping() -> str:
-    """Health check. Confirms the deepseek-mcp server is alive.
+    """Health check for the deepseek-mcp server.
 
-    Use this before delegate_to_deepseek if you're not sure whether DeepSeek is configured.
-    Returns version, mode (auto/off), and whether config is loadable.
+    Returns version, mode, and whether the DeepSeek configuration is loadable.
     """
     mode = os.getenv("DEEPSEEK_MODE", "auto")
     try:
@@ -82,7 +111,7 @@ def ping() -> str:
 
 
 def _shorten_path(p: Path) -> str:
-    """长路径压成 ~ + 最后几段，避免 ping 输出爆屏。"""
+    """Shorten long paths for compact ping output."""
     s = str(p)
     home = str(Path.home())
     if s.startswith(home):
@@ -98,34 +127,27 @@ def _shorten_path(p: Path) -> str:
 def delegate_to_deepseek(task: str, context: str = "") -> str:
     """Delegate a focused task to DeepSeek as a real sub-agent.
 
-    DeepSeek runs its own agent loop with Read/Write/Edit/Bash/Glob/Grep/NotebookEdit tools
-    inside the configured workspace. Use this for batch / repetitive / mechanical
-    tasks where you want to save main-conversation tokens and let DeepSeek do the
-    heavy lifting end-to-end.
+    DeepSeek runs its own agent loop with Read/Write/Edit/Bash/Glob/Grep/
+    NotebookEdit tools inside the configured workspace. Prefer this for
+    self-contained execution-heavy work such as batch changes, mechanical
+    refactors, test generation, scripted transformations, and other tasks with
+    clear success criteria.
 
-    Good fits:
-      - Extract i18n keys from N files into JSON
-      - Translate large chunks of text
-      - Scan logs for patterns
-      - Bulk refactors with a clear pattern
-      - One-off ETL scripts
-
-    Bad fits (do it yourself instead):
-      - Architectural design / cross-file judgment
-      - Bug root-cause analysis
-      - Tasks requiring project-specific idioms from CLAUDE.md or other repo conventions
+    Avoid delegating architecture decisions, ambiguous root-cause analysis,
+    security-sensitive judgment, or tiny edits where orchestration overhead is
+    larger than the work.
 
     Args:
-        task: Clear description of what DeepSeek should accomplish, including
-              success criteria and file paths involved.
-        context: Optional additional context — project conventions, related
-                 files DeepSeek should consider, output format requirements.
-                 Include this when project-specific knowledge matters.
+        task: Complete description of what DeepSeek should accomplish,
+              including relevant file paths, boundaries, and success criteria.
+        context: Optional project conventions or external facts DeepSeek needs.
+                 DeepSeek cannot see the host conversation or AGENTS.md/
+                 CLAUDE.md unless those details are copied here.
 
     Returns:
-        A summary of what DeepSeek did, including files affected, turns used,
-        tokens consumed, and any issues. Always verify the result by reading
-        a sample of the affected files before declaring success to the user.
+        DeepSeek's final message plus turns/tool-calls/token/duration metadata.
+        The host agent should verify representative output and relevant tests
+        before declaring the task complete.
     """
     mode = os.getenv("DEEPSEEK_MODE", "auto")
     if mode == "off":
@@ -143,7 +165,11 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
     if context:
         full_task = f"{task}\n\n# Additional context\n{context}"
 
-    logger.info("delegate_to_deepseek invoked. Task length=%d, context length=%d", len(task), len(context))
+    logger.info(
+        "delegate_to_deepseek invoked. Task length=%d, context length=%d",
+        len(task),
+        len(context),
+    )
 
     try:
         result = run_agent(full_task, config)
@@ -162,10 +188,7 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
         result["duration_seconds"],
     )
 
-    # 用量记录（人类可读追加到 usage.log）
-    # 注意：只记 task 前 60 字符摘要，不记 context（context 可能含项目敏感细节）
     try:
-        # 简单大小控制：>10MB 时轮转一次（rename 为 .1）
         if _USAGE_LOG.exists() and _USAGE_LOG.stat().st_size > 10 * 1024 * 1024:
             try:
                 _USAGE_LOG.replace(_USAGE_LOG.with_suffix(".log.1"))
@@ -184,7 +207,7 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
         except OSError:
             pass
     except Exception:
-        pass  # 日志失败不影响主流程
+        pass
 
     return (
         f"{result['final_message']}\n\n"
@@ -198,7 +221,11 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
 
 def main() -> None:
     """CLI entrypoint."""
-    logger.info("deepseek-mcp v%s starting (mode=%s)", __version__, os.getenv("DEEPSEEK_MODE", "auto"))
+    logger.info(
+        "deepseek-mcp v%s starting (mode=%s)",
+        __version__,
+        os.getenv("DEEPSEEK_MODE", "auto"),
+    )
     try:
         mcp.run()
     except Exception as e:
