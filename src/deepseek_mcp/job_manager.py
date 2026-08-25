@@ -1,14 +1,15 @@
 """In-memory background job manager for steerable DeepSeek runs.
 
-V1 intentionally allows only one active DeepSeek job at a time. Completed jobs
-are retained in memory for result retrieval and pruned to a small bounded set.
+V1 intentionally allows only one DeepSeek execution at a time across both the
+synchronous delegate API and background jobs. Completed background jobs are
+retained in memory for result retrieval and pruned to a small bounded set.
 """
 from __future__ import annotations
 
-import queue
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,7 +29,7 @@ class JobNotFound(JobError):
 
 
 class JobBusy(JobError):
-    """A DeepSeek job is already active."""
+    """Another DeepSeek execution already owns the single V1 execution slot."""
 
 
 @dataclass
@@ -36,7 +37,6 @@ class JobRecord:
     job_id: str
     task: str
     context: str
-    config: Config
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -44,27 +44,75 @@ class JobRecord:
     result: dict[str, Any] | None = None
     error: str | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
-    control_queue: queue.Queue[str] = field(default_factory=queue.Queue, repr=False)
+    _control_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _control_messages: deque[str] = field(default_factory=deque, repr=False)
+    _accepting_messages: bool = field(default=True, repr=False)
 
     def snapshot(self) -> dict[str, Any]:
+        with self._control_lock:
+            accepting_messages = self._accepting_messages
+            queued_messages = len(self._control_messages)
         return {
             "job_id": self.job_id,
             "status": self.status,
             "cancel_requested": self.cancel_event.is_set(),
+            "accepting_messages": accepting_messages,
+            "queued_messages": queued_messages,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "error": self.error,
         }
 
+    def queue_message(self, message: str) -> None:
+        """Atomically enqueue steering unless the agent has begun finalizing."""
+        with self._control_lock:
+            if not self._accepting_messages:
+                raise JobError(
+                    f"job {self.job_id} is no longer accepting steering messages"
+                )
+            self._control_messages.append(message)
+
+    def drain_messages(self, *, finalize_if_empty: bool = False) -> list[str]:
+        """Drain queued steering.
+
+        When finalize_if_empty=True, observing an empty mailbox atomically closes
+        it. A sender can therefore never receive a successful queue acknowledgement
+        after the agent has committed to returning its final answer.
+        """
+        with self._control_lock:
+            if self._control_messages:
+                messages = list(self._control_messages)
+                self._control_messages.clear()
+                return messages
+            if finalize_if_empty:
+                self._accepting_messages = False
+            return []
+
+    def close_messages(self) -> None:
+        with self._control_lock:
+            self._accepting_messages = False
+
 
 class DeepSeekJobManager:
-    """Thread-safe single-active-job manager."""
+    """Thread-safe manager with one shared DeepSeek execution slot."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._jobs: dict[str, JobRecord] = {}
         self._active_job_id: str | None = None
+        self._sync_active = False
+
+    def run_sync(self, task: str, config: Config) -> dict[str, Any]:
+        """Run the legacy synchronous delegate while sharing the V1 execution slot."""
+        with self._lock:
+            self._ensure_slot_available_locked()
+            self._sync_active = True
+        try:
+            return run_agent(task, config)
+        finally:
+            with self._lock:
+                self._sync_active = False
 
     def start(self, task: str, context: str, config: Config) -> dict[str, Any]:
         if not task.strip():
@@ -72,23 +120,16 @@ class DeepSeekJobManager:
 
         with self._lock:
             self._prune_locked()
-            if self._active_job_id is not None:
-                active = self._jobs.get(self._active_job_id)
-                if active and active.status not in TERMINAL_STATES:
-                    raise JobBusy(
-                        f"DeepSeek job {active.job_id} is already {active.status}; "
-                        "finish or cancel it before starting another job"
-                    )
-                self._active_job_id = None
+            self._ensure_slot_available_locked()
 
             job_id = uuid.uuid4().hex[:12]
-            job = JobRecord(job_id=job_id, task=task, context=context, config=config)
+            job = JobRecord(job_id=job_id, task=task, context=context)
             self._jobs[job_id] = job
             self._active_job_id = job_id
 
             worker = threading.Thread(
                 target=self._run_job,
-                args=(job_id,),
+                args=(job_id, config),
                 name=f"deepseek-job-{job_id}",
                 daemon=True,
             )
@@ -106,7 +147,7 @@ class DeepSeekJobManager:
             job = self._get_locked(job_id)
             if job.status in TERMINAL_STATES:
                 raise JobError(f"job {job_id} is already {job.status}")
-            job.control_queue.put(message.strip())
+            job.queue_message(message.strip())
             snap = job.snapshot()
             snap["message_queued"] = True
             return snap
@@ -117,6 +158,7 @@ class DeepSeekJobManager:
             if job.status in TERMINAL_STATES:
                 return job.snapshot()
             job.cancel_event.set()
+            job.close_messages()
             return job.snapshot()
 
     def result(self, job_id: str) -> dict[str, Any]:
@@ -134,29 +176,25 @@ class DeepSeekJobManager:
             payload["ready"] = True
             return payload
 
-    def _run_job(self, job_id: str) -> None:
+    def _run_job(self, job_id: str, config: Config) -> None:
         with self._lock:
             job = self._get_locked(job_id)
             job.status = "running"
             job.started_at = time.time()
-
-        full_task = job.task
-        if job.context:
-            full_task = f"{job.task}\n\n# Additional context\n{job.context}"
-
-        def poll_control() -> list[str]:
-            messages: list[str] = []
-            while True:
-                try:
-                    messages.append(job.control_queue.get_nowait())
-                except queue.Empty:
-                    return messages
+            full_task = job.task
+            if job.context:
+                full_task = f"{job.task}\n\n# Additional context\n{job.context}"
+            # Do not retain task/context/config secrets longer than needed in the
+            # manager's persistent job record.
+            job.task = ""
+            job.context = ""
 
         try:
             result = run_agent(
                 full_task,
-                job.config,
-                control_poll=poll_control,
+                config,
+                control_poll=lambda: job.drain_messages(),
+                control_finalize=lambda: job.drain_messages(finalize_if_empty=True),
                 cancel_check=job.cancel_event.is_set,
             )
         except AgentLoopCancelled as e:
@@ -180,9 +218,23 @@ class DeepSeekJobManager:
                 job.result = result
                 job.finished_at = time.time()
         finally:
+            job.close_messages()
             with self._lock:
                 if self._active_job_id == job_id:
                     self._active_job_id = None
+
+    def _ensure_slot_available_locked(self) -> None:
+        if self._sync_active:
+            raise JobBusy("a synchronous DeepSeek delegation is already running")
+        if self._active_job_id is None:
+            return
+        active = self._jobs.get(self._active_job_id)
+        if active and active.status not in TERMINAL_STATES:
+            raise JobBusy(
+                f"DeepSeek job {active.job_id} is already {active.status}; "
+                "finish or cancel it before starting another DeepSeek execution"
+            )
+        self._active_job_id = None
 
     def _get_locked(self, job_id: str) -> JobRecord:
         job = self._jobs.get(job_id)
