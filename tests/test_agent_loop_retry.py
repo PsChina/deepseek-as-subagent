@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
 from openai import APIConnectionError
 
-from deepseek_mcp.agent_loop import AgentLoopError, _call_with_retry
+from deepseek_mcp.agent_loop import AgentLoopError, _call_with_retry, run_agent
 from deepseek_mcp.config import Config
 
 
@@ -49,7 +50,31 @@ def _config() -> Config:
     return Config(api_key="sk-test", workspace=Path.cwd())
 
 
+def _final_response():
+    message = SimpleNamespace(content="done", tool_calls=None)
+    return SimpleNamespace(
+        usage=None,
+        choices=[SimpleNamespace(message=message)],
+        model_dump=lambda exclude_none=True: {
+            "choices": [{"message": {"role": "assistant", "content": "done"}}]
+        },
+    )
+
+
 class RetryPolicyTests(unittest.TestCase):
+    def test_run_agent_disables_sdk_retries_and_sets_explicit_timeout(self) -> None:
+        with (
+            patch("deepseek_mcp.agent_loop.OpenAI") as openai,
+            patch("deepseek_mcp.agent_loop._call_with_retry", return_value=_final_response()),
+        ):
+            run_agent("test", _config())
+
+        kwargs = openai.call_args.kwargs
+        self.assertEqual(kwargs["max_retries"], 0)
+        self.assertIsInstance(kwargs["timeout"], httpx.Timeout)
+        self.assertEqual(kwargs["timeout"].connect, 15.0)
+        self.assertEqual(kwargs["timeout"].read, 180.0)
+
     def test_transient_connection_error_retries_in_outer_loop_only(self) -> None:
         sentinel = object()
         create = _Create([_connection_error(), _connection_error(), sentinel])
