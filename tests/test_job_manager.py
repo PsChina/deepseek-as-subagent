@@ -73,6 +73,14 @@ class JobManagerTests(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(result["result"]["final_message"], "done")
 
+        usage = manager.claim_usage_record(job["job_id"])
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        summary, usage_result = usage
+        self.assertEqual(summary, "test task")
+        self.assertEqual(usage_result["tokens"]["total"], 2)
+        self.assertIsNone(manager.claim_usage_record(job["job_id"]))
+
     def test_cancel_is_cooperative_and_reaches_cancelled(self) -> None:
         manager = DeepSeekJobManager()
         started = threading.Event()
@@ -137,7 +145,7 @@ class JobManagerTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
 
     def test_finalize_closes_mailbox_atomically(self) -> None:
-        job = JobRecord(job_id="abc", task="x", context="")
+        job = JobRecord(job_id="abc", task="x", context="", task_summary="x")
         self.assertEqual(job.drain_messages(finalize_if_empty=True), [])
         with self.assertRaises(JobError):
             job.queue_message("too late")
