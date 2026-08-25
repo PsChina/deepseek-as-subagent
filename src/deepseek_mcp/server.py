@@ -25,7 +25,7 @@ if sys.platform == "win32":
 from mcp.server.fastmcp import FastMCP
 
 from . import __version__
-from .agent_loop import AgentLoopError, run_agent
+from .agent_loop import AgentLoopError
 from .config import Config
 from .job_manager import DeepSeekJobManager, JobError
 
@@ -70,7 +70,8 @@ background-job API: `start_deepseek` returns a job_id immediately; then use
 `send_deepseek_message`, `get_deepseek_status`, `cancel_deepseek`, and
 `get_deepseek_result`. Steering/cancellation takes effect at safe points between
 model/tool operations, not by interrupting an in-flight model request or tool.
-V1 intentionally permits only one active background DeepSeek job at a time.
+V1 intentionally permits only one DeepSeek execution at a time across both
+synchronous and background APIs.
 
 Treat delegation as an execution optimization, not as a replacement for the
 host agent's judgment. Good delegation units have clear success criteria and
@@ -173,7 +174,9 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
     )
 
     try:
-        result = run_agent(full_task, config)
+        result = job_manager.run_sync(full_task, config)
+    except JobError as e:
+        return f"ERROR: DeepSeek execution busy: {e}"
     except AgentLoopError as e:
         logger.exception("Agent loop failed")
         return f"ERROR: DeepSeek agent loop failed: {e}"
@@ -205,7 +208,7 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
 def start_deepseek(task: str, context: str = "") -> str:
     """Start one steerable DeepSeek background job and return its job_id quickly.
 
-    V1 permits only one active background job at a time. The job continues in a
+    V1 permits only one DeepSeek execution at a time. The job continues in a
     daemon worker thread after this MCP request returns.
     """
     try:
