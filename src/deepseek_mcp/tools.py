@@ -165,6 +165,7 @@ def _execute_bash(args: dict, workspace: Path) -> str:
             command,
             shell=True,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=False,
             timeout=timeout,
             cwd=str(workspace),
