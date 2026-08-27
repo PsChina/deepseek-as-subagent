@@ -22,7 +22,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "mcp[cli]>=1.0.0",
+    "mcp[cli]>=1.0.0,<2",
     "openai>=1.40.0",
     "httpx[socks]>=0.27.0",  # 兼容 SOCKS 代理（科学上网环境常见）
 ]
