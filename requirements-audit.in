@@ -1,0 +1,2 @@
+# CI-only vulnerability scanner. Production installers must not install this.
+pip-audit>=2.9,<3

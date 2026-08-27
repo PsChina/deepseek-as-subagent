@@ -1,15 +1,64 @@
-"""沙箱：路径限制 + 命令黑名单。
+"""Workspace path checks and command-policy defence in depth.
 
-设计目标：DeepSeek 是"听话的助手但不一定可靠"——它可能误读路径、误跑命令。
-不上 docker（启动慢、依赖重），用进程内的轻量检查防住 95% 的误操作。
-
-注意：黑名单 ≠ 安全边界。真正的对抗性攻击应该用 docker / bubblewrap / sandbox-exec
-之类的真沙箱包起来。这里的检查只是"防 DeepSeek 走神"的护栏。
+The command policy is intentionally not treated as a security boundary. Bash is
+disabled by default and, when explicitly enabled, runs only through the
+container boundary in :mod:`deepseek_mcp.container_sandbox`.
 """
 from __future__ import annotations
 
 import shlex
 from pathlib import Path
+
+_VCS_DIRECTORY_NAMES = frozenset({".git", ".hg", ".svn"})
+_AGENT_CONTROL_DIRECTORY_NAMES = frozenset(
+    {".agents", ".claude", ".codex", ".deepseek-mcp"}
+)
+_AGENT_CONTROL_FILE_NAMES = frozenset(
+    {".mcp.json", "agents.md", "claude.md", "codex.md"}
+)
+_SENSITIVE_HOME_PATHS = (
+    (".aws",), (".azure",), (".gnupg",), (".kube",), (".ssh",),
+    (".config", "gcloud"), ("Library", "Keychains"),
+)
+
+
+def is_vcs_control_name(name: str) -> bool:
+    """Return whether one path component names VCS control state."""
+    return name.casefold() in _VCS_DIRECTORY_NAMES
+
+
+def is_agent_control_name(name: str) -> bool:
+    folded = name.casefold()
+    return folded in _AGENT_CONTROL_DIRECTORY_NAMES or folded in _AGENT_CONTROL_FILE_NAMES
+
+
+def is_protected_host_path(path: Path) -> bool:
+    """Keep model file tools away from host agent/config and VCS control state."""
+    try:
+        candidate = path.resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return True
+    for parts in _SENSITIVE_HOME_PATHS:
+        protected = home.joinpath(*parts)
+        if candidate == protected or protected in candidate.parents:
+            return True
+    if any(
+        is_vcs_control_name(part) or part.casefold() in _AGENT_CONTROL_DIRECTORY_NAMES
+        for part in candidate.parts
+    ):
+        return True
+    return candidate.name.casefold() in _AGENT_CONTROL_FILE_NAMES
+
+
+def is_unsafe_workspace_root(path: Path) -> bool:
+    """Reject broad home/ancestor roots and known credential/control roots."""
+    try:
+        candidate = path.resolve(strict=True)
+        home = Path.home().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return True
+    return candidate == home or candidate in home.parents or is_protected_host_path(candidate)
 
 # 危险命令检测的两种粒度：
 #   1) DANGEROUS_TOKENS：第一个 token（程序名）整体匹配，难以用 \ 编码绕过
@@ -91,16 +140,21 @@ def resolve_safe_path(rel_or_abs: str, workspace: Path) -> Path:
     返回值：解析后的绝对路径。
     抛出：SandboxViolation 如果路径逃出 workspace。
     """
+    if not isinstance(rel_or_abs, str):
+        raise SandboxViolation("path must be a string")
     if not rel_or_abs:
         raise SandboxViolation("empty path is not allowed")
     if "\x00" in rel_or_abs:
         raise SandboxViolation("null byte in path is not allowed")
 
-    p = Path(rel_or_abs).expanduser()
-    if not p.is_absolute():
-        p = workspace / p
-    abs_path = p.resolve()
-    ws_resolved = workspace.resolve()
+    try:
+        p = Path(rel_or_abs).expanduser()
+        if not p.is_absolute():
+            p = workspace / p
+        abs_path = p.resolve()
+        ws_resolved = workspace.resolve()
+    except (OSError, RuntimeError, ValueError):
+        raise SandboxViolation("path cannot be safely resolved") from None
 
     try:
         abs_path.relative_to(ws_resolved)
@@ -109,6 +163,9 @@ def resolve_safe_path(rel_or_abs: str, workspace: Path) -> Path:
             f"Path {abs_path} is outside workspace {ws_resolved}. "
             f"Tools can only access files within the configured workspace."
         ) from e
+
+    if is_protected_host_path(abs_path):
+        raise SandboxViolation("path targets protected host or VCS control state")
 
     return abs_path
 
@@ -121,75 +178,54 @@ def _tokenize(command: str) -> list[str]:
         return command.split()
 
 
-def check_command(command: str) -> None:
-    """检查 Bash 命令是否在黑名单里。抛 SandboxViolation 即拒绝。
-
-    多层检查（任一命中即拒）：
-      1) DANGEROUS_PHRASES：粗粒度子串
-      2) DANGEROUS_TOKENS：分词后程序名（第一个 token 或管道后第一个 token）
-      3) DANGEROUS_ANYWHERE_TOKENS：sudo / su 出现在任何位置
-      4) DANGEROUS_INLINE_INTERPRETERS：python -c / perl -e 等
-      5) PACKAGE_INSTALL_PREFIXES：装包动作
-      6) PUBLISH_PREFIXES：发布动作（git push / npm publish 等）
-    """
-    if not command or not command.strip():
-        raise SandboxViolation("empty command")
-
+def _check_phrases(command: str) -> None:
     lower = command.lower()
-
-    # 1) 短语匹配（不分词，专抓特殊组合）
     for phrase in DANGEROUS_PHRASES:
         if phrase.lower() in lower:
             raise SandboxViolation(
                 f"Command blocked by sandbox: contains dangerous phrase '{phrase}'."
             )
 
-    # 2-6) 分词后逐段检查（按 ; && || | 分子句）
-    # 简单切分；不追求 100% bash 解析，目的是不让 'a; rm -rf /' 漏掉
-    clauses = _split_clauses(command)
-    for clause in clauses:
-        tokens = _tokenize(clause)
-        if not tokens:
-            continue
 
-        first = _strip_cmd_prefix(tokens[0])
-
-        # 任意位置出现 sudo / su
-        for tok in tokens:
-            if _strip_cmd_prefix(tok) in DANGEROUS_ANYWHERE_TOKENS:
-                raise SandboxViolation(
-                    f"Command blocked by sandbox: '{tok}' not allowed."
-                )
-
-        # 程序名黑名单
-        if first in DANGEROUS_TOKENS:
+def _check_clause(tokens: list[str]) -> None:
+    first = _strip_cmd_prefix(tokens[0])
+    for token in tokens:
+        if _strip_cmd_prefix(token) in DANGEROUS_ANYWHERE_TOKENS:
             raise SandboxViolation(
-                f"Command blocked by sandbox: program '{first}' not allowed "
-                f"(network / privilege escalation tools are disabled)."
+                f"Command blocked by sandbox: '{token}' not allowed."
             )
+    if first in DANGEROUS_TOKENS:
+        raise SandboxViolation(
+            f"Command blocked by sandbox: program '{first}' not allowed "
+            f"(network / privilege escalation tools are disabled)."
+        )
+    if len(tokens) < 2:
+        return
+    signature = (first, tokens[1])
+    if signature in DANGEROUS_INLINE_INTERPRETERS:
+        raise SandboxViolation(
+            f"Command blocked by sandbox: inline code via '{first} {tokens[1]}' "
+            f"is not allowed (write a file then run it instead)."
+        )
+    if signature in PACKAGE_INSTALL_PREFIXES:
+        raise SandboxViolation(
+            f"Command blocked by sandbox: package install '{first} {tokens[1]}' is not allowed."
+        )
+    if signature in PUBLISH_PREFIXES:
+        raise SandboxViolation(
+            f"Command blocked by sandbox: publish action '{first} {tokens[1]}' is not allowed."
+        )
 
-        # 内联解释器
-        if len(tokens) >= 2:
-            sig = (first, tokens[1])
-            if sig in DANGEROUS_INLINE_INTERPRETERS:
-                raise SandboxViolation(
-                    f"Command blocked by sandbox: inline code via '{first} {tokens[1]}' "
-                    f"is not allowed (write a file then run it instead)."
-                )
 
-        # 装包 / 发布
-        if len(tokens) >= 2:
-            sig = (first, tokens[1])
-            if sig in PACKAGE_INSTALL_PREFIXES:
-                raise SandboxViolation(
-                    f"Command blocked by sandbox: package install '{first} {tokens[1]}' "
-                    f"is not allowed."
-                )
-            if sig in PUBLISH_PREFIXES:
-                raise SandboxViolation(
-                    f"Command blocked by sandbox: publish action '{first} {tokens[1]}' "
-                    f"is not allowed."
-                )
+def check_command(command: str) -> None:
+    """Reject known-dangerous commands before the container boundary."""
+    if not command or not command.strip():
+        raise SandboxViolation("empty command")
+    _check_phrases(command)
+    for clause in _split_clauses(command):
+        tokens = _tokenize(clause)
+        if tokens:
+            _check_clause(tokens)
 
 
 def _split_clauses(command: str) -> list[str]:

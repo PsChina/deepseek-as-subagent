@@ -1,27 +1,398 @@
-"""加载 ~/.deepseek-mcp/config.json + env 覆盖。
-
-优先级：环境变量 > 配置文件 > 默认值（cwd）。
-workspace 默认跟随 MCP server 进程的 cwd —— 即 Claude Code 启动时的目录，
-和 Claude 主进程沙箱一致，不强制用户配置。
-"""
+"""Load ``~/.deepseek-mcp/config.json`` with safe production defaults."""
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
+import shutil
+import stat
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from .child_runtime import ChildRuntimeError, runtime_is_within_workspace
+from . import windows_file_io
+from .trusted_executable import TrustedExecutableError, validate_trusted_executable
+from .safety import is_unsafe_workspace_root
+from .workspace_guard import configure_workspace_identity
 CONFIG_PATH = Path.home() / ".deepseek-mcp" / "config.json"
-
-DEFAULT_MODEL = "deepseek-v4-pro"  # 主力模型（推理强）；省钱场景改 deepseek-v4-flash
+MAX_CONFIG_BYTES = 1024 * 1024
+DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_MAX_TURNS = 50
-DEFAULT_ALLOWED_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
-
+MAX_TURNS = 100
+DEFAULT_MAX_RUN_SECONDS = 5 * 60 * 60
+HARD_MAX_RUN_SECONDS = 48 * 60 * 60
+DEFAULT_ALLOWED_TOOLS = [
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+]
+KNOWN_TOOLS = frozenset(
+    {"Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"}
+)
+CONTAINER_RUNTIMES = frozenset({"docker", "podman"})
+MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
+DEFAULT_BASH_MEMORY = "512m"
+MAX_BASH_MEMORY_BYTES = 64 * 1024**3
+DEFAULT_BASH_CPUS = 1.0
+DEFAULT_BASH_PIDS_LIMIT = 128
+BASH_CONFIG_KEYS = frozenset(
+    {
+        "bash_backend",
+        "bash_runtime",
+        "bash_image",
+        "bash_memory",
+        "bash_cpus",
+        "bash_pids_limit",
+    }
+)
+CONFIG_KEYS = frozenset(
+    {
+        "api_key",
+        "workspace",
+        "model",
+        "max_turns",
+        "max_run_seconds",
+        "allowed_tools",
+        "base_url",
+        *BASH_CONFIG_KEYS,
+    }
+)
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+_MEMORY_RE = re.compile(r"([1-9][0-9]*)([bkmg]?)", re.IGNORECASE)
 logger = logging.getLogger(__name__)
+def _validate_private_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(f"Cannot inspect config directory {path}: {exc}") from exc
+    if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+        raise RuntimeError(f"Config directory must be a real directory: {path}")
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise RuntimeError(
+            f"Config directory must be owned by the current user with mode 0700: {path}"
+        )
+
+def _validate_private_file(descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"Config must be a regular file: {CONFIG_PATH}")
+    if os.name != "posix":
+        return
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise RuntimeError(
+            f"Config must be owned by the current user and private; "
+            f"run: chmod 700 {CONFIG_PATH.parent} && chmod 600 {CONFIG_PATH}"
+        )
+
+def _read_config_text() -> str:
+    if os.name == "nt":
+        try:
+            payload, _info = windows_file_io.read_regular(
+                CONFIG_PATH, max_bytes=MAX_CONFIG_BYTES
+            )
+            return payload.decode("utf-8")
+        except FileNotFoundError:
+            raise
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(f"Config must be UTF-8: {CONFIG_PATH}") from exc
+        except (OSError, windows_file_io.WindowsPathError) as exc:
+            raise RuntimeError(f"Cannot safely read {CONFIG_PATH}: {exc}") from exc
+    _validate_private_directory(CONFIG_PATH.parent)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(CONFIG_PATH, flags)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(f"Cannot safely open {CONFIG_PATH}: {exc}") from exc
+    try:
+        _validate_private_file(descriptor)
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            payload = handle.read(MAX_CONFIG_BYTES + 1)
+        if len(payload) > MAX_CONFIG_BYTES:
+            raise RuntimeError(f"Config is too large: {CONFIG_PATH}")
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(f"Config must be UTF-8: {CONFIG_PATH}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
-@dataclass
+class _DuplicateConfigKey(ValueError):
+    pass
+
+
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for name, value in pairs:
+        if name in result:
+            raise _DuplicateConfigKey
+        result[name] = value
+    return result
+
+
+def _load_data() -> dict:
+    try:
+        text = _read_config_text()
+    except FileNotFoundError:
+        return {}
+    try:
+        data = json.loads(text, object_pairs_hook=_strict_json_object)
+    except _DuplicateConfigKey:
+        raise RuntimeError(f"Duplicate key in {CONFIG_PATH}") from None
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Invalid JSON in {CONFIG_PATH} "
+            f"(line {exc.lineno}, col {exc.colno}): {exc.msg}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Top-level of {CONFIG_PATH} must be a JSON object")
+    if not set(data).issubset(CONFIG_KEYS):
+        raise RuntimeError(f"Unsupported key in {CONFIG_PATH}")
+    return data
+
+
+def _validate_credential_storage(data: dict) -> None:
+    configured = data.get("api_key", "")
+    if (
+        os.name == "nt"
+        and isinstance(configured, str)
+        and configured.strip()
+        and configured.strip() != "PASTE_YOUR_DEEPSEEK_KEY_HERE"
+    ):
+        raise RuntimeError(
+            "Windows config files cannot store API keys safely; remove api_key "
+            "from config.json and set DEEPSEEK_API_KEY in the process environment"
+        )
+
+
+def _load_api_key(data: dict) -> str:
+    _validate_credential_storage(data)
+    configured = data.get("api_key", "")
+    value = os.getenv("DEEPSEEK_API_KEY") or configured
+    if not isinstance(value, str):
+        raise RuntimeError("DeepSeek API key must be a string")
+    credential = value.strip()
+    if not credential or credential == "PASTE_YOUR_DEEPSEEK_KEY_HERE":
+        raise RuntimeError(
+            f"DeepSeek API key not configured. Set DEEPSEEK_API_KEY "
+            f"or edit {CONFIG_PATH}"
+        )
+    if not credential.startswith("sk-"):
+        logger.warning("DeepSeek API key does not start with 'sk-'; verify the key")
+    return credential
+
+def _workspace_setting(data: dict) -> tuple[object | None, bool]:
+    environment = os.getenv("DEEPSEEK_WORKSPACE")
+    if environment is not None:
+        return environment, True
+    if "workspace" in data:
+        return data["workspace"], True
+    return None, False
+
+
+def _load_workspace(data: dict) -> Path:
+    configured, explicit = _workspace_setting(data)
+    if explicit and (not isinstance(configured, str) or not configured.strip()):
+        raise RuntimeError("workspace must be a non-empty path string")
+    if explicit:
+        assert isinstance(configured, str)
+        try:
+            candidate = Path(os.path.expanduser(configured)).resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(f"Configured workspace is invalid: {exc}") from exc
+    else:
+        candidate = Path.cwd().resolve()
+    if not candidate.exists():
+        source = "Configured workspace" if configured else "Current workspace"
+        raise RuntimeError(f"{source} does not exist: {candidate}")
+    if not candidate.is_dir():
+        raise RuntimeError(f"Workspace is not a directory: {candidate}")
+    if is_unsafe_workspace_root(candidate):
+        raise RuntimeError(
+            "Workspace must be a project directory, not a home, credential, "
+            "agent-control, or broad ancestor directory"
+        )
+    return candidate
+
+
+def _validate_max_turns(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError("max_turns must be an integer")
+    if not 1 <= value <= MAX_TURNS:
+        raise RuntimeError(f"max_turns must be between 1 and {MAX_TURNS}")
+    return value
+
+
+def _load_max_turns(data: dict) -> int:
+    return _validate_max_turns(data.get("max_turns", DEFAULT_MAX_TURNS))
+
+
+def _validate_max_run_seconds(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError("max_run_seconds must be an integer")
+    if not 1 <= value <= HARD_MAX_RUN_SECONDS:
+        raise RuntimeError(
+            f"max_run_seconds must be between 1 and {HARD_MAX_RUN_SECONDS}"
+        )
+    return value
+
+
+def _load_allowed_tools(data: dict) -> list[str]:
+    tools = data.get("allowed_tools", list(DEFAULT_ALLOWED_TOOLS))
+    if not isinstance(tools, list):
+        raise RuntimeError("allowed_tools must be a list of tool names")
+    if not all(isinstance(tool, str) for tool in tools):
+        raise RuntimeError("allowed_tools must be a list of tool names")
+    unknown = sorted(set(tools) - KNOWN_TOOLS)
+    if unknown:
+        raise RuntimeError(f"Unknown allowed_tools: {', '.join(unknown)}")
+    if len(tools) != len(set(tools)):
+        raise RuntimeError("allowed_tools must not contain duplicates")
+    effective = list(tools)
+    if "Bash" in effective and BASH_CONFIG_KEYS.isdisjoint(data):
+        effective.remove("Bash")
+        logger.warning(
+            "Legacy allowed_tools enabled host Bash without sandbox settings; "
+            "Bash is disabled until an explicit container configuration is added"
+        )
+    return effective
+
+
+def _validate_model(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError("model must be a non-empty string")
+    if value != value.strip() or any(ord(char) < 32 for char in value):
+        raise RuntimeError("model must not contain surrounding or control whitespace")
+    return value
+
+
+def _parse_base_url(value: object):
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("base_url must be a non-empty string")
+    if value != value.strip() or any(ord(char) < 32 for char in value):
+        raise RuntimeError("base_url must not contain whitespace or control characters")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise RuntimeError(f"base_url is invalid: {exc}") from exc
+    return value, parsed, hostname
+
+
+def _validate_url_authority(parsed, hostname: str | None) -> None:
+    if not hostname:
+        raise RuntimeError("base_url must contain a host and no user credentials")
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("base_url must contain a host and no user credentials")
+    if parsed.query or parsed.fragment:
+        raise RuntimeError("base_url must not contain a query or fragment")
+
+
+def _validate_base_url(value: object) -> str:
+    value, parsed, hostname = _parse_base_url(value)
+    _validate_url_authority(parsed, hostname)
+    assert hostname is not None
+    if parsed.scheme == "https":
+        return value
+    loopback_hosts = {"localhost", "127.0.0.1", "::1"}
+    if parsed.scheme == "http" and hostname.lower() in loopback_hosts:
+        return value
+    raise RuntimeError("base_url must use HTTPS; HTTP is allowed only for loopback")
+
+
+def _is_pinned_image(image: object) -> bool:
+    if not isinstance(image, str) or not image or image.startswith("-"):
+        return False
+    if any(char.isspace() for char in image):
+        return False
+    name, marker, digest = image.rpartition("@sha256:")
+    return bool(name and marker and _DIGEST_RE.fullmatch(digest))
+
+
+def _validate_resource_limits(memory: object, cpus: object, pids: object) -> None:
+    match = _MEMORY_RE.fullmatch(memory) if isinstance(memory, str) else None
+    if match is None:
+        raise RuntimeError("bash_memory must be a positive Docker memory value")
+    multipliers = {"": 1, "b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+    try:
+        memory_bytes = int(match.group(1)) * multipliers[match.group(2).lower()]
+    except ValueError:
+        raise RuntimeError("bash_memory must be a positive Docker memory value") from None
+    if memory_bytes > MAX_BASH_MEMORY_BYTES:
+        raise RuntimeError("bash_memory must be at most 64g")
+    if isinstance(cpus, bool) or isinstance(pids, bool) or not isinstance(pids, int):
+        raise RuntimeError("Bash container resource limits are invalid")
+    try:
+        cpu_value = float(cpus)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Bash container resource limits are invalid") from exc
+    if not 0 < cpu_value <= 64:
+        raise RuntimeError("bash_cpus must be greater than 0 and at most 64")
+    if not 1 <= pids <= 4096:
+        raise RuntimeError("bash_pids_limit must be between 1 and 4096")
+
+
+def _resolve_runtime(runtime: str, workspace: Path) -> str:
+    found = shutil.which(runtime)
+    if found is None:
+        raise RuntimeError(f"Container runtime not found: {runtime}")
+    try:
+        resolved = validate_trusted_executable(found, workspace)
+    except TrustedExecutableError as error:
+        raise RuntimeError(f"Container runtime is not trusted: {error}") from None
+    else:
+        _validate_runtime_environment(runtime)
+        return str(resolved)
+
+
+def _validate_runtime_environment(runtime: str) -> None:
+    if os.environ.get("DOCKER_CONTEXT") not in (None, "", "default"):
+        raise RuntimeError("DOCKER_CONTEXT must be unset or 'default'")
+    for variable in ("DOCKER_HOST", "CONTAINER_HOST"):
+        endpoint = os.environ.get(variable)
+        if endpoint:
+            parsed = urlsplit(endpoint)
+            if parsed.scheme != "unix" or parsed.netloc or not parsed.path.startswith("/"):
+                raise RuntimeError(f"{variable} must identify a local unix:// socket")
+    if runtime == "podman" and not os.environ.get("CONTAINER_HOST"):
+        raise RuntimeError(
+            "Podman requires an explicit local CONTAINER_HOST backed by "
+            "podman system service"
+        )
+
+
+def _probe_runtime_service(resolved: str, runtime: str) -> None:
+    """Require a bounded, read-only daemon handshake before accepting Bash."""
+    from .container_process import ContainerSandboxError, run_control
+    from .container_sandbox import _runtime_environment
+
+    try:
+        environment = _runtime_environment(resolved)
+        result = run_control(resolved, ["info"], environment)
+    except ContainerSandboxError:
+        raise RuntimeError(
+            f"Container runtime service is not ready for {runtime}"
+        ) from None
+    if result.returncode != 0:
+        raise RuntimeError(f"Container runtime service is not ready for {runtime}")
+
+
+@dataclass(repr=False)
 class Config:
     api_key: str
     workspace: Path
@@ -29,68 +400,101 @@ class Config:
     max_turns: int = DEFAULT_MAX_TURNS
     allowed_tools: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_TOOLS))
     base_url: str = "https://api.deepseek.com"
+    max_run_seconds: int = DEFAULT_MAX_RUN_SECONDS
+    bash_backend: str | None = None
+    bash_runtime: str | None = None
+    bash_image: str | None = None
+    bash_memory: str = DEFAULT_BASH_MEMORY
+    bash_cpus: float = DEFAULT_BASH_CPUS
+    bash_pids_limit: int = DEFAULT_BASH_PIDS_LIMIT
+    expected_workspace_identity: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if is_unsafe_workspace_root(self.workspace):
+            raise RuntimeError("workspace is a protected or overly broad host path")
+        self.expected_workspace_identity = configure_workspace_identity(
+            self.workspace, self.expected_workspace_identity
+        )
+        self.model = _validate_model(self.model)
+        self.base_url = _validate_base_url(self.base_url)
+        self.max_turns = _validate_max_turns(self.max_turns)
+        self.max_run_seconds = _validate_max_run_seconds(self.max_run_seconds)
+        self._validate_mutation_runtime()
+
+    def _validate_mutation_runtime(self) -> None:
+        if not MUTATION_TOOLS.intersection(self.allowed_tools):
+            return
+        try:
+            unsafe = runtime_is_within_workspace(self.workspace)
+        except (ChildRuntimeError, OSError, RuntimeError):
+            unsafe = True
+        if unsafe:
+            raise RuntimeError(
+                "Mutation tools require a non-editable deepseek-mcp installation "
+                "outside the delegated workspace; reinstall with the supported installer"
+            )
+
+    def validate_bash(self, *, require_runtime: bool) -> None:
+        if "Bash" not in self.allowed_tools:
+            return
+        if sys.platform not in {"darwin", "linux"}:
+            raise RuntimeError("Bash container execution is supported only on macOS and Linux")
+        if self.bash_backend != "container":
+            raise RuntimeError("Bash requires bash_backend='container'")
+        if (
+            not isinstance(self.bash_runtime, str)
+            or self.bash_runtime not in CONTAINER_RUNTIMES
+        ):
+            raise RuntimeError("bash_runtime must be 'docker' or 'podman'")
+        if not _is_pinned_image(self.bash_image):
+            raise RuntimeError("bash_image must be pinned by @sha256:<64 lowercase hex>")
+        _validate_resource_limits(
+            self.bash_memory, self.bash_cpus, self.bash_pids_limit
+        )
+        if require_runtime:
+            assert self.bash_runtime is not None
+            _resolve_runtime(self.bash_runtime, self.workspace)
+
+    def resolve_bash_runtime(self) -> str:
+        self.validate_bash(require_runtime=False)
+        assert self.bash_runtime is not None
+        return _resolve_runtime(self.bash_runtime, self.workspace)
+
+    @classmethod
+    def _from_data(cls, data: dict, credential: str) -> "Config":
+        return cls(
+            credential,
+            workspace=_load_workspace(data),
+            model=data.get("model", DEFAULT_MODEL),
+            max_turns=_load_max_turns(data),
+            max_run_seconds=_validate_max_run_seconds(
+                data.get("max_run_seconds", DEFAULT_MAX_RUN_SECONDS)
+            ),
+            allowed_tools=_load_allowed_tools(data),
+            base_url=data.get("base_url", "https://api.deepseek.com"),
+            bash_backend=data.get("bash_backend"),
+            bash_runtime=data.get("bash_runtime"),
+            bash_image=data.get("bash_image"),
+            bash_memory=data.get("bash_memory", DEFAULT_BASH_MEMORY),
+            bash_cpus=data.get("bash_cpus", DEFAULT_BASH_CPUS),
+            bash_pids_limit=data.get("bash_pids_limit", DEFAULT_BASH_PIDS_LIMIT),
+        )
+
+    @classmethod
+    def validate_runtime_settings(cls) -> None:
+        """Validate non-secret settings without requiring a configured API key."""
+        data = _load_data()
+        _validate_credential_storage(data)
+        config = cls._from_data(data, "")
+        config.validate_bash(require_runtime=True)
+        if "Bash" in config.allowed_tools:
+            assert config.bash_runtime is not None
+            runtime = config.resolve_bash_runtime()
+            _probe_runtime_service(runtime, config.bash_runtime)
 
     @classmethod
     def load(cls) -> "Config":
-        # DEEPSEEK_MODE=off → 让 server.py 自己判断是否暴露工具
-        # 这里只负责加载真实配置
-        data: dict = {}
-        if CONFIG_PATH.exists():
-            try:
-                data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as e:
-                raise RuntimeError(
-                    f"Invalid JSON in {CONFIG_PATH} (line {e.lineno}, col {e.colno}): {e.msg}"
-                ) from e
-            if not isinstance(data, dict):
-                raise RuntimeError(f"Top-level of {CONFIG_PATH} must be a JSON object")
-
-        # API key: env > config，strip 前后空白（粘贴常带）
-        api_key = (os.getenv("DEEPSEEK_API_KEY") or data.get("api_key", "")).strip()
-        if not api_key or api_key == "PASTE_YOUR_DEEPSEEK_KEY_HERE":
-            raise RuntimeError(
-                f"DeepSeek API key not configured. "
-                f"Set DEEPSEEK_API_KEY env var or edit {CONFIG_PATH}"
-            )
-        if not api_key.startswith("sk-"):
-            logger.warning(
-                "API key doesn't start with 'sk-' — DeepSeek may reject it. "
-                "Check that you copied the full key from platform.deepseek.com."
-            )
-
-        # workspace 解析：env > config > cwd
-        # 配错了不 hard fail —— 警告 + fallback 到 cwd，确保 MCP 总能工作
-        workspace_str = os.getenv("DEEPSEEK_WORKSPACE") or data.get("workspace", "")
-        if workspace_str:
-            workspace = Path(os.path.expanduser(workspace_str)).resolve()
-            if not workspace.exists():
-                logger.warning(
-                    "Configured workspace does not exist: %s — falling back to cwd",
-                    workspace,
-                )
-                workspace = Path.cwd()
-        else:
-            workspace = Path.cwd()  # 跟随 Claude Code 启动目录
-
-        # max_turns 必须 >= 1，否则 for-loop 不进，下游会拿到不一致状态
-        try:
-            max_turns = int(data.get("max_turns", DEFAULT_MAX_TURNS))
-        except (TypeError, ValueError):
-            max_turns = DEFAULT_MAX_TURNS
-        if max_turns < 1:
-            logger.warning("max_turns=%d invalid, using default %d", max_turns, DEFAULT_MAX_TURNS)
-            max_turns = DEFAULT_MAX_TURNS
-
-        allowed_tools = data.get("allowed_tools", list(DEFAULT_ALLOWED_TOOLS))
-        if not isinstance(allowed_tools, list) or not all(isinstance(t, str) for t in allowed_tools):
-            logger.warning("allowed_tools invalid, using default")
-            allowed_tools = list(DEFAULT_ALLOWED_TOOLS)
-
-        return cls(
-            api_key=api_key,
-            workspace=workspace,
-            model=data.get("model", DEFAULT_MODEL),
-            max_turns=max_turns,
-            allowed_tools=allowed_tools,
-            base_url=data.get("base_url", "https://api.deepseek.com"),
-        )
+        data = _load_data()
+        config = cls._from_data(data, _load_api_key(data))
+        config.validate_bash(require_runtime=True)
+        return config

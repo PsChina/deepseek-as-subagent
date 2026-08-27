@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/PsChina/deepseek-as-subagent?style=social)](https://github.com/PsChina/deepseek-as-subagent)
 [![Glama MCP server](https://glama.ai/mcp/servers/PsChina/deepseek-as-subagent/badges/score.svg)](https://glama.ai/mcp/servers/PsChina/deepseek-as-subagent)
@@ -12,7 +12,8 @@
 
 > Run DeepSeek as a **real sub-agent** inside Claude Code / Codex CLI — not just an LLM endpoint.
 > The host agent keeps the main conversation, planning, judgment, and verification.
-> DeepSeek gets its own Read / Write / Edit / Bash / Glob / Grep / NotebookEdit agent loop for execution-heavy work.
+> DeepSeek gets its own workspace-scoped agent loop for execution-heavy work.
+> Workspace-scoped reads, searches, and file writes are enabled by default; containerized Bash is an explicit opt-in.
 
 ```text
        Claude / Codex (main agent)
@@ -27,7 +28,8 @@
                                 └─ get_deepseek_result(job_id)
          ▼
        DeepSeek sub-agent
-         │  Read / Write / Edit / Bash / Glob / Grep / NotebookEdit — all local
+         │  Read / Write / Edit / Glob / Grep / NotebookEdit by default
+         │  containerized Bash is opt-in
          │  iterates autonomously inside the workspace
          ▼
        Result returns to the host
@@ -37,19 +39,31 @@
 ## Quick start
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/PsChina/deepseek-as-subagent/main/curl-install.sh | bash
+git clone https://github.com/PsChina/deepseek-as-subagent.git
+cd deepseek-as-subagent
+git checkout REVIEWED_TAG_OR_COMMIT
+# Inspect install.sh and requirements.lock, then:
+./install.sh
 ```
 
-One line. Clones the repo to `~/.local/share/deepseek-as-subagent`, installs
-the Python package in an isolated venv, registers the MCP server with Claude
-Code, deploys the skill + `/ds` slash command, and adds a `pure` shell alias.
+Python 3.10–3.12 must already be installed. The installer never pipes a remote
+bootstrap script into a shell. It installs the exact, hash-verified dependency
+set in `requirements.lock`, registers the MCP server with Claude Code, deploys
+protected generation copies of the skill + `/ds` slash command. It does not
+modify shell startup files. Helper deployment is best-effort after the core MCP
+registration commits; a foreign destination is preserved and reported.
 
 After install, edit `~/.deepseek-mcp/config.json` to paste your DeepSeek API
-key (get one at [platform.deepseek.com](https://platform.deepseek.com)). Then
-run `claude` and try `/ds write a python hello world to /tmp/hi.py`.
+key on POSIX, or set `DEEPSEEK_API_KEY` on Windows (get one at
+[platform.deepseek.com](https://platform.deepseek.com)). Then
+run `claude` and try `/ds inspect this workspace and summarize its structure`.
 
-Re-run the same `curl | bash` later to upgrade. For Codex or other MCP clients,
-see [Install](#install) below.
+To upgrade, fetch and inspect an explicit tag or commit, then re-run the local
+installer. A legacy config that lists `Bash` but has no `bash_*` settings is
+interpreted in memory as "Bash disabled"; the file is not rewritten and the
+other configured tools remain available. Explicit or incomplete Bash
+settings still fail closed unless the documented container backend is fully
+configured. For Codex or other MCP clients, see [Install](#install) below.
 
 ## How is this different from existing DeepSeek MCP servers?
 
@@ -63,11 +77,25 @@ This project gives DeepSeek **its own full agent loop**: tool dispatch, file I/O
 - **Simple synchronous delegation**: `delegate_to_deepseek(task, context)`
 - **Steerable background jobs**: `start_deepseek`, `send_deepseek_message`, `get_deepseek_status`, `cancel_deepseek`, `get_deepseek_result`
 - **Local DeepSeek agent loop** (`agent_loop.py`) with OpenAI-compatible function calling
-- **7 sandboxed tools**: Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
-- **Path sandbox + command blacklist** (`safety.py`)
-- **Single-execution V1 guard** so synchronous/background DeepSeek runs cannot concurrently modify the same workspace through one server
+- **Coding-ready file tools**: Read / Write / Edit / Glob / Grep / NotebookEdit by default
+- **Fail-closed Bash** in a digest-pinned, network-disabled Docker/Podman container over a disposable read-only regular-file snapshot; host files are not mounted writable
+- **Workspace path boundary** for file tools, with outbound symlinks rejected
+- **Cross-process execution lease** so two MCP servers cannot run DeepSeek concurrently against the same workspace
+- **Crash-safe mutation journal** with recovery query, file verification, and exact acknowledgement before another delegation
 - **Explicit network retry policy** with OpenAI SDK internal retries disabled to avoid nested retry amplification in proxy/TLS-timeout environments
 - **Claude Code skill + `/ds` command** for delegation policy and forced delegation
+
+## Compatibility
+
+The existing MCP entry points `ping()` and
+`delegate_to_deepseek(task, context="")` keep their input schema; the
+background-job and recovery tools are additive. This is input-schema compatible,
+but mutation-capable legacy hosts must adopt the additive recovery query/verify/ack
+handshake before starting another delegation; read-only use needs no change.
+Clients should not parse health/error text byte-for-byte because diagnostics are now more specific. Provider calls still
+use DeepSeek's [OpenAI-compatible Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/).
+Local Python module signatures are implementation details rather than a stable
+public API.
 
 ## Install
 
@@ -79,7 +107,8 @@ cd deepseek-as-subagent
 ./install.sh
 ```
 
-Then edit `~/.deepseek-mcp/config.json` and paste your DeepSeek API key.
+Then edit `~/.deepseek-mcp/config.json` on POSIX, or set
+`DEEPSEEK_API_KEY` on Windows.
 
 ### Codex CLI
 
@@ -91,9 +120,20 @@ bash adapters/codex/install.sh
 
 See [adapters/codex/README.md](adapters/codex/README.md) for the Codex-specific install, delegation policy, and background-job workflow.
 
+The Claude and Codex installers build a fresh isolated runtime, validate its
+configuration and MCP protocol, and only then switch the host registration.
+They keep the active generation plus one previous generation for recovery. Any
+manual runtime must stay outside a delegated workspace when file-mutation tools
+are enabled; unsafe layouts are rejected at startup.
+Both installers serialize install/uninstall transactions. A hard-killed
+installer intentionally leaves an empty fail-closed lock that must be removed
+only after confirming no installer is running.
+
 ### Cursor / Cline / Claude Desktop / other MCP clients
 
-The MCP server itself is client-agnostic. After `pip install -e .`, point your client's MCP config at `<repo>/.venv/bin/deepseek-mcp`.
+The MCP server itself is client-agnostic. Install `requirements.lock` with
+`pip --require-hashes`, install this project with dependency resolution disabled,
+then point your client's MCP config at the generated `deepseek-mcp` entrypoint.
 
 ## Usage
 
@@ -113,17 +153,32 @@ cancel_deepseek(job_id)
 get_deepseek_result(job_id)
 ```
 
-`start_deepseek` returns quickly while the DeepSeek agent continues in a background worker. Steering and cancellation are cooperative: they take effect at safe points between model/tool operations and do not force-interrupt an already in-flight model request or currently executing tool command.
+`start_deepseek` returns quickly while the DeepSeek agent continues in a background worker. Steering takes effect at safe points between model/tool operations. Cancellation wakes retry backoff and promptly terminates an in-flight provider or local-tool subprocess; a container watchdog immediately starts forced cleanup.
 
 If a steering message arrives after DeepSeek has planned tool calls but before a not-yet-executed tool runs, the stale tool call is skipped and DeepSeek re-plans from the new parent instruction.
 
-V1 intentionally permits only **one DeepSeek execution at a time** across synchronous and background APIs.
+Only **one DeepSeek execution per canonical workspace** may run at a time, including executions started by separate MCP server processes. Background job IDs and results are session-scoped; collect the result before closing the host session.
+
+### Mutation recovery
+
+Every file mutation is journaled before commit. After a result reports
+mutations—or after cancellation, disconnection, or MCP restart—run:
+
+```text
+get_deepseek_recovery()
+# verify every reported file
+acknowledge_deepseek_mutations(transaction_ids)
+```
+
+New delegation fails closed until the exact reviewed IDs are acknowledged.
+Recovery works without a valid DeepSeek API credential and never deletes or
+rolls back workspace files.
 
 ### Claude Code helpers
 
 - `delegate_to_deepseek` — Claude auto-invokes it when the task fits
 - `/ds <task>` — force synchronous delegation
-- `pure` shell alias — start Claude with DeepSeek disabled for that session
+- `DEEPSEEK_MODE=off claude` — start one session with DeepSeek disabled
 
 ## When delegation actually saves money
 
@@ -146,13 +201,13 @@ Sweet spot:
 │    ├─ synchronous delegate                                      │
 │    └─ steerable background job manager                          │
 │         ↓                                                       │
-│       DeepSeek agent loop + local sandbox tools                  │
+│       DeepSeek agent loop + workspace-scoped tools              │
 │    ↓ HTTPS                                                      │
 │  api.deepseek.com                                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Everything except the actual DeepSeek API call stays on your machine. No third-party proxy or cloud relay is introduced by this project.
+No third-party proxy or cloud relay is introduced by this project. Delegated prompts and tool/file outputs selected by the agent are sent to the configured DeepSeek-compatible API, so only delegate data that endpoint is permitted to receive.
 
 ## Configuration
 
@@ -163,21 +218,36 @@ Everything except the actual DeepSeek API call stays on your machine. No third-p
   "api_key": "sk-...",
   "model": "deepseek-v4-pro",
   "max_turns": 50,
-  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
+  "max_run_seconds": 18000,
+  "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
 }
 ```
 
+`max_run_seconds` is the wall-clock limit for one delegated run. Its default is
+18,000 seconds (5 hours), it may be increased explicitly, and its absolute
+accepted maximum is 172,800 seconds (48 hours). Individual provider requests
+remain bounded to 180 seconds within that run budget.
+For synchronous delegation, the MCP client's tool timeout must be at least the
+configured run limit plus cleanup grace; Codex installs with an 18,060-second
+default (five hours plus 60 seconds).
+
 **Workspace (sandbox root)** auto-follows the directory where you launch the host client. To lock the sandbox to a fixed path regardless of cwd, add `"workspace": "/abs/path"` to the config.
+
+Workspace-scoped file writes are enabled by default. Running commands remains
+an explicit opt-in: Bash is never run on the host and requires a local
+Docker/Podman engine plus a digest-pinned image. It runs against a disposable
+read-only snapshot; use the file-mutation tools for workspace edits. See
+[SECURITY.md](SECURITY.md) for exact configurations, data-flow boundaries, and
+platform limitations.
 
 Override at runtime with env vars: `DEEPSEEK_API_KEY`, `DEEPSEEK_WORKSPACE`, `DEEPSEEK_MODE=off`.
 
 ## Uninstall
 
-```bash
-./uninstall.sh
-```
+Claude Code: `./uninstall.sh`. Codex: `bash adapters/codex/uninstall.sh`.
 
-Removes the Claude Code MCP registration, skill, and slash command. It does not touch your projects or DeepSeek API account.
+Each uninstaller removes only its owned host registration. Neither deletes your
+projects, DeepSeek config/API key, logs, or account.
 
 ## License
 

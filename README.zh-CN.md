@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文**
 
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.10--3.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/PsChina/deepseek-as-subagent?style=social)](https://github.com/PsChina/deepseek-as-subagent)
 [![Glama MCP server](https://glama.ai/mcp/servers/PsChina/deepseek-as-subagent/badges/score.svg)](https://glama.ai/mcp/servers/PsChina/deepseek-as-subagent)
@@ -11,7 +11,8 @@
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](https://github.com/PsChina/deepseek-as-subagent)
 
 > 让 DeepSeek 在 Claude Code / Codex CLI 里作为**真正的 sub-agent**运行，而不只是一个 LLM 接口。
-> 主 Agent 保留主对话、规划、判断与验收；DeepSeek 拿到自己的 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit 工具循环，负责执行型工作。
+> 主 Agent 保留主对话、规划、判断与验收；DeepSeek 拿到工作区受限的工具循环，负责执行型工作。
+> 默认开放工作区受限的读取、搜索和文件写入；容器化 Bash 必须显式启用。
 
 ```text
        Claude / Codex（主 Agent）
@@ -26,7 +27,8 @@
                                   └─ get_deepseek_result(job_id)
          ▼
        DeepSeek sub-agent
-         │  Read / Write / Edit / Bash / Glob / Grep / NotebookEdit —— 全部本地
+         │  默认 Read / Write / Edit / Glob / Grep / NotebookEdit
+         │  容器 Bash 按需启用
          │  在工作区里自主循环
          ▼
        结果返回主 Agent
@@ -36,16 +38,29 @@
 ## 快速开始
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/PsChina/deepseek-as-subagent/main/curl-install.sh | bash
+git clone https://github.com/PsChina/deepseek-as-subagent.git
+cd deepseek-as-subagent
+git checkout REVIEWED_TAG_OR_COMMIT
+# 先审查 install.sh 与 requirements.lock，再执行：
+./install.sh
 ```
 
-一行命令。把仓库 clone 到 `~/.local/share/deepseek-as-subagent`，在隔离 venv 中安装 Python 包，把 MCP server 注册到 Claude Code，部署 skill + `/ds` 命令，并添加 `pure` shell 别名。
+需要先安装 Python 3.10–3.12。安装器不会把远程 bootstrap 脚本直接
+传给 shell，依赖统一从 `requirements.lock` 按版本和 hash 校验安装。
+之后会注册 MCP server，把 skill + `/ds` 命令复制到受保护的 generation，
+不会修改 shell 启动文件。helper 在核心注册提交后尽力部署；遇到外来目标会保留并告警。
 
-安装后编辑 `~/.deepseek-mcp/config.json` 填入 DeepSeek API key，然后运行 `claude`，例如：
+安装后，POSIX 编辑 `~/.deepseek-mcp/config.json` 填入 DeepSeek API key；
+Windows 仅设置 `DEEPSEEK_API_KEY` 环境变量。然后运行 `claude`，例如：
 
 ```text
-/ds write a python hello world to /tmp/hi.py
+/ds 检查当前工作区并总结代码结构
 ```
+
+升级时会先验证现有运行配置。旧配置若只在 `allowed_tools` 中包含 `Bash`、
+但完全没有 `bash_*` 配置，新版会在内存中把它解释为“Bash 已关闭”，不会
+改写配置文件，其它已配置工具仍可用。显式或不完整的 Bash 配置仍会
+fail closed，必须完整配置安全文档中的容器后端。
 
 Codex 和其它 MCP 客户端见下方安装说明。
 
@@ -61,11 +76,23 @@ Codex 和其它 MCP 客户端见下方安装说明。
 - **简单同步委派**：`delegate_to_deepseek(task, context)`
 - **后台可控任务**：`start_deepseek`、`send_deepseek_message`、`get_deepseek_status`、`cancel_deepseek`、`get_deepseek_result`
 - **DeepSeek 本地 agent loop**（`agent_loop.py`）
-- **7 个沙箱工具**：Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
-- **路径沙箱 + 命令黑名单**（`safety.py`）
-- **单执行槽 V1**：同步委派和后台 job 不能同时执行，避免两个 DeepSeek 同时改同一个工作区
+- **开箱即用的编码工具**：默认 Read / Write / Edit / Glob / Grep / NotebookEdit
+- **fail-closed Bash**：只在固定 digest、无网络的 Docker/Podman 容器内对一次性只读普通文件快照运行；宿主文件不会被可写挂载
+- **工作区路径边界**：文件工具拒绝指向工作区外的符号链接
+- **跨进程执行租约**：多个 MCP server 也不能同时对同一工作区执行 DeepSeek
+- **崩溃安全 mutation journal**：恢复查询、文件核验、精确确认完成前禁止再次委派
 - **显式网络重试策略**：关闭 OpenAI SDK 内层重试，避免代理/TLS timeout 环境下出现重试叠加
-- Claude Code 的 skill、`/ds` 命令和 `pure` 别名
+- Claude Code 的 skill 与 `/ds` 命令；临时禁用请运行 `DEEPSEEK_MODE=off claude`
+
+## 兼容性
+
+既有 MCP 入口 `ping()` 与 `delegate_to_deepseek(task, context="")` 保持
+输入 schema；后台任务与恢复工具都是增量新增。这保证输入 schema 兼容，
+但会写文件的老宿主必须接入新增的“恢复查询 → 文件核验 → 精确确认”流程，
+才能继续下一次委派；只读用法无需调整。健康检查和错误文本包含了更明确的
+诊断信息，不承诺逐字节不变。Provider 仍使用 DeepSeek 的
+[OpenAI-compatible Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)。
+本地 Python 模块签名属于实现细节，不作为稳定公共 API。
 
 ## 安装
 
@@ -77,7 +104,8 @@ cd deepseek-as-subagent
 ./install.sh
 ```
 
-然后编辑 `~/.deepseek-mcp/config.json` 填入 DeepSeek API key。
+然后在 POSIX 编辑 `~/.deepseek-mcp/config.json`；Windows 仅设置
+`DEEPSEEK_API_KEY` 环境变量。
 
 ### Codex CLI
 
@@ -89,9 +117,18 @@ bash adapters/codex/install.sh
 
 详细安装、自动派工策略和后台 job 使用方式见 [adapters/codex/README.md](adapters/codex/README.md)。
 
+Claude 和 Codex 安装器都会新建隔离运行时，验证配置与 MCP 协议后才切换宿主
+注册，并保留当前 generation 与一个上一代 generation 供故障恢复。手工安装时，
+如果要启用文件写入工具，Python 运行时必须放在委派工作区之外；不安全的目录布局
+会在启动时被拒绝。
+两个安装器都会串行化 install/uninstall 事务；若进程被强杀，会故意留下
+fail-closed 空锁。只有确认没有安装/卸载进程后才应人工删除该锁。
+
 ### Cursor / Cline / Claude Desktop / 其它 MCP 客户端
 
-MCP server 本身与客户端无关。`pip install -e .` 后，把客户端 MCP 配置指向 `<repo>/.venv/bin/deepseek-mcp`。
+MCP server 本身与客户端无关。先用 `pip --require-hashes` 安装
+`requirements.lock`，再禁用依赖解析安装本项目，最后把客户端 MCP
+配置指向生成的 `deepseek-mcp` 入口。
 
 ## 使用
 
@@ -119,11 +156,25 @@ get_deepseek_result(job_id)
 
 `start_deepseek` 会很快返回，DeepSeek 在后台 worker 中继续执行，因此同一个 MCP session 后续还能继续发送控制请求。
 
-steering 和 cancel 是**协作式控制**：只会在模型调用 / 工具调用之间的安全点生效，不会硬切断一个正在进行中的模型请求或 Bash 命令。
+steering 会在模型 / 工具操作之间的安全点生效。cancel 会立即唤醒 API retry backoff，并及时终止正在进行的 provider 或本地工具子进程；容器 watchdog 会立即开始强制清理。
 
 如果新 steering 在 DeepSeek 已经规划出 tool call、但某个旧 tool call 尚未真正执行时到达，该旧 tool call 会被跳过，DeepSeek 下一轮直接按最新指令重新规划。
 
-V1 故意限制为**同一时间只允许一个 DeepSeek execution**，无论它来自同步 API 还是后台 job。
+每个规范化工作区同一时间只允许一个 DeepSeek execution，包括由不同 MCP server 进程启动的执行。后台 job ID 与结果只在当前 MCP session 内有效，关闭宿主前应先取回结果。
+
+### 3. mutation 恢复
+
+每次文件 mutation 都会在 commit 前写入持久 journal。结果报告 mutation，或
+发生取消、断连、MCP 重启后，先执行：
+
+```text
+get_deepseek_recovery()
+# 逐项核验实际文件
+acknowledge_deepseek_mutations(transaction_ids)
+```
+
+精确确认这些 transaction ID 前，新委派会 fail closed。恢复操作不依赖有效的
+DeepSeek API key，也不会删除或回滚工作区文件。
 
 ### Claude Code 辅助入口
 
@@ -164,13 +215,13 @@ max_retries=0
 │    ├─ 同步 delegate                                             │
 │    └─ 可 steering 的后台 job manager                            │
 │         ↓                                                       │
-│       DeepSeek agent loop + 本地沙箱工具                         │
+│       DeepSeek agent loop + 工作区受限工具                       │
 │    ↓ HTTPS                                                      │
 │  api.deepseek.com                                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-除了真正调用 DeepSeek API 的 HTTPS 请求，其余部分都在本机运行。本项目不引入第三方代理或云中转。
+本项目不引入第三方代理或云中转。委派任务、模型消息，以及 agent 选择读取的文件/工具输出会发送到配置的 DeepSeek-compatible API；只应委派该端点获准接收的数据。
 
 ## 配置
 
@@ -181,9 +232,16 @@ max_retries=0
   "api_key": "sk-...",
   "model": "deepseek-v4-pro",
   "max_turns": 50,
-  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
+  "max_run_seconds": 18000,
+  "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
 }
 ```
+
+`max_run_seconds` 是单次委派的硬墙钟上限。默认 18,000 秒（5 小时），
+可以显式向上调整，但配置可接受的绝对上限是 172,800 秒（48 小时）。
+单次 provider 请求在总预算内仍单独限制为最多 180 秒。
+同步委派时，MCP 客户端自身的 tool timeout 必须至少是运行上限再加清理
+余量；Codex 安装后的默认值是 18,060 秒（5 小时加 60 秒）。
 
 **工作区（沙箱根）**默认跟随启动宿主客户端时的当前目录。要锁定固定路径，可加：
 
@@ -193,13 +251,13 @@ max_retries=0
 
 运行时可用环境变量覆盖：`DEEPSEEK_API_KEY`、`DEEPSEEK_WORKSPACE`、`DEEPSEEK_MODE=off`。
 
+工作区受限的文件写入默认启用。执行命令仍需要显式授权：Bash 永远不会直接跑在宿主机上，还必须配置本地 Docker/Podman 与固定 digest 镜像。它只读取一次性快照；工作区修改使用默认文件写入工具。具体配置、数据边界与平台限制见 [SECURITY.md](SECURITY.md)。
+
 ## 卸载
 
-```bash
-./uninstall.sh
-```
+Claude Code：`./uninstall.sh`。Codex：`bash adapters/codex/uninstall.sh`。
 
-移除 Claude Code 的 MCP 注册、skill 和斜杠命令，不动你的项目和 DeepSeek API 账户。
+两个卸载器都只移除自己管理的宿主注册，不会删除项目、DeepSeek 配置/API key、日志或账户。
 
 ## License
 

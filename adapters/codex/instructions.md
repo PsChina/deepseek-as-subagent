@@ -6,7 +6,8 @@ Use this file as an optional stronger project/global policy in `AGENTS.md` or Co
 
 ## Using DeepSeek as a delegated sub-agent
 
-You have access to DeepSeek through the `deepseek` MCP server. DeepSeek runs its own agent loop inside the workspace with Read / Write / Edit / Bash / Glob / Grep / NotebookEdit tools.
+You have access to DeepSeek through the `deepseek` MCP server. DeepSeek runs its own agent loop inside the configured workspace. Workspace-scoped reads, searches, and file writes are enabled by default; containerized Bash exists only when the operator explicitly enables it.
+Containerized Bash sees a disposable read-only regular-file snapshot, so workspace edits require an enabled file-mutation tool.
 
 ### Choose the delegation mode
 
@@ -26,9 +27,17 @@ cancel_deepseek(job_id)
 get_deepseek_result(job_id)
 ```
 
-V1 permits one DeepSeek execution at a time across both modes.
+One DeepSeek execution may run per canonical workspace across both modes and across MCP server processes. Background jobs and their IDs are scoped to the current MCP session.
 
-Steering/cancellation is cooperative. It takes effect at safe points between model/tool operations rather than force-killing an in-flight model request or tool command. If a newer steering instruction arrives before a planned tool call executes, stale remaining tool calls may be skipped and DeepSeek will re-plan from the latest instruction.
+Every file mutation is durably journaled before commit. After any result that
+contains mutations, call `get_deepseek_recovery`, verify each reported file,
+then pass the exact transaction IDs to
+`acknowledge_deepseek_mutations(transaction_ids)`. Do the same after
+cancellation, disconnection, or MCP restart before retrying. A new delegation
+fails closed while unacknowledged records remain; recovery query/ack does not
+require a working provider API key.
+
+Steering is applied at safe points between model/tool operations. Cancellation wakes retry backoff and promptly terminates an in-flight provider or local-tool subprocess; a container watchdog immediately starts forced cleanup. If a newer steering instruction arrives before a planned tool call executes, stale remaining tool calls may be skipped and DeepSeek will re-plan from the latest instruction.
 
 ### Core principle: delegate execution-heavy complete units
 
@@ -94,7 +103,8 @@ Use `cancel_deepseek` when continuing the current job would be wasteful or unsaf
 - configuration/API failure: retry once when clearly transient, otherwise take over in the main agent;
 - max-turns: split into larger independent logical units, not micro-steps;
 - poor output twice: stop delegating that task and take over;
-- busy response: another DeepSeek execution owns the V1 execution slot; inspect/finish/cancel it before starting another.
+- busy response: another DeepSeek execution owns this workspace lease; inspect/finish/cancel it before starting another against the same workspace.
+- recovery-required response: do not retry; query recovery, verify the actual files, and acknowledge only the exact reviewed IDs.
 
 ### Granularity rule
 
