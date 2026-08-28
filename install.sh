@@ -141,8 +141,8 @@ registration_matches_expected() {
     local expected="$1" snapshot="" current=""
     snapshot="$(registration_snapshot)" || return 1
     if [ -z "$expected" ]; then
-        [ "$snapshot" = "absent" ]
-        return
+        [ "$snapshot" = "absent" ] || return 1
+        return 0
     fi
     case "$snapshot" in present:*) current="${snapshot#present:}" ;; *) return 1 ;; esac
     same_command_path "$current" "$expected"
