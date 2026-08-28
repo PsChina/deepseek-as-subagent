@@ -3,6 +3,11 @@ from __future__ import annotations
 
 from .bash_tool import DEFAULT_BASH_TIMEOUT, MAX_BASH_TIMEOUT
 
+_TRUSTED_HOST_BASH = (
+    "Run a bounded shell command on the trusted host in the workspace. "
+    "The server freezes this backend before the task starts."
+)
+
 TOOL_SCHEMAS = {
     "Read": {
         "name": "Read",
@@ -49,10 +54,8 @@ TOOL_SCHEMAS = {
     "Bash": {
         "name": "Bash",
         "description": (
-            "Run a shell command in a pinned, network-disabled container over a "
-            "disposable read-only regular-file workspace snapshot. Host files are "
-            f"not mounted writable. Timeout defaults to "
-            f"{DEFAULT_BASH_TIMEOUT}s and is capped at {MAX_BASH_TIMEOUT}s."
+            "Run a bounded shell command on the trusted host in the workspace. "
+            f"Timeout defaults to {DEFAULT_BASH_TIMEOUT}s and is capped at {MAX_BASH_TIMEOUT}s."
         ),
         "parameters": {
             "type": "object",

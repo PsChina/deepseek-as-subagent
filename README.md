@@ -13,14 +13,14 @@
 > Run DeepSeek as a **real sub-agent** inside Claude Code / Codex CLI — not just an LLM endpoint.
 > The host agent keeps the main conversation, planning, judgment, and verification.
 > DeepSeek gets its own workspace-scoped agent loop for execution-heavy work.
-> Workspace-scoped reads, searches, and file writes are enabled by default; containerized Bash is an explicit opt-in.
+> Coding APIs use workspace-scoped writes and bounded trusted-host Bash; separate read-only APIs provide pure file analysis without command execution.
 
 ```text
        Claude / Codex (main agent)
          │
-         ├─ simple task → delegate_to_deepseek(task, context)
+         ├─ coding → delegate_to_deepseek / start_deepseek
          │
-         └─ steerable task → start_deepseek(task, context) → job_id
+         └─ read-only → delegate_to_deepseek_readonly / start_deepseek_readonly
                                 │
                                 ├─ send_deepseek_message(job_id, ...)
                                 ├─ get_deepseek_status(job_id)
@@ -28,8 +28,8 @@
                                 └─ get_deepseek_result(job_id)
          ▼
        DeepSeek sub-agent
-         │  Read / Write / Edit / Glob / Grep / NotebookEdit by default
-         │  containerized Bash is opt-in
+        │  coding: Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
+        │  read-only: Read / Glob / Grep
          │  iterates autonomously inside the workspace
          ▼
        Result returns to the host
@@ -59,11 +59,9 @@ key on POSIX, or set `DEEPSEEK_API_KEY` on Windows (get one at
 run `claude` and try `/ds inspect this workspace and summarize its structure`.
 
 To upgrade, fetch and inspect an explicit tag or commit, then re-run the local
-installer. A legacy config that lists `Bash` but has no `bash_*` settings is
-interpreted in memory as "Bash disabled"; the file is not rewritten and the
-other configured tools remain available. Explicit or incomplete Bash
-settings still fail closed unless the documented container backend is fully
-configured. For Codex or other MCP clients, see [Install](#install) below.
+installer. Coding always uses `trusted_host`; read-only APIs need neither Bash
+nor Docker/Podman. For
+Codex or other MCP clients, see [Install](#install) below.
 
 ## How is this different from existing DeepSeek MCP servers?
 
@@ -74,11 +72,11 @@ This project gives DeepSeek **its own full agent loop**: tool dispatch, file I/O
 ## What's in the box
 
 - **MCP server** (Python, stdio transport)
-- **Simple synchronous delegation**: `delegate_to_deepseek(task, context)`
-- **Steerable background jobs**: `start_deepseek`, `send_deepseek_message`, `get_deepseek_status`, `cancel_deepseek`, `get_deepseek_result`
+- **Coding and read-only delegation**: `delegate_to_deepseek` / `delegate_to_deepseek_readonly`
+- **Steerable background jobs**: `start_deepseek` / `start_deepseek_readonly` plus shared controls
 - **Local DeepSeek agent loop** (`agent_loop.py`) with OpenAI-compatible function calling
-- **Coding-ready file tools**: Read / Write / Edit / Glob / Grep / NotebookEdit by default
-- **Fail-closed Bash** in a digest-pinned, network-disabled Docker/Podman container over a disposable read-only regular-file snapshot; host files are not mounted writable
+- **Coding-ready tools**: Read / Write / Edit / Bash / Glob / Grep / NotebookEdit by default
+- **Bash execution**: bounded credential-isolated trusted-host commands through the tool-child boundary
 - **Workspace path boundary** for file tools, with outbound symlinks rejected
 - **Cross-process execution lease** so two MCP servers cannot run DeepSeek concurrently against the same workspace
 - **Crash-safe mutation journal** with recovery query, file verification, and exact acknowledgement before another delegation
@@ -153,7 +151,7 @@ cancel_deepseek(job_id)
 get_deepseek_result(job_id)
 ```
 
-`start_deepseek` returns quickly while the DeepSeek agent continues in a background worker. Steering takes effect at safe points between model/tool operations. Cancellation wakes retry backoff and promptly terminates an in-flight provider or local-tool subprocess; a container watchdog immediately starts forced cleanup.
+`start_deepseek` returns quickly while the DeepSeek agent continues in a background worker. Steering takes effect at safe points between model/tool operations. Cancellation wakes retry backoff and promptly terminates an in-flight provider or local-tool subprocess.
 
 If a steering message arrives after DeepSeek has planned tool calls but before a not-yet-executed tool runs, the stale tool call is skipped and DeepSeek re-plans from the new parent instruction.
 
@@ -219,7 +217,7 @@ No third-party proxy or cloud relay is introduced by this project. Delegated pro
   "model": "deepseek-v4-pro",
   "max_turns": 50,
   "max_run_seconds": 18000,
-  "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
+  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
 }
 ```
 
@@ -233,12 +231,10 @@ default (five hours plus 60 seconds).
 
 **Workspace (sandbox root)** auto-follows the directory where you launch the host client. To lock the sandbox to a fixed path regardless of cwd, add `"workspace": "/abs/path"` to the config.
 
-Workspace-scoped file writes are enabled by default. Running commands remains
-an explicit opt-in: Bash is never run on the host and requires a local
-Docker/Podman engine plus a digest-pinned image. It runs against a disposable
-read-only snapshot; use the file-mutation tools for workspace edits. See
-[SECURITY.md](SECURITY.md) for exact configurations, data-flow boundaries, and
-platform limitations.
+`delegate_to_deepseek` and `start_deepseek` always use full coding tools and
+bounded `trusted_host` Bash. `delegate_to_deepseek_readonly` and
+`start_deepseek_readonly` always use only Read/Glob/Grep and never expose Bash.
+See [SECURITY.md](SECURITY.md) for boundaries and platform limitations.
 
 Override at runtime with env vars: `DEEPSEEK_API_KEY`, `DEEPSEEK_WORKSPACE`, `DEEPSEEK_MODE=off`.
 

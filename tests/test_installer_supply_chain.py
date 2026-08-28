@@ -14,7 +14,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
+DEFAULT_FILE_TOOLS = [
+    "Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"
+]
 
 
 FAKE_PYTHON = r"""#!/usr/bin/env bash
@@ -156,7 +158,7 @@ def _requirement_blocks(path: Path) -> list[str]:
 
 def _fresh_allowed_tools(path: Path) -> list[str]:
     script = path.read_text(encoding="utf-8")
-    match = re.search(r'(?m)^  "allowed_tools": (\[[^\n]+\])$', script)
+    match = re.search(r'(?m)^  "allowed_tools": (\[[^\n]+\]),?$', script)
     if match is None:
         raise AssertionError(f"fresh config template missing from {path}")
     return json.loads(match.group(1))
@@ -292,11 +294,11 @@ def _seed_legacy_install(home: Path, old_command: Path, tools: list[str]) -> Non
 
 
 class InstallerSupplyChainTests(unittest.TestCase):
-    def test_fresh_installers_enable_file_writes_without_bash(self) -> None:
+    def test_fresh_installers_enable_complete_default_coding_tools(self) -> None:
         for name in ("install.sh", "adapters/codex/install.sh"):
             tools = _fresh_allowed_tools(ROOT / name)
             self.assertEqual(tools, DEFAULT_FILE_TOOLS, name)
-            self.assertNotIn("Bash", tools, name)
+            self.assertIn("Bash", tools, name)
 
     def test_every_locked_requirement_is_exact_and_hashed(self) -> None:
         for name in ("requirements.lock", "requirements-audit.lock"):
@@ -345,7 +347,7 @@ class InstallerSupplyChainTests(unittest.TestCase):
         self.assertIn("delete-generation", script)
 
     @unittest.skipIf(os.name == "nt", "Git Bash paths differ from native Python paths")
-    def test_legacy_bash_config_upgrades_with_bash_effectively_disabled(self) -> None:
+    def test_legacy_bash_config_upgrades_with_trusted_host_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             project, home, fake_bin, old_command = _installer_fixture(Path(tmpdir))
             old_tools = [

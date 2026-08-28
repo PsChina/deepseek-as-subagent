@@ -13,7 +13,9 @@ MANAGED_MARKER = "managed-by: deepseek-as-subagent"
 LEGACY_EXPOSED_TOOLS = [
     "ping",
     "delegate_to_deepseek",
+    "delegate_to_deepseek_readonly",
     "start_deepseek",
+    "start_deepseek_readonly",
     "get_deepseek_status",
     "send_deepseek_message",
     "cancel_deepseek",
@@ -24,11 +26,14 @@ EXPOSED_TOOLS = [
     "get_deepseek_recovery",
     "acknowledge_deepseek_mutations",
 ]
-EXECUTION_TOOLS = frozenset({"delegate_to_deepseek", "start_deepseek"})
+EXECUTION_TOOLS = frozenset({
+    "delegate_to_deepseek", "delegate_to_deepseek_readonly",
+    "start_deepseek", "start_deepseek_readonly",
+})
 RECOVERY_TOOLS = ("get_deepseek_recovery", "acknowledge_deepseek_mutations")
 FORWARDED_ENV_VARS = [
     "DEEPSEEK_API_KEY", "DEEPSEEK_WORKSPACE", "DEEPSEEK_MODE",
-    "DOCKER_HOST", "CONTAINER_HOST", "HTTP_PROXY", "HTTPS_PROXY",
+    "HTTP_PROXY", "HTTPS_PROXY",
     "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy",
     "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
 ]

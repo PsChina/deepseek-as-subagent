@@ -4,17 +4,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
-import shutil
 import stat
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .child_runtime import ChildRuntimeError, runtime_is_within_workspace
 from . import windows_file_io
-from .trusted_executable import TrustedExecutableError, validate_trusted_executable
 from .safety import is_unsafe_workspace_root
 from .workspace_guard import configure_workspace_identity
 CONFIG_PATH = Path.home() / ".deepseek-mcp" / "config.json"
@@ -28,6 +24,7 @@ DEFAULT_ALLOWED_TOOLS = [
     "Read",
     "Write",
     "Edit",
+    "Bash",
     "Glob",
     "Grep",
     "NotebookEdit",
@@ -35,22 +32,7 @@ DEFAULT_ALLOWED_TOOLS = [
 KNOWN_TOOLS = frozenset(
     {"Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"}
 )
-CONTAINER_RUNTIMES = frozenset({"docker", "podman"})
 MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
-DEFAULT_BASH_MEMORY = "512m"
-MAX_BASH_MEMORY_BYTES = 64 * 1024**3
-DEFAULT_BASH_CPUS = 1.0
-DEFAULT_BASH_PIDS_LIMIT = 128
-BASH_CONFIG_KEYS = frozenset(
-    {
-        "bash_backend",
-        "bash_runtime",
-        "bash_image",
-        "bash_memory",
-        "bash_cpus",
-        "bash_pids_limit",
-    }
-)
 CONFIG_KEYS = frozenset(
     {
         "api_key",
@@ -60,11 +42,8 @@ CONFIG_KEYS = frozenset(
         "max_run_seconds",
         "allowed_tools",
         "base_url",
-        *BASH_CONFIG_KEYS,
     }
 )
-_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
-_MEMORY_RE = re.compile(r"([1-9][0-9]*)([bkmg]?)", re.IGNORECASE)
 logger = logging.getLogger(__name__)
 def _validate_private_directory(path: Path) -> None:
     if os.name != "posix":
@@ -262,14 +241,7 @@ def _load_allowed_tools(data: dict) -> list[str]:
         raise RuntimeError(f"Unknown allowed_tools: {', '.join(unknown)}")
     if len(tools) != len(set(tools)):
         raise RuntimeError("allowed_tools must not contain duplicates")
-    effective = list(tools)
-    if "Bash" in effective and BASH_CONFIG_KEYS.isdisjoint(data):
-        effective.remove("Bash")
-        logger.warning(
-            "Legacy allowed_tools enabled host Bash without sandbox settings; "
-            "Bash is disabled until an explicit container configuration is added"
-        )
-    return effective
+    return list(tools)
 
 
 def _validate_model(value: object) -> str:
@@ -315,83 +287,6 @@ def _validate_base_url(value: object) -> str:
     raise RuntimeError("base_url must use HTTPS; HTTP is allowed only for loopback")
 
 
-def _is_pinned_image(image: object) -> bool:
-    if not isinstance(image, str) or not image or image.startswith("-"):
-        return False
-    if any(char.isspace() for char in image):
-        return False
-    name, marker, digest = image.rpartition("@sha256:")
-    return bool(name and marker and _DIGEST_RE.fullmatch(digest))
-
-
-def _validate_resource_limits(memory: object, cpus: object, pids: object) -> None:
-    match = _MEMORY_RE.fullmatch(memory) if isinstance(memory, str) else None
-    if match is None:
-        raise RuntimeError("bash_memory must be a positive Docker memory value")
-    multipliers = {"": 1, "b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
-    try:
-        memory_bytes = int(match.group(1)) * multipliers[match.group(2).lower()]
-    except ValueError:
-        raise RuntimeError("bash_memory must be a positive Docker memory value") from None
-    if memory_bytes > MAX_BASH_MEMORY_BYTES:
-        raise RuntimeError("bash_memory must be at most 64g")
-    if isinstance(cpus, bool) or isinstance(pids, bool) or not isinstance(pids, int):
-        raise RuntimeError("Bash container resource limits are invalid")
-    try:
-        cpu_value = float(cpus)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("Bash container resource limits are invalid") from exc
-    if not 0 < cpu_value <= 64:
-        raise RuntimeError("bash_cpus must be greater than 0 and at most 64")
-    if not 1 <= pids <= 4096:
-        raise RuntimeError("bash_pids_limit must be between 1 and 4096")
-
-
-def _resolve_runtime(runtime: str, workspace: Path) -> str:
-    found = shutil.which(runtime)
-    if found is None:
-        raise RuntimeError(f"Container runtime not found: {runtime}")
-    try:
-        resolved = validate_trusted_executable(found, workspace)
-    except TrustedExecutableError as error:
-        raise RuntimeError(f"Container runtime is not trusted: {error}") from None
-    else:
-        _validate_runtime_environment(runtime)
-        return str(resolved)
-
-
-def _validate_runtime_environment(runtime: str) -> None:
-    if os.environ.get("DOCKER_CONTEXT") not in (None, "", "default"):
-        raise RuntimeError("DOCKER_CONTEXT must be unset or 'default'")
-    for variable in ("DOCKER_HOST", "CONTAINER_HOST"):
-        endpoint = os.environ.get(variable)
-        if endpoint:
-            parsed = urlsplit(endpoint)
-            if parsed.scheme != "unix" or parsed.netloc or not parsed.path.startswith("/"):
-                raise RuntimeError(f"{variable} must identify a local unix:// socket")
-    if runtime == "podman" and not os.environ.get("CONTAINER_HOST"):
-        raise RuntimeError(
-            "Podman requires an explicit local CONTAINER_HOST backed by "
-            "podman system service"
-        )
-
-
-def _probe_runtime_service(resolved: str, runtime: str) -> None:
-    """Require a bounded, read-only daemon handshake before accepting Bash."""
-    from .container_process import ContainerSandboxError, run_control
-    from .container_sandbox import _runtime_environment
-
-    try:
-        environment = _runtime_environment(resolved)
-        result = run_control(resolved, ["info"], environment)
-    except ContainerSandboxError:
-        raise RuntimeError(
-            f"Container runtime service is not ready for {runtime}"
-        ) from None
-    if result.returncode != 0:
-        raise RuntimeError(f"Container runtime service is not ready for {runtime}")
-
-
 @dataclass(repr=False)
 class Config:
     api_key: str
@@ -401,12 +296,7 @@ class Config:
     allowed_tools: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_TOOLS))
     base_url: str = "https://api.deepseek.com"
     max_run_seconds: int = DEFAULT_MAX_RUN_SECONDS
-    bash_backend: str | None = None
-    bash_runtime: str | None = None
-    bash_image: str | None = None
-    bash_memory: str = DEFAULT_BASH_MEMORY
-    bash_cpus: float = DEFAULT_BASH_CPUS
-    bash_pids_limit: int = DEFAULT_BASH_PIDS_LIMIT
+    delegation_capability: str = field(default="coding", repr=False)
     expected_workspace_identity: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -419,6 +309,8 @@ class Config:
         self.base_url = _validate_base_url(self.base_url)
         self.max_turns = _validate_max_turns(self.max_turns)
         self.max_run_seconds = _validate_max_run_seconds(self.max_run_seconds)
+        if self.delegation_capability not in {"coding", "readonly"}:
+            raise RuntimeError("invalid delegation capability")
         self._validate_mutation_runtime()
 
     def _validate_mutation_runtime(self) -> None:
@@ -434,32 +326,6 @@ class Config:
                 "outside the delegated workspace; reinstall with the supported installer"
             )
 
-    def validate_bash(self, *, require_runtime: bool) -> None:
-        if "Bash" not in self.allowed_tools:
-            return
-        if sys.platform not in {"darwin", "linux"}:
-            raise RuntimeError("Bash container execution is supported only on macOS and Linux")
-        if self.bash_backend != "container":
-            raise RuntimeError("Bash requires bash_backend='container'")
-        if (
-            not isinstance(self.bash_runtime, str)
-            or self.bash_runtime not in CONTAINER_RUNTIMES
-        ):
-            raise RuntimeError("bash_runtime must be 'docker' or 'podman'")
-        if not _is_pinned_image(self.bash_image):
-            raise RuntimeError("bash_image must be pinned by @sha256:<64 lowercase hex>")
-        _validate_resource_limits(
-            self.bash_memory, self.bash_cpus, self.bash_pids_limit
-        )
-        if require_runtime:
-            assert self.bash_runtime is not None
-            _resolve_runtime(self.bash_runtime, self.workspace)
-
-    def resolve_bash_runtime(self) -> str:
-        self.validate_bash(require_runtime=False)
-        assert self.bash_runtime is not None
-        return _resolve_runtime(self.bash_runtime, self.workspace)
-
     @classmethod
     def _from_data(cls, data: dict, credential: str) -> "Config":
         return cls(
@@ -472,12 +338,6 @@ class Config:
             ),
             allowed_tools=_load_allowed_tools(data),
             base_url=data.get("base_url", "https://api.deepseek.com"),
-            bash_backend=data.get("bash_backend"),
-            bash_runtime=data.get("bash_runtime"),
-            bash_image=data.get("bash_image"),
-            bash_memory=data.get("bash_memory", DEFAULT_BASH_MEMORY),
-            bash_cpus=data.get("bash_cpus", DEFAULT_BASH_CPUS),
-            bash_pids_limit=data.get("bash_pids_limit", DEFAULT_BASH_PIDS_LIMIT),
         )
 
     @classmethod
@@ -485,16 +345,9 @@ class Config:
         """Validate non-secret settings without requiring a configured API key."""
         data = _load_data()
         _validate_credential_storage(data)
-        config = cls._from_data(data, "")
-        config.validate_bash(require_runtime=True)
-        if "Bash" in config.allowed_tools:
-            assert config.bash_runtime is not None
-            runtime = config.resolve_bash_runtime()
-            _probe_runtime_service(runtime, config.bash_runtime)
+        cls._from_data(data, "")
 
     @classmethod
     def load(cls) -> "Config":
         data = _load_data()
-        config = cls._from_data(data, _load_api_key(data))
-        config.validate_bash(require_runtime=True)
-        return config
+        return cls._from_data(data, _load_api_key(data))

@@ -1,8 +1,7 @@
 """Workspace path checks and command-policy defence in depth.
 
-The command policy is intentionally not treated as a security boundary. Bash is
-disabled by default and, when explicitly enabled, runs only through the
-container boundary in :mod:`deepseek_mcp.container_sandbox`.
+The command policy is intentionally not treated as a security boundary. Bash
+runs under the supervised trusted-host executor below the tool-child boundary.
 """
 from __future__ import annotations
 
@@ -218,7 +217,7 @@ def _check_clause(tokens: list[str]) -> None:
 
 
 def check_command(command: str) -> None:
-    """Reject known-dangerous commands before the container boundary."""
+    """Reject known-dangerous commands before trusted-host execution."""
     if not command or not command.strip():
         raise SandboxViolation("empty command")
     _check_phrases(command)

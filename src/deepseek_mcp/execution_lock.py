@@ -174,7 +174,7 @@ def _workspace_identity(workspace: Path) -> bytes:
 
 
 def workspace_identity(workspace: Path) -> bytes:
-    """Public shared identity for lease- and container-scoped ownership."""
+    """Public shared identity for workspace-scoped execution ownership."""
     return _workspace_identity(workspace)
 
 

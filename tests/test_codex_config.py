@@ -104,6 +104,15 @@ class CodexConfigTransactionTests(unittest.TestCase):
         codex_configure.rollback_transaction(self.manifest)
         self.assertFalse(self.config.exists())
 
+    def test_fresh_policy_exposes_both_fixed_delegation_apis(self) -> None:
+        result = self._install()
+        self.assertTrue(result["changed"])
+        enabled = tomlkit.parse(
+            self.config.read_text(encoding="utf-8")
+        )["mcp_servers"]["deepseek"]["enabled_tools"]
+        self.assertIn("delegate_to_deepseek_readonly", enabled)
+        self.assertIn("start_deepseek_readonly", enabled)
+
     def test_owned_install_preserves_comments_and_custom_policy(self) -> None:
         original = b'''# keep this comment
 [mcp_servers.other]

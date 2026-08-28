@@ -251,6 +251,7 @@ logging.getLogger("deepseek_mcp.server").warning("must-not-escape")
 
         with (
             patch.object(server.Config, "load", return_value=config),
+            patch("deepseek_mcp.config.runtime_is_within_workspace", return_value=False),
             patch.object(server.job_manager, "run_sync", side_effect=run_sync),
             patch(
                 "deepseek_mcp.provider_retry.request_in_subprocess",
@@ -273,6 +274,7 @@ logging.getLogger("deepseek_mcp.server").warning("must-not-escape")
         )
         with (
             patch.object(server.Config, "load", return_value=config),
+            patch("deepseek_mcp.config.runtime_is_within_workspace", return_value=False),
             patch.object(
                 server,
                 "_run_sync_cancellable",
@@ -564,7 +566,9 @@ server._record_usage(1, {
         expected = {
             "ping": (True, False, True, False),
             "delegate_to_deepseek": (False, True, False, True),
+            "delegate_to_deepseek_readonly": (True, False, False, True),
             "start_deepseek": (False, True, False, True),
+            "start_deepseek_readonly": (True, False, False, True),
             "get_deepseek_status": (True, False, True, False),
             "send_deepseek_message": (False, True, False, True),
             "cancel_deepseek": (False, True, True, False),

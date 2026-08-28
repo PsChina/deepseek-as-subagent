@@ -63,6 +63,7 @@ class JobRecord:
     task: str
     context: str
     task_length: int
+    capability: str = "coding"
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -84,6 +85,7 @@ class JobRecord:
             queued_messages = len(self._control_messages)
         return {
             "job_id": self.job_id,
+            "capability": self.capability,
             "status": self.status,
             "cancel_requested": self.cancel_event.is_set(),
             "accepting_messages": accepting_messages,
@@ -253,6 +255,7 @@ class DeepSeekJobManager:
                 task=task,
                 context=context,
                 task_length=len(task),
+                capability=config.delegation_capability,
             )
             self._jobs[job_id] = job
             self._active_job_id = job_id

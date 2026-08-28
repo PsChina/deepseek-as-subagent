@@ -15,11 +15,6 @@ from unittest.mock import patch
 
 from deepseek_mcp import transaction_journal
 from deepseek_mcp.config import Config
-from deepseek_mcp.execution_lock import (
-    WorkspaceLockBusy,
-    acquire_workspace_lease,
-    workspace_identity,
-)
 from deepseek_mcp.file_identity import ToolInputError
 from deepseek_mcp.provider_retry import (
     AgentLoopCancelled,
@@ -171,6 +166,39 @@ class ToolProcessTests(unittest.TestCase):
             )
 
             self.assertEqual(result, "ERROR: pattern is not valid Unicode text")
+
+    @unittest.skipIf(os.name != "posix", "process-group cleanup uses POSIX signals")
+    def test_trusted_host_cancellation_reaps_command_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir).resolve()
+            marker = workspace / "host.pid"
+            config = Config("credential", workspace, allowed_tools=["Bash"])
+            cancelled = threading.Event()
+
+            def cancel_after_command_starts() -> None:
+                _wait_for_file(marker)
+                cancelled.set()
+
+            trigger = threading.Thread(target=cancel_after_command_starts)
+            trigger.start()
+            with self.assertRaises(AgentLoopCancelled):
+                execute_in_subprocess(
+                    config,
+                    "Bash",
+                    {"command": "echo $$ > host.pid; sleep 30", "timeout": 30},
+                    MutationBudget(),
+                    30,
+                    None,
+                    cancelled,
+                    time.monotonic() + 10,
+                )
+            trigger.join(5)
+            self.assertFalse(trigger.is_alive())
+            process_id = int(marker.read_text(encoding="utf-8"))
+            deadline = time.monotonic() + 5
+            while _process_exists(process_id) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(_process_exists(process_id))
 
     def test_child_rejects_workspace_path_reused_for_new_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -574,52 +602,6 @@ class ToolProcessTests(unittest.TestCase):
         self.assertIn("cleanup failed", str(raised.exception))
         self.assertEqual(records[0].status, "uncertain")
 
-    @unittest.skipIf(os.name != "posix", "container snapshots require POSIX")
-    def test_deadline_cleans_transaction_scoped_bash_snapshot(self) -> None:
-        transaction_id = "c" * 32
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir).resolve()
-            workspace, home = root / "workspace", root / "home"
-            workspace.mkdir()
-            home.mkdir()
-            config = self._config(workspace)
-            label = hashlib.sha256(workspace_identity(workspace)).hexdigest()[:16]
-            staging = home / ".deepseek-mcp" / "snapshots"
-            staging.mkdir(parents=True, mode=0o700)
-            snapshot = staging / f"deepseek-mcp-{label}-{transaction_id}"
-
-            def start_sleeper(_timeout: float, _lease: int | None):
-                snapshot.mkdir(mode=0o700)
-                (snapshot / "private.txt").write_text("partial", encoding="utf-8")
-                return subprocess.Popen(
-                    [sys.executable, "-c", "import time; time.sleep(30)"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    close_fds=True,
-                    start_new_session=True,
-                )
-
-            with (
-                patch.dict(os.environ, {"HOME": str(home)}),
-                patch("deepseek_mcp.tool_process.uuid.uuid4") as transaction,
-                patch("deepseek_mcp.tool_process._start_tool", side_effect=start_sleeper),
-                self.assertRaisesRegex(AgentLoopError, "time budget"),
-            ):
-                transaction.return_value.hex = transaction_id
-                execute_in_subprocess(
-                    config,
-                    "Bash",
-                    {"command": "sleep 30"},
-                    MutationBudget(),
-                    10,
-                    None,
-                    None,
-                    time.monotonic() + 0.2,
-                )
-
-            self.assertFalse(snapshot.exists())
-
     def test_cleanup_validation_failure_is_reported_without_name_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = self._config(Path(tmpdir).resolve())
@@ -640,84 +622,6 @@ class ToolProcessTests(unittest.TestCase):
                     None,
                     time.monotonic() + 5,
                 )
-
-    @unittest.skipIf(os.name != "posix", "parent liveness pipe is POSIX-specific")
-    def test_parent_death_stops_active_tool_and_releases_workspace_lease(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir).resolve()
-            workspace, home, binaries = (
-                root / "workspace",
-                root / "home",
-                root / "bin",
-            )
-            lock_directory = home / ".deepseek-mcp" / "locks"
-            marker = root / "runtime.pid"
-            workspace.mkdir()
-            home.mkdir()
-            binaries.mkdir()
-            (workspace / "source.txt").write_text("safe", encoding="utf-8")
-            _fake_runtime(binaries / "docker", marker)
-            environment = os.environ.copy()
-            environment.update({
-                "HOME": str(home),
-                "PATH": f"{binaries}{os.pathsep}{environment.get('PATH', os.defpath)}",
-                "PYTHONPATH": str(ROOT / "src"),
-            })
-            parent = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(ROOT / "tests" / "tool_parent_helper.py"),
-                    str(workspace),
-                    str(lock_directory),
-                ],
-                cwd=ROOT,
-                env=environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-            assert parent.stdout is not None
-            child_pid = int(parent.stdout.readline().strip())
-            try:
-                _wait_for_file(marker)
-            except AssertionError:
-                parent.terminate()
-                _stdout, stderr = parent.communicate(timeout=3)
-                self.fail(f"runtime did not start: {stderr[-1000:]}")
-            runtime_pid = int(marker.read_text(encoding="utf-8"))
-            try:
-                parent.kill()
-                parent.wait(timeout=3)
-                parent.communicate(timeout=1)
-                deadline = time.monotonic() + 10
-                while (
-                    (_process_exists(child_pid) or _process_exists(runtime_pid))
-                    and time.monotonic() < deadline
-                ):
-                    time.sleep(0.05)
-                self.assertFalse(_process_exists(child_pid))
-                self.assertFalse(_process_exists(runtime_pid))
-
-                lease = None
-                while lease is None and time.monotonic() < deadline:
-                    try:
-                        lease = acquire_workspace_lease(workspace, lock_directory)
-                    except WorkspaceLockBusy:
-                        time.sleep(0.05)
-                self.assertIsNotNone(lease)
-                assert lease is not None
-                lease.release()
-                snapshots = home / ".deepseek-mcp" / "snapshots"
-                self.assertFalse(snapshots.exists() and any(snapshots.iterdir()))
-            finally:
-                if parent.poll() is None:
-                    parent.kill()
-                    parent.wait(timeout=3)
-                parent.communicate(timeout=1)
-                for process_id in (child_pid, runtime_pid):
-                    if _process_exists(process_id):
-                        os.kill(process_id, signal.SIGKILL)
 
     @unittest.skipIf(os.name != "posix", "parent SIGKILL recovery is POSIX-specific")
     def test_parent_sigkill_leaves_queryable_intent_until_exact_ack(self) -> None:

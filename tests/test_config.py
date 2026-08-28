@@ -19,20 +19,6 @@ from deepseek_mcp.config import (
 )
 from deepseek_mcp import windows_file_io
 
-PINNED_IMAGE = "example.invalid/deepseek-shell@sha256:" + ("b" * 64)
-
-
-def _bash_config(workspace: Path, **overrides) -> Config:
-    values = {
-        "allowed_tools": ["Read", "Bash"],
-        "bash_backend": "container",
-        "bash_runtime": "docker",
-        "bash_image": PINNED_IMAGE,
-    }
-    values.update(overrides)
-    return Config("credential", workspace, **values)
-
-
 class ConfigTests(unittest.TestCase):
     def test_broad_home_and_credential_workspaces_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -114,6 +100,7 @@ class ConfigTests(unittest.TestCase):
         cases = (
             ('{"allowed_tools": ["Read"], "allowed_tools": ["Write"]}', "Duplicate"),
             ('{"allowed_tool": ["Read"]}', "Unsupported"),
+            ('{"bash_backend": "container"}', "Unsupported"),
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             directory = Path(tmpdir) / "config"
@@ -250,7 +237,7 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(
             config.allowed_tools,
-            ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"],
+            ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"],
         )
         self.assertEqual(config.allowed_tools, DEFAULT_ALLOWED_TOOLS)
 
@@ -299,73 +286,6 @@ class ConfigTests(unittest.TestCase):
                 Config.validate_runtime_settings()
 
         load_key.assert_not_called()
-
-    def test_runtime_validation_migrates_legacy_host_bash_to_disabled(self) -> None:
-        data = {"allowed_tools": ["Read", "Bash"]}
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with (
-                patch("deepseek_mcp.config._load_data", return_value=data),
-                patch(
-                    "deepseek_mcp.config._load_workspace",
-                    return_value=Path(tmpdir),
-                ),
-                patch("deepseek_mcp.config._probe_runtime_service") as probe,
-                self.assertLogs("deepseek_mcp.config", level="WARNING") as logs,
-            ):
-                Config.validate_runtime_settings()
-
-        probe.assert_not_called()
-        self.assertIn("Bash is disabled", "\n".join(logs.output))
-        self.assertEqual(data["allowed_tools"], ["Read", "Bash"])
-
-    def test_explicit_or_partial_bash_settings_remain_strict(self) -> None:
-        cases = (
-            ({"bash_backend": None}, "bash_backend='container'"),
-            ({"bash_backend": "host"}, "bash_backend='container'"),
-            ({"bash_backend": "container"}, "bash_runtime"),
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for settings, message in cases:
-                data = {"allowed_tools": ["Read", "Bash"], **settings}
-                with (
-                    self.subTest(settings=settings),
-                    patch("deepseek_mcp.config._load_data", return_value=data),
-                    patch(
-                        "deepseek_mcp.config._load_workspace",
-                        return_value=Path(tmpdir),
-                    ),
-                    patch("deepseek_mcp.config.sys.platform", "darwin"),
-                    self.assertRaisesRegex(RuntimeError, message),
-                ):
-                    Config.validate_runtime_settings()
-
-    def test_installer_runtime_validation_requires_a_ready_daemon(self) -> None:
-        data = {
-            "allowed_tools": ["Read", "Bash"],
-            "bash_backend": "container",
-            "bash_runtime": "docker",
-            "bash_image": PINNED_IMAGE,
-        }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with (
-                patch("deepseek_mcp.config._load_data", return_value=data),
-                patch(
-                    "deepseek_mcp.config._load_workspace",
-                    return_value=Path(tmpdir),
-                ),
-                patch(
-                    "deepseek_mcp.config.shutil.which",
-                    return_value="/usr/bin/docker",
-                ),
-                patch(
-                    "deepseek_mcp.config.validate_trusted_executable",
-                    return_value=Path("/usr/bin/docker"),
-                ),
-                patch("deepseek_mcp.config._probe_runtime_service") as probe,
-            ):
-                Config.validate_runtime_settings()
-
-        probe.assert_called_once_with("/usr/bin/docker", "docker")
 
     def test_model_must_be_a_nonempty_string(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -420,128 +340,6 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "non-empty"):
                 _load_workspace({"workspace": ""})
-
-    def test_bash_requires_container_backend(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = _bash_config(Path(tmpdir), bash_backend=None)
-            with self.assertRaisesRegex(RuntimeError, "bash_backend='container'"):
-                config.validate_bash(require_runtime=False)
-
-    def test_bash_requires_digest_pinned_image(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = _bash_config(Path(tmpdir), bash_image="example.invalid/latest")
-            with self.assertRaisesRegex(RuntimeError, "pinned"):
-                config.validate_bash(require_runtime=False)
-
-    def test_bash_invalid_types_fail_as_configuration_errors(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for overrides in (
-                {"bash_runtime": []},
-                {"bash_image": 42},
-                {"bash_cpus": True},
-                {"bash_pids_limit": 1.5},
-            ):
-                with self.subTest(overrides=overrides):
-                    config = _bash_config(Path(tmpdir), **overrides)
-                    with self.assertRaises(RuntimeError):
-                        config.validate_bash(require_runtime=False)
-
-    def test_bash_memory_has_a_finite_hard_cap(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            _bash_config(workspace, bash_memory="64g").validate_bash(
-                require_runtime=False
-            )
-            for value in ("65g", "999999999g", "9" * 5000 + "g"):
-                with self.subTest(value=value[:20]), self.assertRaisesRegex(
-                    RuntimeError, "bash_memory"
-                ):
-                    _bash_config(workspace, bash_memory=value).validate_bash(
-                        require_runtime=False
-                    )
-
-    def test_missing_runtime_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = _bash_config(Path(tmpdir))
-            with (
-                patch("deepseek_mcp.config.sys.platform", "linux"),
-                patch("deepseek_mcp.config.shutil.which", return_value=None),
-                self.assertRaisesRegex(RuntimeError, "runtime not found"),
-            ):
-                config.validate_bash(require_runtime=True)
-
-    def test_native_podman_without_local_service_endpoint_fails_early(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = _bash_config(Path(tmpdir), bash_runtime="podman")
-            with (
-                patch.dict(os.environ, {}, clear=True),
-                patch("deepseek_mcp.config.sys.platform", "linux"),
-                patch(
-                    "deepseek_mcp.config.shutil.which",
-                    return_value="/usr/bin/podman",
-                ),
-                patch(
-                    "deepseek_mcp.config.validate_trusted_executable",
-                    return_value=Path("/usr/bin/podman"),
-                ),
-                self.assertRaisesRegex(RuntimeError, "podman system service"),
-            ):
-                config.validate_bash(require_runtime=True)
-
-            with (
-                patch.dict(
-                    os.environ,
-                    {"CONTAINER_HOST": "unix:///run/user/501/podman.sock"},
-                    clear=True,
-                ),
-                patch("deepseek_mcp.config.sys.platform", "linux"),
-                patch(
-                    "deepseek_mcp.config.shutil.which",
-                    return_value="/usr/bin/podman",
-                ),
-                patch(
-                    "deepseek_mcp.config.validate_trusted_executable",
-                    return_value=Path("/usr/bin/podman"),
-                ),
-            ):
-                config.validate_bash(require_runtime=True)
-
-    def test_windows_fails_closed_before_runtime_probe(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = _bash_config(Path(tmpdir))
-            with (
-                patch("deepseek_mcp.config.sys.platform", "win32"),
-                patch("deepseek_mcp.config.shutil.which") as which,
-                self.assertRaisesRegex(RuntimeError, "only on macOS and Linux"),
-            ):
-                config.validate_bash(require_runtime=True)
-        which.assert_not_called()
-
-    def test_valid_container_configuration_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = _bash_config(Path(tmpdir))
-            with (
-                patch("deepseek_mcp.config.sys.platform", "linux"),
-                patch("deepseek_mcp.config.shutil.which", return_value="/usr/bin/docker"),
-                patch(
-                    "deepseek_mcp.config.validate_trusted_executable",
-                    return_value=Path("/usr/bin/docker"),
-                ),
-            ):
-                config.validate_bash(require_runtime=True)
-
-    def test_runtime_binary_inside_workspace_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            runtime = workspace / "docker"
-            runtime.write_text("not an engine", encoding="utf-8")
-            config = _bash_config(workspace)
-            with (
-                patch("deepseek_mcp.config.sys.platform", "linux"),
-                patch("deepseek_mcp.config.shutil.which", return_value=str(runtime)),
-                self.assertRaisesRegex(RuntimeError, "inside the workspace"),
-            ):
-                config.validate_bash(require_runtime=True)
 
 
 if __name__ == "__main__":

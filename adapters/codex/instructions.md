@@ -6,28 +6,45 @@ Use this file as an optional stronger project/global policy in `AGENTS.md` or Co
 
 ## Using DeepSeek as a delegated sub-agent
 
-You have access to DeepSeek through the `deepseek` MCP server. DeepSeek runs its own agent loop inside the configured workspace. Workspace-scoped reads, searches, and file writes are enabled by default; containerized Bash exists only when the operator explicitly enables it.
-Containerized Bash sees a disposable read-only regular-file snapshot, so workspace edits require an enabled file-mutation tool.
+You have access to DeepSeek through the `deepseek` MCP server. DeepSeek runs its
+own agent loop inside the configured workspace.
 
-### Choose the delegation mode
+### Choose the delegation API
 
-Use the simple synchronous tool when the task can safely run to completion without mid-flight intervention:
+For changes, tests, builds, lint, Git, dependencies, or anything that might
+write the workspace, use the full coding API. It has Read, Write, Edit, Bash,
+Glob, Grep, and NotebookEdit; Bash runs on the trusted host.
 
 ```text
 delegate_to_deepseek(task, context)
+start_deepseek(task, context) -> job_id
 ```
 
-Use the steerable background-job API when the work is longer, exploratory, or may need new instructions/cancellation while running:
+For clearly read-only investigation—reading/searching code, code review, log
+analysis, root-cause analysis, or call-graph investigation—use the readonly
+API. It has only Read, Glob, and Grep: no Bash, no workspace mutation, and no
+Docker/Podman dependency.
 
 ```text
-start_deepseek(task, context) -> job_id
+delegate_to_deepseek_readonly(task, context)
+start_deepseek_readonly(task, context) -> job_id
+```
+
+Do not pass a mode, backend, or permissions parameter. The selected API fixes
+the profile for the entire job, including steering and background control.
+
+For either background API, use:
+
+```text
 send_deepseek_message(job_id, message)
 get_deepseek_status(job_id)
 cancel_deepseek(job_id)
 get_deepseek_result(job_id)
 ```
 
-One DeepSeek execution may run per canonical workspace across both modes and across MCP server processes. Background jobs and their IDs are scoped to the current MCP session.
+One DeepSeek execution may run per canonical workspace across both API types and
+across MCP server processes. Background jobs and their IDs are scoped to the
+current MCP session.
 
 Every file mutation is durably journaled before commit. After any result that
 contains mutations, call `get_deepseek_recovery`, verify each reported file,
@@ -37,7 +54,7 @@ cancellation, disconnection, or MCP restart before retrying. A new delegation
 fails closed while unacknowledged records remain; recovery query/ack does not
 require a working provider API key.
 
-Steering is applied at safe points between model/tool operations. Cancellation wakes retry backoff and promptly terminates an in-flight provider or local-tool subprocess; a container watchdog immediately starts forced cleanup. If a newer steering instruction arrives before a planned tool call executes, stale remaining tool calls may be skipped and DeepSeek will re-plan from the latest instruction.
+Steering is applied at safe points between model/tool operations. Cancellation wakes retry backoff and promptly terminates an in-flight provider or local-tool subprocess. If a newer steering instruction arrives before a planned tool call executes, stale remaining tool calls may be skipped and DeepSeek will re-plan from the latest instruction.
 
 ### Core principle: delegate execution-heavy complete units
 

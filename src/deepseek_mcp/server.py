@@ -29,10 +29,13 @@ from mcp.types import ToolAnnotations
 
 from . import __version__
 from .agent_loop import AgentLoopCancelled, AgentLoopError
-from .provider_retry import MutationOutcomeError
-from .provider_retry import MutationOutcomeCancelled
+from .provider_retry import MutationOutcomeError, MutationOutcomeCancelled
 from .mutation_outcome import mutation_failure_message, records_from_result
 from .config import Config
+from .execution_profile import (
+    CODING_PROFILE, READONLY_PROFILE, ExecutionProfile, configure_delegation,
+)
+from .host_instructions import HOST_INSTRUCTIONS as _HOST_INSTRUCTIONS
 from .job_manager import DeepSeekJobManager, JobBusy, JobError, validate_delegation_input
 from .private_logging import PrivateBoundedLogStream
 from .process_hardening import disable_core_dumps
@@ -118,35 +121,6 @@ def _ensure_runtime_logging() -> None:
         _PACKAGE_LOGGER.propagate = False
         _LOG_READY = True
 
-_HOST_INSTRUCTIONS = """
-Use `delegate_to_deepseek` for self-contained, execution-heavy work. Decide
-whether to delegate BEFORE reading repository source; lightweight file
-listing/counting is fine. Every mutation is journaled before commit. After any
-result containing mutations, call `get_deepseek_recovery`, verify each file, then
-pass the exact IDs to `acknowledge_deepseek_mutations`. After cancellation,
-disconnection, or restart, query recovery before retrying. Keep architecture,
-ambiguous root-cause analysis, security judgment, and tiny edits in the host.
-DeepSeek cannot see host chat or project instructions; pass context explicitly.
-Workspace-scoped file reads and writes are enabled by default. Containerized Bash
-requires operator opt-in and uses a disposable read-only regular-file snapshot;
-use a file-mutation tool for workspace edits. Do not retry a denied capability.
-
-For steering or cancellation, use `start_deepseek`, `send_deepseek_message`,
-`get_deepseek_status`, `cancel_deepseek`, and `get_deepseek_result`. Steering is
-consumed between operations. Cancellation terminates provider/tool subprocesses;
-an independent watchdog confirms container cleanup. One OS lease permits one
-execution per canonical workspace. Background jobs/results are process-local.
-
-New delegation fails closed while recovery records remain. Always verify delegated output
-and relevant tests before declaring success.
-
-Delegate clear execution-heavy units such as implementation, batch edits, tests,
-mechanical refactors, or transformations. Pass complete paths, constraints, and
-success criteria. Afterward inspect representative changes, run relevant checks,
-and take over locally after two failures or whenever substantial judgment is needed.
-""".strip()
-
-
 # MCP protocol supports server-level instructions during initialization. Codex
 # reads them as server-wide guidance. Keep the first ~512 characters
 # self-contained because clients may surface/truncate instructions differently.
@@ -163,6 +137,12 @@ _READ_ONLY = ToolAnnotations(
 _AGENT_EXECUTION = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+_READONLY_AGENT_EXECUTION = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
     idempotentHint=False,
     openWorldHint=True,
 )
@@ -247,11 +227,11 @@ def _shorten_path(p: Path) -> str:
 def _json(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
-def _load_config() -> Config:
+def _load_config(profile: ExecutionProfile = CODING_PROFILE) -> Config:
     if _deepseek_mode() == "off":
         raise JobError("DeepSeek delegation is disabled (DEEPSEEK_MODE=off)")
     try:
-        return Config.load()
+        return configure_delegation(Config.load(), profile)
     except Exception as e:
         raise JobError(f"deepseek-mcp not configured: {e}") from e
 
@@ -311,16 +291,9 @@ async def _run_sync_cancellable(full_task: str, config: Config) -> dict:
                 raise MutationOutcomeCancelled(message, tuple(records)) from None
         raise
 
-@mcp.tool(annotations=_AGENT_EXECUTION)
-async def delegate_to_deepseek(task: str, context: str = "") -> str:
-    """Delegate a focused task synchronously to DeepSeek as a real sub-agent.
-
-    The MCP call remains open until DeepSeek finishes. Prefer this simple API
-    when no mid-flight steering/cancellation is needed. For steerable long work,
-    use `start_deepseek` and the background-job tools instead.
-    """
+async def _delegate(task: str, context: str, profile: ExecutionProfile) -> str:
     try:
-        config, full_task = _prepare_sync_request(task, context)
+        config, full_task = _prepare_sync_request(task, context, profile)
     except JobError as e:
         return str(e)
     try:
@@ -344,14 +317,30 @@ async def delegate_to_deepseek(task: str, context: str = "") -> str:
     return _format_sync_result(result)
 
 
-def _prepare_sync_request(task: str, context: str) -> tuple[Config, str]:
+@mcp.tool(annotations=_AGENT_EXECUTION)
+async def delegate_to_deepseek(task: str, context: str = "") -> str:
+    """Run a full coding delegation with trusted-host Bash."""
+    return await _delegate(task, context, CODING_PROFILE)
+
+
+@mcp.tool(annotations=_READONLY_AGENT_EXECUTION)
+async def delegate_to_deepseek_readonly(task: str, context: str = "") -> str:
+    """Run a pure file-analysis delegation without command execution."""
+    return await _delegate(task, context, READONLY_PROFILE)
+
+
+def _prepare_sync_request(
+    task: str, context: str, profile: ExecutionProfile,
+) -> tuple[Config, str]:
     if _deepseek_mode() == "off":
         raise JobError(
             "DeepSeek delegation is disabled (DEEPSEEK_MODE=off). "
             "Continue the task yourself in the main conversation."
         )
     try:
-        config = Config.load()
+        config = _load_config(profile)
+    except JobError:
+        raise
     except Exception as error:
         raise JobError(f"ERROR: deepseek-mcp not configured: {error}") from None
     try:
@@ -376,19 +365,25 @@ def _log_sync_completion(result: dict) -> None:
     )
 
 
-@mcp.tool(annotations=_AGENT_EXECUTION)
-def start_deepseek(task: str, context: str = "") -> str:
-    """Start one steerable DeepSeek background job and return its job_id quickly.
-
-    One execution per canonical workspace is permitted across MCP processes.
-    The daemon job and its result exist only for this MCP process lifetime.
-    """
+def _start_delegation(task: str, context: str, profile: ExecutionProfile) -> str:
     try:
-        payload = job_manager.start(task, context, _load_config())
+        payload = job_manager.start(task, context, _load_config(profile))
     except JobError as e:
         return _json({"ok": False, "error": str(e)})
     logger.info("Background DeepSeek job started: %s", payload["job_id"])
     return _json({"ok": True, **payload})
+
+
+@mcp.tool(annotations=_AGENT_EXECUTION)
+def start_deepseek(task: str, context: str = "") -> str:
+    """Start a steerable full coding job with trusted-host Bash."""
+    return _start_delegation(task, context, CODING_PROFILE)
+
+
+@mcp.tool(annotations=_READONLY_AGENT_EXECUTION)
+def start_deepseek_readonly(task: str, context: str = "") -> str:
+    """Start a steerable pure file-analysis job."""
+    return _start_delegation(task, context, READONLY_PROFILE)
 
 
 @mcp.tool(annotations=_READ_ONLY)

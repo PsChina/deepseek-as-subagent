@@ -1,14 +1,12 @@
 """Identity-checked cleanup for artifacts owned by one tool subprocess."""
 from __future__ import annotations
 
-import hashlib
 import os
 import stat
 from pathlib import Path
 
 from . import file_io
 from .file_identity import ToolInputError, WorkspaceFileNotFound
-from .workspace_snapshot import WorkspaceSnapshotError, cleanup_workspace_snapshot
 from .workspace_guard import bind_workspace_identity
 
 _MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
@@ -70,17 +68,6 @@ def _cleanup_windows_temp(workspace: Path, label: str, transaction_id: str) -> N
         file_io._win_close(parent)
 
 
-def _cleanup_snapshot(identity_token: str, transaction_id: str) -> None:
-    label = hashlib.sha256(bytes.fromhex(identity_token)).hexdigest()[:16]
-    root = Path.home() / ".deepseek-mcp" / "snapshots"
-    snapshot = root / f"deepseek-mcp-{label}-{transaction_id}"
-    try:
-        cleanup_workspace_snapshot(snapshot, root)
-    except WorkspaceSnapshotError:
-        if snapshot.exists() or snapshot.is_symlink():
-            raise
-
-
 def cleanup_tool_artifacts(
     config, name: str, arguments: dict, transaction_id: str
 ) -> None:
@@ -94,5 +81,3 @@ def cleanup_tool_artifacts(
                 _cleanup_windows_temp(config.workspace, label, transaction_id)
             else:
                 _cleanup_posix_temp(config.workspace, label, transaction_id)
-        if name == "Bash":
-            _cleanup_snapshot(config.expected_workspace_identity, transaction_id)

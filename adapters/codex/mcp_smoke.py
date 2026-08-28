@@ -14,7 +14,9 @@ from mcp.client.stdio import stdio_client
 EXPECTED_TOOLS = {
     "ping",
     "delegate_to_deepseek",
+    "delegate_to_deepseek_readonly",
     "start_deepseek",
+    "start_deepseek_readonly",
     "get_deepseek_status",
     "send_deepseek_message",
     "cancel_deepseek",
@@ -24,24 +26,29 @@ EXPECTED_TOOLS = {
 }
 
 
+def _task_context_schema(schema: dict) -> bool:
+    properties = schema.get("properties", {})
+    return (
+        schema.get("type") == "object"
+        and schema.get("required") == ["task"]
+        and properties.get("task", {}).get("type") == "string"
+        and properties.get("context", {}).get("type") == "string"
+        and properties.get("context", {}).get("default") == ""
+        and "additionalProperties" not in schema
+    )
+
+
 def _check_legacy_schemas(tools: dict) -> None:
     ping = tools["ping"].inputSchema
-    delegate = tools["delegate_to_deepseek"].inputSchema
     if ping.get("type") != "object" or ping.get("properties") != {}:
         raise RuntimeError("ping input schema is not backward compatible")
     if ping.get("required") not in (None, []):
         raise RuntimeError("ping unexpectedly requires arguments")
-    properties = delegate.get("properties", {})
-    compatible = (
-        delegate.get("type") == "object"
-        and delegate.get("required") == ["task"]
-        and properties.get("task", {}).get("type") == "string"
-        and properties.get("context", {}).get("type") == "string"
-        and properties.get("context", {}).get("default") == ""
-        and "additionalProperties" not in delegate
-    )
-    if not compatible:
+    if not _task_context_schema(tools["delegate_to_deepseek"].inputSchema):
         raise RuntimeError("delegate_to_deepseek schema is not backward compatible")
+    readonly = tools["delegate_to_deepseek_readonly"].inputSchema
+    if not _task_context_schema(readonly):
+        raise RuntimeError("readonly delegation schema is not compatible")
 
 
 async def smoke(command: Path) -> None:
@@ -54,6 +61,7 @@ async def smoke(command: Path) -> None:
             instructions = initialized.instructions or ""
             required = (
                 "delegate_to_deepseek",
+                "delegate_to_deepseek_readonly",
                 "get_deepseek_recovery",
                 "acknowledge_deepseek_mutations",
                 "verify delegated output",

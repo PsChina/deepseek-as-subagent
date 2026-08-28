@@ -42,17 +42,16 @@ cwd, inline environment, unknown launch fields, or non-allowlisted forwarded
 environment variables; use `--force-replace` only after inspecting that state.
 That flag is a trust-boundary reset: it rebuilds a clean server table and does
 not preserve those launch customizations.
-It validates an existing DeepSeek runtime config before touching Codex. A
-legacy config that lists `Bash` but has no `bash_*` settings is interpreted in
-memory as Bash disabled and is not rewritten. Explicit or incomplete Bash
-settings are rejected with remediation instructions instead of producing a
-successful-but-unusable install.
+It validates an existing DeepSeek runtime config before touching Codex. New
+installs enable coding Bash through the `trusted_host` backend; read-only
+delegation needs no container runtime.
 Fresh registrations use:
 
 - `default_tools_approval_mode = "writes"`;
 - `startup_timeout_sec = 20`;
 - `tool_timeout_sec = 18060` (5-hour run plus 60 seconds for safe cleanup);
-- an exact nine-tool MCP allowlist, including durable recovery query/ack.
+- an exact eleven-tool MCP allowlist, including both readonly delegation APIs
+  and durable recovery query/ack.
 
 Read-only MCP tools (`ping`, status) carry protocol annotations and do not need
 write approval. Delegation/control/cancellation are conservatively annotated as
@@ -62,11 +61,10 @@ the fresh config explicitly approves those plus exact recovery acknowledgement.
 If `~/.deepseek-mcp/config.json` still contains the API-key placeholder, edit it
 before delegating on POSIX. On Windows, leave the placeholder and set
 `DEEPSEEK_API_KEY` in the environment instead. The default DeepSeek capability
-set is `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `NotebookEdit`, so delegated
-coding tasks can modify the workspace immediately after installation. See
-[../../SECURITY.md](../../SECURITY.md) before delegating sensitive content or
-enabling containerized Bash. Bash sees a disposable read-only regular-file
-snapshot; workspace edits use the default file-mutation tools.
+set is `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, and `NotebookEdit`, so
+delegated coding tasks can modify the workspace and run bounded commands
+immediately after installation. Use the explicit read-only APIs for static
+file analysis; see [../../SECURITY.md](../../SECURITY.md).
 
 Verify:
 
@@ -97,9 +95,10 @@ instructions. They tell Codex to:
 `instructions.md` can be copied into a project `AGENTS.md` when a stronger,
 project-specific policy is desired.
 
-## Delegation modes
+## Delegation APIs
 
-For work that does not need intervention:
+Use coding delegation for changes, builds, tests, lint, Git, dependencies, or
+anything that could write the workspace:
 
 ```text
 delegate_to_deepseek(task, context)
@@ -111,8 +110,8 @@ DeepSeek run limit plus 60 seconds for safe child cleanup and result delivery.
 `max_run_seconds` may be raised explicitly but is rejected above 172,800
 seconds (48 hours). For a synchronous run above five hours, raise Codex's
 `mcp_servers.deepseek.tool_timeout_sec` to at least `max_run_seconds + 60`; the
-server-side 48-hour ceiling still applies. Use background mode for work that
-needs steering:
+server-side 48-hour ceiling still applies. Use the coding background API for
+work that needs steering:
 
 ```text
 start_deepseek(task, context) -> job_id
@@ -122,9 +121,21 @@ cancel_deepseek(job_id)
 get_deepseek_result(job_id)
 ```
 
+For clearly read-only investigation—code reading/search, review, log analysis,
+root-cause analysis, and call-graph tracing—use the fixed file-analysis profile:
+
+```text
+delegate_to_deepseek_readonly(task, context)
+start_deepseek_readonly(task, context) -> job_id
+```
+
+The readonly APIs provide only Read, Glob, and Grep. They expose neither Bash
+nor workspace mutation and work without Docker/Podman. Do not pass a mode,
+backend, or permission argument; the selected API freezes the profile for the
+job.
+
 Steering is applied at model/tool safe points. Cancellation wakes retry backoff
-and promptly terminates an in-flight provider or local-tool subprocess; a
-container watchdog immediately starts forced cleanup. A
+and promptly terminates an in-flight provider or local-tool subprocess. A
 cancellation accepted before terminal commit always wins that atomic commit; a
 later request returns `cancel_accepted=false`.
 
@@ -189,4 +200,4 @@ bash -n adapters/codex/install.sh adapters/codex/uninstall.sh
 
 The suite covers cancellation/finalization races, cross-process workspace
 leases, MCP annotations and stdio protocol flow, TOML preservation/ownership/
-rollback, safe default capabilities, and fail-closed container construction.
+rollback and safe default capabilities.

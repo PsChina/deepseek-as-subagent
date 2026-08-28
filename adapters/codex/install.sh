@@ -203,7 +203,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "model": "deepseek-v4-pro",
   "max_turns": 50,
   "max_run_seconds": 18000,
-  "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
+  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
 }
 EOF
 else
@@ -223,7 +223,7 @@ except RuntimeError as error:
 ' 2>&1)"; then
     echo "✗ DeepSeek config is incompatible with this release: $CONFIG_FILE" >&2
     echo "  $CONFIG_ERROR" >&2
-    echo "  Remove Bash from allowed_tools, or configure the documented container backend." >&2
+    echo "  Remove obsolete bash_backend/bash_runtime/bash_image settings before retrying." >&2
     exit 1
 fi
 

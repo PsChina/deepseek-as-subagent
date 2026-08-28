@@ -12,14 +12,14 @@
 
 > 让 DeepSeek 在 Claude Code / Codex CLI 里作为**真正的 sub-agent**运行，而不只是一个 LLM 接口。
 > 主 Agent 保留主对话、规划、判断与验收；DeepSeek 拿到工作区受限的工具循环，负责执行型工作。
-> 默认开放工作区受限的读取、搜索和文件写入；容器化 Bash 必须显式启用。
+> Coding API 使用工作区受限写入和有界 `trusted_host` Bash；独立只读 API 提供不执行命令的纯文件分析。
 
 ```text
        Claude / Codex（主 Agent）
          │
-         ├─ 普通任务 → delegate_to_deepseek(task, context)
+         ├─ coding → delegate_to_deepseek / start_deepseek
          │
-         └─ 可中途控制任务 → start_deepseek(task, context) → job_id
+         └─ 只读 → delegate_to_deepseek_readonly / start_deepseek_readonly
                                   │
                                   ├─ send_deepseek_message(job_id, ...)
                                   ├─ get_deepseek_status(job_id)
@@ -27,8 +27,8 @@
                                   └─ get_deepseek_result(job_id)
          ▼
        DeepSeek sub-agent
-         │  默认 Read / Write / Edit / Glob / Grep / NotebookEdit
-         │  容器 Bash 按需启用
+         │  coding：Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
+         │  只读：Read / Glob / Grep
          │  在工作区里自主循环
          ▼
        结果返回主 Agent
@@ -57,10 +57,8 @@ Windows 仅设置 `DEEPSEEK_API_KEY` 环境变量。然后运行 `claude`，例�
 /ds 检查当前工作区并总结代码结构
 ```
 
-升级时会先验证现有运行配置。旧配置若只在 `allowed_tools` 中包含 `Bash`、
-但完全没有 `bash_*` 配置，新版会在内存中把它解释为“Bash 已关闭”，不会
-改写配置文件，其它已配置工具仍可用。显式或不完整的 Bash 配置仍会
-fail closed，必须完整配置安全文档中的容器后端。
+升级时会先验证现有运行配置。coding 固定使用 `trusted_host`；只读 API
+固定只使用 Read/Glob/Grep，不依赖容器运行时。
 
 Codex 和其它 MCP 客户端见下方安装说明。
 
@@ -73,11 +71,11 @@ Codex 和其它 MCP 客户端见下方安装说明。
 ## 包含什么
 
 - **MCP server**（Python，stdio）
-- **简单同步委派**：`delegate_to_deepseek(task, context)`
-- **后台可控任务**：`start_deepseek`、`send_deepseek_message`、`get_deepseek_status`、`cancel_deepseek`、`get_deepseek_result`
+- **coding 与只读委派**：`delegate_to_deepseek` / `delegate_to_deepseek_readonly`
+- **后台可控任务**：`start_deepseek` / `start_deepseek_readonly` 与共用控制 API
 - **DeepSeek 本地 agent loop**（`agent_loop.py`）
-- **开箱即用的编码工具**：默认 Read / Write / Edit / Glob / Grep / NotebookEdit
-- **fail-closed Bash**：只在固定 digest、无网络的 Docker/Podman 容器内对一次性只读普通文件快照运行；宿主文件不会被可写挂载
+- **开箱即用的编码工具**：默认 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
+- **Bash 执行**：通过 tool-child 边界运行有界且隔离凭证的 `trusted_host`
 - **工作区路径边界**：文件工具拒绝指向工作区外的符号链接
 - **跨进程执行租约**：多个 MCP server 也不能同时对同一工作区执行 DeepSeek
 - **崩溃安全 mutation journal**：恢复查询、文件核验、精确确认完成前禁止再次委派
@@ -156,7 +154,7 @@ get_deepseek_result(job_id)
 
 `start_deepseek` 会很快返回，DeepSeek 在后台 worker 中继续执行，因此同一个 MCP session 后续还能继续发送控制请求。
 
-steering 会在模型 / 工具操作之间的安全点生效。cancel 会立即唤醒 API retry backoff，并及时终止正在进行的 provider 或本地工具子进程；容器 watchdog 会立即开始强制清理。
+steering 会在模型 / 工具操作之间的安全点生效。cancel 会立即唤醒 API retry backoff，并及时终止正在进行的 provider 或本地工具子进程。
 
 如果新 steering 在 DeepSeek 已经规划出 tool call、但某个旧 tool call 尚未真正执行时到达，该旧 tool call 会被跳过，DeepSeek 下一轮直接按最新指令重新规划。
 
@@ -233,7 +231,7 @@ max_retries=0
   "model": "deepseek-v4-pro",
   "max_turns": 50,
   "max_run_seconds": 18000,
-  "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
+  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
 }
 ```
 
@@ -251,7 +249,10 @@ max_retries=0
 
 运行时可用环境变量覆盖：`DEEPSEEK_API_KEY`、`DEEPSEEK_WORKSPACE`、`DEEPSEEK_MODE=off`。
 
-工作区受限的文件写入默认启用。执行命令仍需要显式授权：Bash 永远不会直接跑在宿主机上，还必须配置本地 Docker/Podman 与固定 digest 镜像。它只读取一次性快照；工作区修改使用默认文件写入工具。具体配置、数据边界与平台限制见 [SECURITY.md](SECURITY.md)。
+`delegate_to_deepseek` 与 `start_deepseek` 固定使用完整 coding 工具和有界
+`trusted_host` Bash。`delegate_to_deepseek_readonly` 与
+`start_deepseek_readonly` 固定只给 Read/Glob/Grep，绝不暴露 Bash，也不依赖
+Docker/Podman。具体边界见 [SECURITY.md](SECURITY.md)。
 
 ## 卸载
 

@@ -335,7 +335,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "model": "deepseek-v4-pro",
   "max_turns": 50,
   "max_run_seconds": 18000,
-  "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit"]
+  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
 }
 EOF
     API_KEY=""
@@ -372,7 +372,7 @@ except RuntimeError as error:
 ' 2>&1)"; then
     echo "✗ 现有 DeepSeek 配置与当前版本不兼容: $CONFIG_FILE" >&2
     echo "  $CONFIG_ERROR" >&2
-    echo "  请从 allowed_tools 移除 Bash，或按文档配置容器后重试。" >&2
+    echo "  请检查配置字段格式；删除旧的 bash_backend/bash_runtime/bash_image 配置后重试。" >&2
     exit 1
 fi
 

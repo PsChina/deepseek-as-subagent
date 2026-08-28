@@ -40,7 +40,6 @@ from .workspace_guard import bind_workspace_identity, require_workspace_identity
 _TOOL_ENVIRONMENT = (
     "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "PATH",
     "SYSTEMROOT", "WINDIR",
-    "DOCKER_CONTEXT", "DOCKER_HOST", "CONTAINER_HOST",
 )
 
 
@@ -73,12 +72,7 @@ def _config_payload(config) -> dict:
         "allowed_tools": list(config.allowed_tools),
         "base_url": config.base_url,
         "max_run_seconds": config.max_run_seconds,
-        "bash_backend": config.bash_backend,
-        "bash_runtime": config.bash_runtime,
-        "bash_image": config.bash_image,
-        "bash_memory": config.bash_memory,
-        "bash_cpus": config.bash_cpus,
-        "bash_pids_limit": config.bash_pids_limit,
+        "delegation_capability": config.delegation_capability,
         "expected_workspace_identity": config.expected_workspace_identity,
     }
 

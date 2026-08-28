@@ -9,7 +9,6 @@ from pathlib import Path
 
 _AUDITED_CHILDREN = frozenset(
     {
-        "deepseek_mcp.container_watchdog",
         "deepseek_mcp.provider_child",
         "deepseek_mcp.tool_child",
     }
