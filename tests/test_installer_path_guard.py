@@ -291,13 +291,17 @@ class InstallerPathGuardTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX ownership and mode semantics")
     def test_valid_private_venv_symlink_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            generation = Path(tmpdir) / "generation.safe"
+            root = Path(tmpdir)
+            target = root / "trusted-python"
+            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            target.chmod(0o500)
+            generation = root / "generation.safe"
             binary = generation / "bin"
             binary.mkdir(parents=True, mode=0o700)
             generation.chmod(0o700)
             binary.chmod(0o700)
             candidate = binary / "python"
-            candidate.symlink_to(Path(sys.executable).resolve())
+            candidate.symlink_to(target)
 
             result = _guard("validate-venv", str(generation), str(candidate))
 
