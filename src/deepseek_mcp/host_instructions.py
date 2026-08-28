@@ -2,8 +2,9 @@
 
 HOST_INSTRUCTIONS = """
 After any result with mutations—or cancellation, disconnection, or restart—call
-`get_deepseek_recovery`, verify the reported files, then call
-`acknowledge_deepseek_mutations(transaction_ids)` with the exact reviewed IDs.
+`get_deepseek_recovery`, verify delegated output and each changed file, then
+call `acknowledge_deepseek_mutations(transaction_ids)` with the exact reviewed
+IDs.
 
 API reference:
 - `ping()`: check that the MCP server is available.
