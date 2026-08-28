@@ -10,11 +10,12 @@ automatically. This README documents what gets installed.
 | `~/.claude.json` entry `mcpServers.deepseek` | MCP server registration |
 | `~/.claude/skills/delegate-to-deepseek/` (symlink) | Teaches Claude when to delegate |
 | `~/.claude/commands/ds.md` (symlink) | `/ds <task>` slash command for explicit delegation |
-| `~/.zshrc` `pure` alias | One-shot start with delegation disabled |
 | `~/.deepseek-mcp/config.json` | DeepSeek API key + model settings (workspace auto-follows `claude` cwd) |
 
-The skill and command are **symlinks** to files in the repo — editing the repo
-files takes effect immediately, no reinstall.
+The skill and command symlinks target installer-owned copies under
+`~/.deepseek-mcp/claude-helpers/`, so moving or deleting the checkout does not
+break an installed Claude setup. Re-run the installer to publish repo updates.
+The installer never edits shell startup files.
 
 ## Install
 
@@ -32,15 +33,15 @@ Idempotent — safe to re-run after pulling repo updates.
 ```
 
 Removes the MCP registration, skill, and slash command. Does **not** touch
-your `~/.deepseek-mcp/config.json` (preserves your API key) or
-`~/.zshrc` alias (you remove that manually if you want).
+your `~/.deepseek-mcp/config.json` (preserves your API key). An alias left by an
+older release must be removed manually from your shell startup file.
 
 ## Per-feature control
 
 | Feature | How to disable |
 |---|---|
 | Auto-delegation in main conversation | Tell Claude "do it yourself, don't delegate" |
-| Whole session, no DeepSeek | Start with `pure` (alias from `~/.zshrc`) |
+| Whole session, no DeepSeek | Run `DEEPSEEK_MODE=off claude` |
 | Permanently | `./uninstall.sh` |
 
 ## Files in this adapter (relative to repo root)

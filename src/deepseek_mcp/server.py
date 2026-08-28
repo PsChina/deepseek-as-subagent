@@ -1,88 +1,238 @@
-"""MCP server 入口。
+"""MCP server entrypoint.
 
-暴露两个工具给 Claude Code:
-  - ping: 健康检查
-  - delegate_to_deepseek: 真正的 sub-agent，把任务外包给 DeepSeek 跑完整 agent loop
+Exposes synchronous delegation plus an optional steerable background-job API to
+MCP-capable hosts such as Claude Code and Codex CLI.
 
-环境变量:
-  - DEEPSEEK_MODE=off: delegate 工具会立即返回 disabled 提示，Claude 不会再调
-  - DEEPSEEK_API_KEY: 覆盖配置文件中的 api_key
-  - DEEPSEEK_WORKSPACE: 覆盖配置文件中的 workspace
+Environment variables:
+  - DEEPSEEK_MODE=off: disable delegation for this process
+  - DEEPSEEK_API_KEY: override api_key from config.json
+  - DEEPSEEK_WORKSPACE: override workspace from config.json
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import stat
 import sys
 from pathlib import Path
+from threading import Event, Lock
 
-# Windows 上 asyncio 默认用 ProactorEventLoop，跟 stdio 子进程不兼容会卡死
-# 必须在 import FastMCP / 启动事件循环之前切到 SelectorEventLoopPolicy
+# Windows defaults to ProactorEventLoop, which can deadlock with stdio subprocesses.
+# Switch before importing/starting FastMCP.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from . import __version__
-from .agent_loop import AgentLoopError, run_agent
+from .agent_loop import AgentLoopCancelled, AgentLoopError
+from .provider_retry import MutationOutcomeError
+from .provider_retry import MutationOutcomeCancelled
+from .mutation_outcome import mutation_failure_message, records_from_result
 from .config import Config
-
-# 日志写到 ~/.deepseek-mcp/（不污染 stdout，stdout 是 MCP 协议通道）
-# log 目录 700、文件 600 —— 含路径 / task 摘要，多用户机器上不该世界可读
-_LOG_DIR = Path.home() / ".deepseek-mcp"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
-_SERVER_LOG = _LOG_DIR / "server.log"
-_USAGE_LOG = _LOG_DIR / "usage.log"
-
-# Windows 不支持 POSIX 权限位，os.chmod 是 no-op；失败不致命
-try:
-    os.chmod(_LOG_DIR, 0o700)
-except OSError:
-    pass
-
-# 创建文件后立即 chmod（basicConfig 用 default umask 创建，可能是 644）
-for _p in (_SERVER_LOG, _USAGE_LOG):
-    if not _p.exists():
-        try:
-            _p.touch(mode=0o600)
-        except OSError:
-            pass
-    try:
-        os.chmod(_p, 0o600)
-    except OSError:
-        pass
-
-logging.basicConfig(
-    filename=str(_SERVER_LOG),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+from .job_manager import DeepSeekJobManager, JobBusy, JobError, validate_delegation_input
+from .private_logging import PrivateBoundedLogStream
+from .process_hardening import disable_core_dumps
+from .transaction_recovery import (
+    TransactionRecoveryError, acknowledge_with_lease,
+    load_recovery_config, query_with_lease,
 )
+
+_VALID_MODES = frozenset({"auto", "off"})
+
+def _deepseek_mode() -> str:
+    value = os.getenv("DEEPSEEK_MODE", "auto")
+    if value not in _VALID_MODES:
+        raise JobError("DEEPSEEK_MODE must be exactly 'auto' or 'off'")
+    return value
 logger = logging.getLogger(__name__)
+_PACKAGE_LOGGER = logging.getLogger("deepseek_mcp")
+_NULL_LOG_HANDLER = logging.NullHandler()
+_PACKAGE_LOGGER.addHandler(_NULL_LOG_HANDLER)
+_PACKAGE_LOGGER.propagate = False
+_LOG_SETUP_LOCK = Lock()
+_LOG_READY = False
 
 
-mcp = FastMCP("deepseek-mcp")
+def _runtime_paths() -> tuple[Path, Path, Path]:
+    log_dir = Path.home() / ".deepseek-mcp"
+    return log_dir, log_dir / "server.log", log_dir / "usage.log"
 
 
-@mcp.tool()
+def _prepare_private_log_dir() -> tuple[Path, Path]:
+    # Python's Windows os.open cannot securely open a directory with no-follow
+    # semantics. Disable persistent logs there instead of silently downgrading
+    # the fd-based symlink boundary used on POSIX.
+    if os.name == "nt":
+        raise OSError("secure persistent logging is unavailable on Windows")
+    log_dir, server_log, usage_log = _runtime_paths()
+    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(log_dir, flags)
+    try:
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o700)
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError("DeepSeek log path is not a directory")
+        if os.name != "nt" and (
+            info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            raise OSError("DeepSeek log directory is not private")
+    finally:
+        os.close(descriptor)
+    return server_log, usage_log
+
+
+def _ensure_runtime_logging() -> None:
+    """Configure file logging lazily so importing the MCP server is read-only."""
+    global _LOG_READY
+    if _LOG_READY:
+        return
+    with _LOG_SETUP_LOCK:
+        if _LOG_READY:
+            return
+        handler: logging.Handler | None = None
+        stream = None
+        try:
+            server_log, _ = _prepare_private_log_dir()
+            stream = PrivateBoundedLogStream(server_log)
+            handler = logging.StreamHandler(stream)
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+            )
+            _PACKAGE_LOGGER.addHandler(handler)
+            _PACKAGE_LOGGER.setLevel(logging.INFO)
+        except Exception:
+            if handler is not None:
+                _PACKAGE_LOGGER.removeHandler(handler)
+                handler.close()
+            if stream is not None:
+                stream.close()
+            if _NULL_LOG_HANDLER not in _PACKAGE_LOGGER.handlers:
+                _PACKAGE_LOGGER.addHandler(_NULL_LOG_HANDLER)
+        _PACKAGE_LOGGER.propagate = False
+        _LOG_READY = True
+
+_HOST_INSTRUCTIONS = """
+Use `delegate_to_deepseek` for self-contained, execution-heavy work. Decide
+whether to delegate BEFORE reading repository source; lightweight file
+listing/counting is fine. Every mutation is journaled before commit. After any
+result containing mutations, call `get_deepseek_recovery`, verify each file, then
+pass the exact IDs to `acknowledge_deepseek_mutations`. After cancellation,
+disconnection, or restart, query recovery before retrying. Keep architecture,
+ambiguous root-cause analysis, security judgment, and tiny edits in the host.
+DeepSeek cannot see host chat or project instructions; pass context explicitly.
+Workspace-scoped file reads and writes are enabled by default. Containerized Bash
+requires operator opt-in and uses a disposable read-only regular-file snapshot;
+use a file-mutation tool for workspace edits. Do not retry a denied capability.
+
+For steering or cancellation, use `start_deepseek`, `send_deepseek_message`,
+`get_deepseek_status`, `cancel_deepseek`, and `get_deepseek_result`. Steering is
+consumed between operations. Cancellation terminates provider/tool subprocesses;
+an independent watchdog confirms container cleanup. One OS lease permits one
+execution per canonical workspace. Background jobs/results are process-local.
+
+New delegation fails closed while recovery records remain. Always verify delegated output
+and relevant tests before declaring success.
+
+Delegate clear execution-heavy units such as implementation, batch edits, tests,
+mechanical refactors, or transformations. Pass complete paths, constraints, and
+success criteria. Afterward inspect representative changes, run relevant checks,
+and take over locally after two failures or whenever substantial judgment is needed.
+""".strip()
+
+
+# MCP protocol supports server-level instructions during initialization. Codex
+# reads them as server-wide guidance. Keep the first ~512 characters
+# self-contained because clients may surface/truncate instructions differently.
+# AGENTS.md remains an optional stronger/project-specific policy layer.
+mcp = FastMCP("deepseek-mcp", instructions=_HOST_INSTRUCTIONS)
+job_manager = DeepSeekJobManager()
+
+_READ_ONLY = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+_AGENT_EXECUTION = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+_AGENT_CONTROL = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+_LOCAL_CANCELLATION = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+_RESULT_WITH_BOOKKEEPING = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+_RECOVERY_ACK = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False,
+)
+
+
+@mcp.tool(annotations=_READ_ONLY)
 def ping() -> str:
-    """Health check. Confirms the deepseek-mcp server is alive.
+    """Health check for the deepseek-mcp server.
 
-    Use this before delegate_to_deepseek if you're not sure whether DeepSeek is configured.
-    Returns version, mode (auto/off), and whether config is loadable.
+    Returns version, mode, and whether the DeepSeek configuration is loadable.
     """
-    mode = os.getenv("DEEPSEEK_MODE", "auto")
+    try:
+        mode = _deepseek_mode()
+    except JobError as error:
+        return f"pong from deepseek-mcp v{__version__} | mode=invalid | NOT_CONFIGURED ({error})"
     try:
         cfg = Config.load()
         ws_short = _shorten_path(cfg.workspace)
-        config_status = f"workspace={ws_short} (sandbox), model={cfg.model}"
+        tools = ",".join(cfg.allowed_tools)
+        config_status = (
+            f"workspace={ws_short} (sandbox), model={cfg.model}, tools={tools}"
+        )
     except Exception as e:
         config_status = f"NOT_CONFIGURED ({e})"
     return f"pong from deepseek-mcp v{__version__} | mode={mode} | {config_status}"
 
 
+@mcp.tool(annotations=_RESULT_WITH_BOOKKEEPING)
+def get_deepseek_recovery() -> str:
+    """List durable, unacknowledged workspace mutation outcomes."""
+    try:
+        records = query_with_lease(load_recovery_config())
+    except (RuntimeError, TransactionRecoveryError) as error:
+        return _json({"ok": False, "error": str(error)})
+    return _json({"ok": True, "pending": records, "count": len(records)})
+
+@mcp.tool(annotations=_RECOVERY_ACK)
+def acknowledge_deepseek_mutations(transaction_ids: list[str]) -> str:
+    """Acknowledge exact transaction IDs after the host verifies their files."""
+    try:
+        removed, pending = acknowledge_with_lease(
+            load_recovery_config(), transaction_ids
+        )
+    except (RuntimeError, TransactionRecoveryError) as error:
+        return _json({"ok": False, "error": str(error)})
+    return _json({"ok": True, "acknowledged": removed, "pending": pending})
+
 def _shorten_path(p: Path) -> str:
-    """长路径压成 ~ + 最后几段，避免 ping 输出爆屏。"""
+    """Shorten long paths for compact ping output."""
     s = str(p)
     home = str(Path.home())
     if s.startswith(home):
@@ -94,98 +244,19 @@ def _shorten_path(p: Path) -> str:
     return s
 
 
-@mcp.tool()
-def delegate_to_deepseek(task: str, context: str = "") -> str:
-    """Delegate a focused task to DeepSeek as a real sub-agent.
+def _json(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
-    DeepSeek runs its own agent loop with Read/Write/Edit/Bash/Glob/Grep/NotebookEdit tools
-    inside the configured workspace. Use this for batch / repetitive / mechanical
-    tasks where you want to save main-conversation tokens and let DeepSeek do the
-    heavy lifting end-to-end.
-
-    Good fits:
-      - Extract i18n keys from N files into JSON
-      - Translate large chunks of text
-      - Scan logs for patterns
-      - Bulk refactors with a clear pattern
-      - One-off ETL scripts
-
-    Bad fits (do it yourself instead):
-      - Architectural design / cross-file judgment
-      - Bug root-cause analysis
-      - Tasks requiring project-specific idioms from CLAUDE.md or other repo conventions
-
-    Args:
-        task: Clear description of what DeepSeek should accomplish, including
-              success criteria and file paths involved.
-        context: Optional additional context — project conventions, related
-                 files DeepSeek should consider, output format requirements.
-                 Include this when project-specific knowledge matters.
-
-    Returns:
-        A summary of what DeepSeek did, including files affected, turns used,
-        tokens consumed, and any issues. Always verify the result by reading
-        a sample of the affected files before declaring success to the user.
-    """
-    mode = os.getenv("DEEPSEEK_MODE", "auto")
-    if mode == "off":
-        return (
-            "DeepSeek delegation is disabled (DEEPSEEK_MODE=off). "
-            "Continue the task yourself in the main conversation."
-        )
-
+def _load_config() -> Config:
+    if _deepseek_mode() == "off":
+        raise JobError("DeepSeek delegation is disabled (DEEPSEEK_MODE=off)")
     try:
-        config = Config.load()
+        return Config.load()
     except Exception as e:
-        return f"ERROR: deepseek-mcp not configured: {e}"
+        raise JobError(f"deepseek-mcp not configured: {e}") from e
 
-    full_task = task
-    if context:
-        full_task = f"{task}\n\n# Additional context\n{context}"
 
-    logger.info("delegate_to_deepseek invoked. Task length=%d, context length=%d", len(task), len(context))
-
-    try:
-        result = run_agent(full_task, config)
-    except AgentLoopError as e:
-        logger.exception("Agent loop failed")
-        return f"ERROR: DeepSeek agent loop failed: {e}"
-    except Exception as e:
-        logger.exception("Unexpected error during delegation")
-        return f"ERROR: unexpected failure: {e}"
-
-    logger.info(
-        "delegate_to_deepseek done. turns=%d tool_calls=%d tokens=%d duration=%.2fs",
-        result["turns_used"],
-        result["tool_calls"],
-        result["tokens"]["total"],
-        result["duration_seconds"],
-    )
-
-    # 用量记录（人类可读追加到 usage.log）
-    # 注意：只记 task 前 60 字符摘要，不记 context（context 可能含项目敏感细节）
-    try:
-        # 简单大小控制：>10MB 时轮转一次（rename 为 .1）
-        if _USAGE_LOG.exists() and _USAGE_LOG.stat().st_size > 10 * 1024 * 1024:
-            try:
-                _USAGE_LOG.replace(_USAGE_LOG.with_suffix(".log.1"))
-            except OSError:
-                pass
-        with open(_USAGE_LOG, "a", encoding="utf-8") as f:
-            f.write(
-                f"{result['duration_seconds']:.1f}s  "
-                f"turns={result['turns_used']:>2}  "
-                f"tools={result['tool_calls']:>2}  "
-                f"tokens={result['tokens']['total']:>6}  "
-                f"task={task[:60]!r}\n"
-            )
-        try:
-            os.chmod(_USAGE_LOG, 0o600)
-        except OSError:
-            pass
-    except Exception:
-        pass  # 日志失败不影响主流程
-
+def _format_sync_result(result: dict) -> str:
     return (
         f"{result['final_message']}\n\n"
         f"---\n"
@@ -196,13 +267,232 @@ def delegate_to_deepseek(task: str, context: str = "") -> str:
     )
 
 
+def _build_full_task(task: str, context: str) -> str:
+    validate_delegation_input(task, context)
+    return f"{task}\n\n# Additional context\n{context}" if context else task
+
+
+def _consume_cancelled_worker(worker: asyncio.Task) -> None:
+    """Always retrieve a detached thread task outcome after repeated cancellation."""
+    try:
+        worker.exception()
+    except BaseException:
+        pass
+
+async def _run_sync_cancellable(full_task: str, config: Config) -> dict:
+    cancel_event = Event()
+    worker = asyncio.create_task(
+        asyncio.to_thread(
+            job_manager.run_sync,
+            full_task,
+            config,
+            cancel_event,
+        )
+    )
+    worker.add_done_callback(_consume_cancelled_worker)
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancel_event.set()
+        try:
+            result = await asyncio.shield(worker)
+        except MutationOutcomeError:
+            raise
+        except (AgentLoopCancelled, AgentLoopError, JobError):
+            pass
+        except Exception:
+            logger.error("Cancelled DeepSeek worker failed category=internal")
+        else:
+            records = records_from_result(result)
+            if records:
+                message = mutation_failure_message(
+                    records, "MCP request cancelled after workspace update"
+                )
+                raise MutationOutcomeCancelled(message, tuple(records)) from None
+        raise
+
+@mcp.tool(annotations=_AGENT_EXECUTION)
+async def delegate_to_deepseek(task: str, context: str = "") -> str:
+    """Delegate a focused task synchronously to DeepSeek as a real sub-agent.
+
+    The MCP call remains open until DeepSeek finishes. Prefer this simple API
+    when no mid-flight steering/cancellation is needed. For steerable long work,
+    use `start_deepseek` and the background-job tools instead.
+    """
+    try:
+        config, full_task = _prepare_sync_request(task, context)
+    except JobError as e:
+        return str(e)
+    try:
+        result = await _run_sync_cancellable(full_task, config)
+    except JobBusy as e:
+        return f"ERROR: DeepSeek execution busy: {e}"
+    except JobError as e:
+        return f"ERROR: DeepSeek execution blocked: {e}"
+    except MutationOutcomeError as e:
+        logger.error("DeepSeek delegation stopped category=mutation_outcome")
+        return f"ERROR: {e}"
+    except AgentLoopError:
+        logger.error("DeepSeek delegation failed category=agent")
+        return "ERROR: DeepSeek agent loop failed"
+    except Exception:
+        logger.error("DeepSeek delegation failed category=internal")
+        return "ERROR: unexpected DeepSeek failure"
+
+    _log_sync_completion(result)
+    _record_usage(len(task), result)
+    return _format_sync_result(result)
+
+
+def _prepare_sync_request(task: str, context: str) -> tuple[Config, str]:
+    if _deepseek_mode() == "off":
+        raise JobError(
+            "DeepSeek delegation is disabled (DEEPSEEK_MODE=off). "
+            "Continue the task yourself in the main conversation."
+        )
+    try:
+        config = Config.load()
+    except Exception as error:
+        raise JobError(f"ERROR: deepseek-mcp not configured: {error}") from None
+    try:
+        full_task = _build_full_task(task, context)
+    except JobError as error:
+        raise JobError(f"ERROR: invalid DeepSeek delegation input: {error}") from None
+    logger.info(
+        "delegate_to_deepseek invoked. Task length=%d, context length=%d",
+        len(task),
+        len(context),
+    )
+    return config, full_task
+
+
+def _log_sync_completion(result: dict) -> None:
+    logger.info(
+        "delegate_to_deepseek done. turns=%d tool_calls=%d tokens=%d duration=%.2fs",
+        result["turns_used"],
+        result["tool_calls"],
+        result["tokens"]["total"],
+        result["duration_seconds"],
+    )
+
+
+@mcp.tool(annotations=_AGENT_EXECUTION)
+def start_deepseek(task: str, context: str = "") -> str:
+    """Start one steerable DeepSeek background job and return its job_id quickly.
+
+    One execution per canonical workspace is permitted across MCP processes.
+    The daemon job and its result exist only for this MCP process lifetime.
+    """
+    try:
+        payload = job_manager.start(task, context, _load_config())
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+    logger.info("Background DeepSeek job started: %s", payload["job_id"])
+    return _json({"ok": True, **payload})
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_deepseek_status(job_id: str) -> str:
+    """Get state for a background DeepSeek job without waiting for completion."""
+    try:
+        payload = job_manager.status(job_id)
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+    return _json({"ok": True, **payload})
+
+
+@mcp.tool(annotations=_AGENT_CONTROL)
+def send_deepseek_message(job_id: str, message: str) -> str:
+    """Queue a steering instruction for a running DeepSeek background job.
+
+    The instruction is consumed at the next safe point between model/tool
+    operations. It does not replace an already in-flight model request/tool.
+    """
+    try:
+        payload = job_manager.send_message(job_id, message)
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+    logger.info("Queued steering message for DeepSeek job %s", job_id)
+    return _json({"ok": True, **payload})
+
+
+@mcp.tool(annotations=_LOCAL_CANCELLATION)
+def cancel_deepseek(job_id: str) -> str:
+    """Request cancellation of a running DeepSeek background job.
+
+    Cancellation terminates an in-flight provider request or local tool
+    subprocess. An accepted request wins before result commit.
+    """
+    try:
+        payload = job_manager.cancel(job_id)
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+    logger.info("Cancellation requested for DeepSeek job %s", job_id)
+    return _json({"ok": True, **payload})
+
+
+@mcp.tool(annotations=_RESULT_WITH_BOOKKEEPING)
+def get_deepseek_result(job_id: str) -> str:
+    """Return final result for a background DeepSeek job, or ready=false if running."""
+    try:
+        payload, usage_record = job_manager.result_with_usage_claim(job_id)
+    except JobError as e:
+        return _json({"ok": False, "error": str(e)})
+
+    result = payload.get("result")
+    if payload.get("ready") and payload.get("status") == "completed" and result:
+        logger.info(
+            "Background DeepSeek job %s completed. turns=%d tools=%d tokens=%d",
+            job_id,
+            result["turns_used"],
+            result["tool_calls"],
+            result["tokens"]["total"],
+        )
+        if usage_record:
+            task_length, usage_result = usage_record
+            persisted = _record_usage(task_length, usage_result)
+            job_manager.finish_usage_record(job_id, persisted)
+    return _json({"ok": True, **payload})
+
+
+def _record_usage(task_length: int, result: dict) -> bool:
+    if os.name == "nt":
+        return True
+    try:
+        _, usage_log = _prepare_private_log_dir()
+        stream = PrivateBoundedLogStream(usage_log, rotate_on_full=True)
+        try:
+            record = (
+                f"{result['duration_seconds']:.1f}s  "
+                f"turns={result['turns_used']:>2}  "
+                f"tools={result['tool_calls']:>2}  "
+                f"tokens={result['tokens']['total']:>6}  "
+                f"task_chars={task_length}\n"
+            )
+            return stream.write(record) == len(record)
+        finally:
+            stream.close()
+    except Exception:
+        return False
+
+
 def main() -> None:
     """CLI entrypoint."""
-    logger.info("deepseek-mcp v%s starting (mode=%s)", __version__, os.getenv("DEEPSEEK_MODE", "auto"))
+    try:
+        disable_core_dumps()
+        mode = _deepseek_mode()
+    except (RuntimeError, JobError):
+        raise SystemExit(1) from None
+    _ensure_runtime_logging()
+    logger.info(
+        "deepseek-mcp v%s starting (mode=%s)",
+        __version__,
+        mode,
+    )
     try:
         mcp.run()
     except Exception as e:
-        logger.exception("MCP server crashed: %s", e)
+        logger.error("MCP server crashed type=%s", type(e).__name__)
         sys.exit(1)
 
 

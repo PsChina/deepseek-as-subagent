@@ -1,9 +1,9 @@
 [project]
 name = "deepseek-as-subagent"
-version = "0.0.1"
-description = "MCP server that runs DeepSeek as a real sub-agent for Claude Code / Codex CLI — DeepSeek gets its own Read/Edit/Bash agent loop, not just a Q&A endpoint."
+version = "0.1.0"
+description = "MCP server that runs DeepSeek as a workspace-scoped sub-agent for Claude Code and Codex CLI."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "PsChina" }]
 keywords = ["mcp", "deepseek", "claude-code", "codex-cli", "agent", "sub-agent", "llm-orchestration"]
@@ -22,10 +22,17 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "mcp[cli]>=1.0.0,<2",
-    "openai>=1.40.0",
-    "httpx[socks]>=0.27.0",  # 兼容 SOCKS 代理（科学上网环境常见）
+    # This codebase still uses the MCP Python SDK v1 FastMCP import path.
+    # MCP SDK v2 is a breaking release (`FastMCP` -> `MCPServer`), so keep the
+    # v1 maintenance line until a dedicated v2 migration is completed.
+    "mcp[cli]>=1.28,<2",
+    "openai>=1.40.0,<3",
+    "httpx[socks]>=0.27.0,<1",  # 兼容 SOCKS 代理（科学上网环境常见）
+    "google-re2>=1.1.20251105,<1.2",
 ]
+
+[project.optional-dependencies]
+codex = ["tomlkit>=0.13,<1"]
 
 [project.urls]
 Homepage = "https://github.com/PsChina/deepseek-as-subagent"
@@ -36,7 +43,7 @@ Issues = "https://github.com/PsChina/deepseek-as-subagent/issues"
 deepseek-mcp = "deepseek_mcp.server:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.25,<2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

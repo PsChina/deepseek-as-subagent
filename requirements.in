@@ -1,0 +1,8 @@
+# Runtime, Codex adapter, and local-build dependencies shared by every installer
+# and CI. Regenerate requirements.lock only with the documented uv command.
+mcp[cli]>=1.28,<2
+openai>=1.40,<3
+httpx[socks]>=0.27,<1
+google-re2>=1.1.20251105,<1.2
+tomlkit>=0.13,<1
+hatchling>=1.25,<2

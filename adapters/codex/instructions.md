@@ -1,176 +1,111 @@
-# Codex instructions for `delegate_to_deepseek`
+# Codex instructions for DeepSeek delegation
 
-Copy the section below into your `AGENTS.md` (project root) or
-`~/.codex/instructions.md` (global). It teaches the Codex model when and how
-to use the `delegate_to_deepseek` MCP tool.
+Use this file as an optional stronger project/global policy in `AGENTS.md` or Codex instructions. The MCP server already publishes a compact default policy during initialization.
 
 ---
 
-## Using the `delegate_to_deepseek` tool
+## Using DeepSeek as a delegated sub-agent
 
-You have access to an MCP tool `delegate_to_deepseek` (provided by the
-deepseek MCP server). It runs a full sub-agent loop inside a sandboxed
-workspace — DeepSeek does its own Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
-and returns a final summary.
+You have access to DeepSeek through the `deepseek` MCP server. DeepSeek runs its own agent loop inside the configured workspace. Workspace-scoped reads, searches, and file writes are enabled by default; containerized Bash exists only when the operator explicitly enables it.
+Containerized Bash sees a disposable read-only regular-file snapshot, so workspace edits require an enabled file-mutation tool.
 
-### Core principle: delegate by default
+### Choose the delegation mode
 
-DeepSeek v4-pro is ~10x cheaper per token than top-tier models. Your scarce
-resource is the user's session token budget; DeepSeek's scarce resource is just
-¥ (already paid). **Default: delegate.** Only keep tasks yourself when one of
-these hard constraints applies:
+Use the simple synchronous tool when the task can safely run to completion without mid-flight intervention:
 
-- ❌ Task depends on context from `AGENTS.md` or other repo files DeepSeek
-  can't see
-- ❌ Cross-domain architectural design / tech selection / ADR
-- ❌ Bug root-cause analysis (reasoning-heavy)
-- ❌ Single file < 200 lines, simple edit (DS reasoning overhead > savings)
-- ❌ User explicitly said "do it yourself" / "don't delegate"
+```text
+delegate_to_deepseek(task, context)
+```
 
-### Difficulty tiers (delegate green/yellow/orange, keep red/tiny)
+Use the steerable background-job API when the work is longer, exploratory, or may need new instructions/cancellation while running:
 
-| Tier | Examples | Default |
-|---|---|---|
-| 🟢 Easy | Write hello world / single script, test scaffolding, single CRUD endpoint, single component | ✅ delegate |
-| 🟡 Medium | 3-10 file batch, feature impl with clear spec, fill test gaps, generate boilerplate, simple refactor | ✅ delegate |
-| 🟠 Medium-hard | 10+ file batch, single-domain refactor, perf opt (data given), i18n extraction, protocol conversion | ✅ delegate (split if needed) |
-| 🔴 Hard | Cross-domain design, tech selection, ADR, root-cause analysis, deep project context | ❌ keep yourself |
-| 🌶️ Tiny | Single file < 200 lines, typo / rename / add comment | ❌ keep yourself (overhead) |
+```text
+start_deepseek(task, context) -> job_id
+send_deepseek_message(job_id, message)
+get_deepseek_status(job_id)
+cancel_deepseek(job_id)
+get_deepseek_result(job_id)
+```
 
-**Easy / Medium / Medium-hard all go to DeepSeek.** Don't skip delegation just
-because "it's quick to do myself" — that "quick" still burns 10-20k of your
-own context tokens.
+One DeepSeek execution may run per canonical workspace across both modes and across MCP server processes. Background jobs and their IDs are scoped to the current MCP session.
+
+Every file mutation is durably journaled before commit. After any result that
+contains mutations, call `get_deepseek_recovery`, verify each reported file,
+then pass the exact transaction IDs to
+`acknowledge_deepseek_mutations(transaction_ids)`. Do the same after
+cancellation, disconnection, or MCP restart before retrying. A new delegation
+fails closed while unacknowledged records remain; recovery query/ack does not
+require a working provider API key.
+
+Steering is applied at safe points between model/tool operations. Cancellation wakes retry backoff and promptly terminates an in-flight provider or local-tool subprocess; a container watchdog immediately starts forced cleanup. If a newer steering instruction arrives before a planned tool call executes, stale remaining tool calls may be skipped and DeepSeek will re-plan from the latest instruction.
+
+### Core principle: delegate execution-heavy complete units
+
+DeepSeek is best used for self-contained implementation and mechanical execution. Keep architecture, ambiguous root-cause analysis, security-sensitive judgment, and tiny edits in the main agent unless the user explicitly asks otherwise.
 
 Typical fits:
-- "Extract i18n keys from 50 .strings files into a JSON"
-- "Scan 200 MB of logs for EXC_BAD_ACCESS stacks"
-- "Translate all README.md files to English"
-- "Add docstrings to these 30 legacy Python files"
-- "Replace every call to old_api() with new_api() across the codebase"
-- "Write a fastapi endpoint that returns user JSON"
-- "Add unit tests for the parser module"
-- "Convert these argparse calls to click"
+- multi-file implementation with clear acceptance criteria
+- batch refactors / renames / migrations
+- test generation and test-gap filling
+- i18n extraction / translation / ETL / log processing
+- boilerplate / CRUD / protocol conversion
+- repetitive repository maintenance
 
-### Critical rule: don't read before deciding
+### Decide before reading large amounts of source
 
-**The delegation decision must happen before you read source files.** If you
-Read files first and then delegate, both you and DeepSeek pay to read the
-same files — net token cost goes up, not down.
+The delegation decision should happen before the main agent reads large amounts of repository content. Otherwise the main agent and DeepSeek both pay the same reading cost.
 
-Allowed before deciding to delegate:
-- `Glob` patterns (count and list matching files)
-- `LS` (directory structure)
-- Read-only `Bash`: `ls`, `wc -l`, `find -name`, `du -sh`
-- Web search / web fetch tools (your built-in ones) — see "Pre-flight search" below
+Allowed lightweight discovery before deciding:
+- directory/file listing
+- file counts / sizes
+- path discovery
+- read-only shell commands such as `ls`, `find`, `wc`, `du`, `git status`
+- web search for external documentation
 
-**Not** allowed before deciding:
-- `Read` (file contents)
-- `Grep` (file contents)
+If the task requires deep project reading just to decide whether to delegate, keep it in the main agent.
 
-If you can't decide without reading file contents — you shouldn't delegate.
-Just do the task yourself.
+### Pass complete context
 
-### Pre-flight web search (key insight)
+DeepSeek cannot see the parent conversation, `AGENTS.md`, `CLAUDE.md`, or other host-only context unless it is explicitly included in `task` or `context`.
 
-**DeepSeek sub-agent cannot reach the network** — the MCP server's Bash
-sandbox blocks curl/wget, and no web tools are exposed to DeepSeek. But
-your own web search / fetch tools cost nothing extra (covered by your
-subscription / API plan).
+Include:
+- relevant paths
+- desired outcome
+- constraints / boundaries
+- project conventions that matter
+- success criteria
+- external API/spec facts already gathered by the host
 
-**Rule**: if the task needs external knowledge (new framework APIs,
-spec excerpts, error code meanings, niche library docs), **you should
-search before delegating** and paste the summary into `context`. This
-doesn't violate the no-Read rule because web content is external — there
-is no sunk-cost double-burn.
+### Verify every delegation
 
-When to pre-flight search:
-| Signal in task | Search for |
-|---|---|
-| New version of a framework ("FastAPI 0.115") | Latest changelog / breaking changes |
-| Niche library you're unsure about | README + main API examples |
-| Implementing a protocol/spec | Key spec section summaries |
-| Fixing a bug with a known error code | Official error description + known issues |
-| Calling a SaaS API | Official endpoints + param schema |
+DeepSeek's completion message is not proof of correctness. The main agent owns verification.
 
-Template:
-```
-1. Web-search 1-3 queries (don't over-search)
-2. Summarize key info (signatures, imports, gotchas)
-3. Paste summary at the start of delegate_to_deepseek(context=...)
-4. Delegate
-```
+After completion:
+1. inspect representative changed files;
+2. run relevant tests/checks;
+3. verify counts/schema when the task is batch-oriented;
+4. fix small issues locally;
+5. re-delegate only when the remaining work is still a coherent independent unit.
 
-### How to call it
+### Steering guidance
 
-```
-delegate_to_deepseek(
-  task = "<clear task description with file paths and success criteria>",
-  context = "<optional project conventions, output schemas, boundaries>"
-)
-```
+Use `send_deepseek_message` for genuine changes in direction, newly discovered constraints, or corrections while a background job is still running. Do not spam the job with micro-instructions; each steering message should be meaningful enough to change subsequent work.
 
-DeepSeek can't see your conversation history or your `AGENTS.md`. Anything
-it needs (file paths, naming conventions, output format, etc.) must be in
-`task` or `context`.
+Examples:
+- "Stop adding new files; modify only the existing adapter files."
+- "The API is version 3, not version 2. Use the following signature..."
+- "Keep the implementation but replace the polling loop with event-driven logic."
 
-### After delegation: verify
+Use `cancel_deepseek` when continuing the current job would be wasteful or unsafe.
 
-DeepSeek's self-report "done" is not proof of correctness. Always:
+### Failure handling
 
-1. **Sample-read** 2–3 output files (now allowed — they're new artifacts)
-2. **Check schema** matches what you asked for
-3. **Sanity-check counts** ("50 input files → ≥50 output entries")
-4. **On quality issues**:
-   - Minor (a few missing) → fix yourself
-   - Major (schema wrong / large gaps) → fix locally then delegate again with
-     stricter prompt
-   - Catastrophic → take over yourself and report the failed delegation to
-     the user
+- configuration/API failure: retry once when clearly transient, otherwise take over in the main agent;
+- max-turns: split into larger independent logical units, not micro-steps;
+- poor output twice: stop delegating that task and take over;
+- busy response: another DeepSeek execution owns this workspace lease; inspect/finish/cancel it before starting another against the same workspace.
+- recovery-required response: do not retry; query recovery, verify the actual files, and acknowledge only the exact reviewed IDs.
 
-### Fallback when delegation fails
+### Granularity rule
 
-| Symptom | Action |
-|---|---|
-| `ERROR: deepseek-mcp not configured` | Tell user "DeepSeek not configured, I'll do it myself" and take over |
-| `ERROR: DeepSeek API error: ...` | Retry once; if still failing, take over yourself |
-| Agent loop hit max_turns | Task too big; split it and delegate in smaller batches |
-| Output quality poor twice in a row | Stop delegating in this session; do it yourself |
-
-### Granularity rule: complete logical units, not micro-steps
-
-**Counter-intuitive**: splitting tasks finer ≠ saving more money. Past a
-point, finer splits cost *more* than not delegating at all.
-
-5 "anti-delegation taxes" that scale with split count:
-1. **Split tax** — your tokens spent deciding how to split + what context to send
-2. **Context re-read tax** — DeepSeek can't reuse context across delegations; same files re-read N times
-3. **Verification tax** — every DS completion → you sample-read to verify
-4. **Startup fee** — v4-pro thinking mode burns ~5-10k reasoning tokens per call just to "warm up"
-5. **Fragment rework tax** — micro-tasks lack global view; outputs inconsistent
-
-Rough math (in your-model-equivalent cost, X = doing it yourself):
-- Delegate 1 complete unit → ~0.13X (87% savings) ✅
-- Split into 5 sub-tasks → ~0.50X (50% savings)
-- Split into 10 micro-tasks → ~0.95X (barely any savings)
-- Split into 20 fine steps → ~1.88X (**worse than not delegating**)
-
-**Right shape**: delegate "implement this entire feature" or "process all
-these files" as one call — let DS run its own 10-30 turn loop internally.
-
-**Wrong shape**: delegate "step 1", verify, delegate "step 2", verify,
-delegate "step 3"... — you pay all 5 taxes 3 times.
-
-**Test before splitting further**: "Could I hand this sub-task to a 1-week
-new hire with all context up front and have them finish independently?"
-- Yes → delegate
-- No (they'd need to come back asking questions or check earlier outputs)
-  → don't split it out, merge it with the parent unit
-
-### Cost intuition
-
-DeepSeek v4-pro runs thinking mode → every call carries reasoning token
-overhead. For small tasks (<5k tokens of work), that overhead can exceed
-the work itself. Don't delegate tiny tasks just because you *can*.
-
-Sweet spot: 10–50 files, 50KB–500KB total, mechanical pattern — one delegate
-call, not five.
+Delegate complete logical units rather than a chain of tiny steps. Every extra delegation repeats context loading, startup, and verification costs. A useful test is: could a competent new engineer finish this unit independently if given all context up front? If yes, it is a good delegation unit.

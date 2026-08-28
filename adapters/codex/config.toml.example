@@ -1,19 +1,63 @@
-# Codex MCP server registration for deepseek-as-subagent.
+# Codex MCP registration for deepseek-as-subagent.
+# Prefer `bash adapters/codex/install.sh` for automatic registration.
+
+[mcp_servers.deepseek] # managed-by: deepseek-as-subagent
+command = "/absolute/path/to/.deepseek-mcp/codex-venvs/generation.XXXXXX/bin/deepseek-mcp"
+enabled = true
+enabled_tools = [
+  "ping",
+  "delegate_to_deepseek",
+  "start_deepseek",
+  "get_deepseek_status",
+  "send_deepseek_message",
+  "cancel_deepseek",
+  "get_deepseek_result",
+  "get_deepseek_recovery",
+  "acknowledge_deepseek_mutations",
+]
+startup_timeout_sec = 20
+tool_timeout_sec = 18060
+default_tools_approval_mode = "writes"
+env_vars = [
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_WORKSPACE",
+  "DEEPSEEK_MODE",
+  "DOCKER_HOST",
+  "CONTAINER_HOST",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "REQUESTS_CA_BUNDLE",
+]
+
+# Result retrieval performs local one-shot usage bookkeeping, so it is honestly
+# annotated as a write while remaining safe to approve without a prompt.
+[mcp_servers.deepseek.tools.get_deepseek_result]
+approval_mode = "approve"
+
+[mcp_servers.deepseek.tools.get_deepseek_recovery]
+approval_mode = "approve"
+
+[mcp_servers.deepseek.tools.acknowledge_deepseek_mutations]
+approval_mode = "approve"
+
+# The server exposes:
+# - delegate_to_deepseek(task, context)          # synchronous
+# - start_deepseek(task, context)                # returns job_id
+# - send_deepseek_message(job_id, message)       # steer running job
+# - get_deepseek_status(job_id)
+# - cancel_deepseek(job_id)
+# - get_deepseek_result(job_id)
+# - get_deepseek_recovery()
+# - acknowledge_deepseek_mutations(transaction_ids)
+# - ping()
 #
-# Either:
-#   1. Run: codex mcp add deepseek -- /absolute/path/to/.venv/bin/deepseek-mcp
-#   2. Or copy the [mcp_servers.deepseek] block below into ~/.codex/config.toml
-#
-# Replace the command path with the actual absolute path to deepseek-mcp on
-# your machine (typically <repo>/.venv/bin/deepseek-mcp after running
-# `pip install -e .`).
-
-[mcp_servers.deepseek]
-command = "/absolute/path/to/deepseek-as-subagent/.venv/bin/deepseek-mcp"
-
-# Optional: pass env vars to override config.json fields per invocation.
-# env = { DEEPSEEK_MODE = "auto" }
-
-# Optional: project-scoped instead of user-scoped — put this block in
-# <project>/.codex/config.toml. Codex only loads project configs from
-# trusted directories.
+# DeepSeek API credentials/config live in ~/.deepseek-mcp/config.json rather
+# than this Codex config file.

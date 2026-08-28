@@ -23,6 +23,9 @@ description: 默认把中等及以下、批量、重复或机械任务作为完�
 - 权限、安全、隐私、敏感信息和非授权写入边界
 - 派工结果必须由主 Agent 独立验证，失败时由主 Agent 负责收口
 - 环境变量 `DEEPSEEK_MODE=off` 时本 skill 立即 disabled
+- 服务端默认启用工作区受限的文件写入；若 operator 移除了写入工具或未启用 Bash，不得反复重试或尝试绕过
+- DeepSeek 读取的文件内容会随模型消息发送到配置的 API endpoint；敏感工作区不得派工
+- 每次出现文件 mutation、取消、断连或 MCP 重启后，必须调用 `get_deepseek_recovery`，逐项核验实际文件，再把精确 transaction ID 交给 `acknowledge_deepseek_mutations`；未确认前不得重试委派
 
 ## 🚀 核心理念：能派就派
 
@@ -70,6 +73,8 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 
 ❌ `Read` —— 一旦读就污染上下文，sunk cost 让派工不再合算
 ❌ `Grep` —— 同上，会把匹配行带进上下文
+
+容器 Bash 只看到一次性只读普通文件快照，不能修改宿主工作区。需要修改时必须使用已启用的 Write / Edit / NotebookEdit。
 
 **判断口诀**：**判断不了"该不该派"？默认派 —— DS 多烧几千 token 是小事，主 Agent 多烧 100k 才是大事。**
 
@@ -196,7 +201,7 @@ DeepSeek 进入 sub-agent 后**看不到**主对话历史、CLAUDE.md、项目�
 
 ## 🌐 用主 Agent 自己的 WebSearch / WebFetch 给 DS 补外部知识
 
-**关键认识**：DeepSeek sub-agent **不能联网**（沙箱阻 curl/wget，也没暴露 web 工具）。主 Agent 可使用当前环境提供的 `WebSearch` / `WebFetch` 或等价外部资料工具。
+**关键认识**：DeepSeek sub-agent 没有 web 工具；可选 Bash 容器也强制无网络。主 Agent 可使用当前环境提供的 `WebSearch` / `WebFetch` 或等价外部资料工具。
 
 **派工前规则**：如果任务需要主 Agent 自己不熟的外部知识，**主 Agent 应该用 WebSearch / WebFetch 或等价工具查好，把结果摘要塞进 `context`**。这条规则不冲突（外部资料工具拿到的不是项目代码，不计入项目代码的 sunk cost）。
 
@@ -273,7 +278,7 @@ mcp__deepseek__delegate_to_deepseek(
 ```
 task="在 scripts/ 下写一个 batch_rename.py，把当前目录所有 *.JPG 改成 *.jpg。
       用 pathlib，不要 os.system。运行成功后打印改名数量。"
-context="Python 3.10+，没有第三方依赖。"
+context="项目 Python 版本以 pyproject.toml 为准，没有第三方依赖。"
 ```
 
 **🟡 中等（实现 endpoint）**：
@@ -283,7 +288,7 @@ task="在 api/users.py 里加一个 GET /users/:id endpoint，返回 user 详情
       成功标准：curl localhost:8000/users/1 返回 {id, name, email}。"
 context="项目用 FastAPI 0.115，DB session 注入用 Depends(get_session)。
         路由模块约定：每个文件一个 router 实例，名字叫 router。
-        完成后请用 Bash 起服务 + curl 自验。"
+        完成后补路由测试；主 Agent 负责起服务与网络验收。"
 ```
 
 **🟠 中等偏上（批量提取）**：
@@ -315,6 +320,8 @@ DeepSeek 自报"完成"不等于真的完成。**主 Agent 必须验证**：
 |---|---|
 | `ERROR: deepseek-mcp not configured` | 告诉用户："DeepSeek 没配 key，我自己干" + 主 Agent 接管 |
 | `ERROR: DeepSeek API error` | MCP 已自动重试 2 次；仍失败 → 自己接管 |
+| capability/tool not allowed | 当前安全配置未授权；不要绕过，主 Agent 接管或让 operator 审核配置 |
+| busy / workspace already owned | 同一工作区已有执行；取回/取消当前 job 后再决定，不要并发写 |
 | Agent loop 超 max_turns | 任务太大；拆小再派（"先做前 25 个文件"） |
 | 产物质量差 | 验证后修；累计 2 次差 → 后续主动跳过 delegate（本会话） |
 | 用户连续 2 次 `pure` 启动 | 默认不派工，等用户显式 `/ds` 才派 |
@@ -322,7 +329,7 @@ DeepSeek 自报"完成"不等于真的完成。**主 Agent 必须验证**：
 ## 通用工程纪律（派工不豁免）
 
 - 派工前充分收集 context，不留半成品给 DS
-- 不要把 API key / 敏感数据塞进 task / context 参数
+- 不要把 API key / 敏感数据塞进 task / context，也不要让 DeepSeek 读取未获准发送到 API 的文件
 - 不要 sleep 等 DeepSeek 完成 —— 工具调用同步返回
 - DS 的产物仍要按 SOLID / 项目代码规范抽查，派工不豁免代码质量责任
 
