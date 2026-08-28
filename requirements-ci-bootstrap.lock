@@ -1,0 +1,5 @@
+# CI runner toolchain package audited by `pip-audit --local`.
+# setuptools is provided by actions/setup-python rather than the application lock,
+# so pin it explicitly to keep the local-environment audit reproducible and patched.
+setuptools==83.0.0 \
+    --hash=sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
