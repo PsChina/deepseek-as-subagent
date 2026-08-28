@@ -44,6 +44,9 @@ if os.name == "nt":  # pragma: no cover - exercised by the Windows CI matrix
         wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
     )
     _FINAL_PATH.restype = wintypes.DWORD
+    _GET_LONG_PATH = _KERNEL32.GetLongPathNameW
+    _GET_LONG_PATH.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    _GET_LONG_PATH.restype = wintypes.DWORD
     _GET_HANDLE_INFO = _KERNEL32.GetFileInformationByHandleEx
     _GET_HANDLE_INFO.argtypes = (
         wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
@@ -124,6 +127,18 @@ def _final_path(handle: int) -> str:
     return _normalized(buffer.value)
 
 
+def _canonical_existing_path(path: str) -> str:
+    """Expand Windows 8.3 aliases without resolving through a reparse point."""
+    size = _GET_LONG_PATH(path, None, 0)
+    if not size:
+        raise ctypes.WinError(ctypes.get_last_error())
+    buffer = ctypes.create_unicode_buffer(size + 1)
+    written = _GET_LONG_PATH(path, buffer, len(buffer))
+    if not written or written >= len(buffer):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return _normalized(buffer.value)
+
+
 def _attributes(handle: int) -> int:
     info = _AttributeTagInfo()
     ok = _GET_HANDLE_INFO(
@@ -134,13 +149,15 @@ def _attributes(handle: int) -> int:
     return int(info.attributes)
 
 
-def _validate_handle(handle: int, expected: str, *, directory: bool) -> None:
+def _validate_handle(handle: int, expected: str, *, directory: bool) -> str:
     attributes = _attributes(handle)
     actual_directory = bool(attributes & _DIRECTORY)
     if attributes & _REPARSE or actual_directory != directory:
         raise WindowsPathError("Windows path is a reparse point or wrong type")
-    if _final_path(handle) != expected:
+    canonical = _canonical_existing_path(expected)
+    if _final_path(handle) != canonical:
         raise WindowsPathError("Windows path escaped its expected location")
+    return canonical
 
 
 def _validate_acl(handle: int) -> None:
@@ -156,17 +173,17 @@ def _open_directory(path: Path) -> _Directory:
     current = _normalized(drive + "\\")
     handle = _open(current, directory=True)
     try:
-        _validate_handle(handle, current, directory=True)
+        current = _validate_handle(handle, current, directory=True)
         for part in (piece for piece in tail.split("\\") if piece):
             candidate = _normalized(ntpath.join(current, part))
             child = _open(candidate, directory=True)
             try:
-                _validate_handle(child, candidate, directory=True)
+                canonical = _validate_handle(child, candidate, directory=True)
             except BaseException:
                 _close(child)
                 raise
             _close(handle)
-            handle, current = child, candidate
+            handle, current = child, canonical
         _validate_acl(handle)
         return _Directory(handle, current)
     except BaseException:

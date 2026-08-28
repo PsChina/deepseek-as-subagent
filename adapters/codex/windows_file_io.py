@@ -142,13 +142,15 @@ def _attributes(handle: int) -> int:
     return int(info.attributes)
 
 
-def _validate(handle: int, expected: str, *, directory: bool) -> None:
+def _validate(handle: int, expected: str, *, directory: bool) -> str:
     attributes = _attributes(handle)
     actual_directory = bool(attributes & _DIRECTORY)
     if attributes & _REPARSE or actual_directory != directory:
         raise WindowsPathError("Codex config path is a reparse point or wrong type")
-    if _final_path(handle) != expected:
+    canonical = _shared_windows_file_io._canonical_existing_path(expected)
+    if _final_path(handle) != canonical:
         raise WindowsPathError("Codex config path escaped its expected location")
+    return canonical
 
 
 def _validate_acl(handle: int) -> None:
@@ -166,18 +168,18 @@ def _open_parent(path: Path) -> _Directory:
     handle = _open(current, _READ, _OPEN_EXISTING, directory=True, share=_SHARE_RW)
     ancestors: list[int] = []
     try:
-        _validate(handle, current, directory=True)
+        current = _validate(handle, current, directory=True)
         for part in (piece for piece in tail.split("\\") if piece):
             candidate = _normalized(ntpath.join(current, part))
             child = _open(candidate, _READ, _OPEN_EXISTING, directory=True, share=_SHARE_RW)
             try:
-                _validate(child, candidate, directory=True)
+                canonical = _validate(child, candidate, directory=True)
             except BaseException:
                 with suppress(OSError):
                     _close(child)
                 raise
             ancestors.append(handle)
-            handle, current = child, candidate
+            handle, current = child, canonical
         _validate_acl(handle)
         return _Directory(handle, current, tuple(ancestors))
     except BaseException:
