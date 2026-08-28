@@ -11,28 +11,50 @@
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](https://github.com/PsChina/deepseek-as-subagent)
 
 > 让 DeepSeek 在 Claude Code / Codex CLI 里作为**真正的 sub-agent**运行，而不只是一个 LLM 接口。
-> 主 Agent 保留主对话、规划、判断与验收；DeepSeek 拿到工作区受限的工具循环，负责执行型工作。
+> 主 Agent 保留主对话、规划、判断与验收；DeepSeek 拿到自己的工具循环，负责执行型工作。
 > Coding API 使用工作区受限写入和有界 `trusted_host` Bash；独立只读 API 提供不执行命令的纯文件分析。
+
+### 完整 coding 委派
 
 ```text
        Claude / Codex（主 Agent）
-         │
-         ├─ coding → delegate_to_deepseek / start_deepseek
-         │
-         └─ 只读 → delegate_to_deepseek_readonly / start_deepseek_readonly
-                                  │
-                                  ├─ send_deepseek_message(job_id, ...)
-                                  ├─ get_deepseek_status(job_id)
-                                  ├─ cancel_deepseek(job_id)
-                                  └─ get_deepseek_result(job_id)
+         ├─ 普通 coding → delegate_to_deepseek
+         └─ 方向可能变化的 coding 任务
+                           → start_deepseek → job_id
+                                              ├─ send_deepseek_message(job_id, ...)
+                                              ├─ get_deepseek_status(job_id)
+                                              ├─ cancel_deepseek(job_id)
+                                              └─ get_deepseek_result(job_id)
          ▼
-       DeepSeek sub-agent
-         │  coding：Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
-         │  只读：Read / Glob / Grep
-         │  在工作区里自主循环
+       DeepSeek coding sub-agent
+         │  Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
+         │  在工作区内自主读取、修改、运行和测试
          ▼
        结果返回主 Agent
-       主 Agent 抽样检查 / 跑测试后再汇报
+       主 Agent 抽样检查改动 / 测试后再汇报
+```
+
+Coding Bash 在可信宿主机上以 `cwd=workspace` 运行；它有时限、输出和凭证隔离，
+但不是操作系统级沙箱。
+
+### 只读分析委派
+
+```text
+       Claude / Codex（主 Agent）
+         ├─ 普通只读分析 → delegate_to_deepseek_readonly
+         └─ 方向可能变化的只读分析任务
+                           → start_deepseek_readonly → job_id
+                                                       ├─ send_deepseek_message(job_id, ...)
+                                                       ├─ get_deepseek_status(job_id)
+                                                       ├─ cancel_deepseek(job_id)
+                                                       └─ get_deepseek_result(job_id)
+         ▼
+       DeepSeek 只读 sub-agent
+         │  Read / Glob / Grep
+         │  自主阅读、搜索、review 和静态分析
+         ▼
+       分析结果返回主 Agent
+       主 Agent 核验结论
 ```
 
 ## 快速开始
@@ -66,7 +88,7 @@ Codex 和其它 MCP 客户端见下方安装说明。
 
 很多 DeepSeek MCP 只暴露一次模型调用。主 Agent 仍然需要自己读文件、整理上下文、再把内容喂给 DeepSeek，因此只省“思考”成本，不省“读写执行”成本。
 
-本项目给 DeepSeek **完整 agent loop**：工具调度、文件 I/O、命令执行、多轮推理都由 DeepSeek 自己完成。主 Agent 可以直接把一个完整逻辑单元交出去，再拿结果回来验收。
+本项目给 DeepSeek **完整 agent loop**：工具调度、文件 I/O、coding 时的命令执行与多轮推理都由 DeepSeek 自己完成。主 Agent 可以直接把一个完整逻辑单元交出去，再拿结果回来验收。
 
 ## 包含什么
 
@@ -74,7 +96,7 @@ Codex 和其它 MCP 客户端见下方安装说明。
 - **coding 与只读委派**：`delegate_to_deepseek` / `delegate_to_deepseek_readonly`
 - **后台可控任务**：`start_deepseek` / `start_deepseek_readonly` 与共用控制 API
 - **DeepSeek 本地 agent loop**（`agent_loop.py`）
-- **开箱即用的编码工具**：默认 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
+- **固定 capability API**：coding 为 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit；只读为 Read / Glob / Grep
 - **Bash 执行**：通过 tool-child 边界运行有界且隔离凭证的 `trusted_host`
 - **工作区路径边界**：文件工具拒绝指向工作区外的符号链接
 - **跨进程执行租约**：多个 MCP server 也不能同时对同一工作区执行 DeepSeek
@@ -130,29 +152,40 @@ MCP server 本身与客户端无关。先用 `pip --require-hashes` 安装
 
 ## 使用
 
+先按任务的**整个预期生命周期**选择能力。只有任务的每一步都只是用 Read、Glob、
+Grep 做静态文件分析、且不执行任何命令时，才选择只读；只要任何阶段可能需要 Bash、
+测试、build、lint、Git、运行程序、依赖操作、工作区修改，或无法确定是否只读，就选择
+coding。
+
 ### 1. 普通同步委派
 
-任务不需要中途干预时直接使用：
+任务不需要中途干预时，按能力直接使用同步 API：
 
 ```text
 delegate_to_deepseek(task, context)
+delegate_to_deepseek_readonly(task, context)
 ```
 
+前者用于 coding、Bash、测试或任何可能写工作区的任务；后者只用于静态文件分析。
 MCP 请求会一直保持到 DeepSeek 完成。
 
 ### 2. 后台可控委派
 
-对于较长、可能需要中途加指令或停止的任务：
+对于较长、可能需要中途加指令或停止的任务，先选择对应的后台 API，随后两类
+job 都使用同一组控制接口：
 
 ```text
-start_deepseek(task, context) -> job_id
+start_deepseek(task, context) / start_deepseek_readonly(task, context) -> job_id
 send_deepseek_message(job_id, message)
 get_deepseek_status(job_id)
 cancel_deepseek(job_id)
 get_deepseek_result(job_id)
 ```
 
-`start_deepseek` 会很快返回，DeepSeek 在后台 worker 中继续执行，因此同一个 MCP session 后续还能继续发送控制请求。
+两个 `start_*` API 都会很快返回，DeepSeek 在后台 worker 中继续执行，因此同一个 MCP session 后续还能继续发送控制请求。steering 只能更新任务指令，不能改变该 job 已冻结的工具或 Bash 可用性。
+
+如果 readonly job 后续需要执行命令或修改工作区，应取消或结束它，再用
+`start_deepseek` 新建 coding job；steering 不能升级既有 readonly job。
 
 steering 会在模型 / 工具操作之间的安全点生效。cancel 会立即唤醒 API retry backoff，并及时终止正在进行的 provider 或本地工具子进程。
 
@@ -235,13 +268,18 @@ max_retries=0
 }
 ```
 
+`allowed_tools` 为兼容已有配置和校验而保留；它不用于为某次委派选择能力。
+MCP API 会在加载配置后应用各自固定的 profile。
+
 `max_run_seconds` 是单次委派的硬墙钟上限。默认 18,000 秒（5 小时），
 可以显式向上调整，但配置可接受的绝对上限是 172,800 秒（48 小时）。
 单次 provider 请求在总预算内仍单独限制为最多 180 秒。
 同步委派时，MCP 客户端自身的 tool timeout 必须至少是运行上限再加清理
 余量；Codex 安装后的默认值是 18,060 秒（5 小时加 60 秒）。
 
-**工作区（沙箱根）**默认跟随启动宿主客户端时的当前目录。要锁定固定路径，可加：
+**工作区根目录**默认跟随启动宿主客户端时的当前目录。它是文件工具的路径边界，
+也是 coding Bash 的工作目录；对 `trusted_host` Bash 而言它不是操作系统级沙箱。
+要锁定固定路径，可加：
 
 ```json
 "workspace": "/abs/path"
@@ -252,7 +290,8 @@ max_retries=0
 `delegate_to_deepseek` 与 `start_deepseek` 固定使用完整 coding 工具和有界
 `trusted_host` Bash。`delegate_to_deepseek_readonly` 与
 `start_deepseek_readonly` 固定只给 Read/Glob/Grep，绝不暴露 Bash，也不依赖
-Docker/Podman。具体边界见 [SECURITY.md](SECURITY.md)。
+Docker/Podman。能力由所选 API 固定，而不是由 task 参数或模型请求决定，整个
+job 生命周期都不能改变。具体边界见 [SECURITY.md](SECURITY.md)。
 
 ## 卸载
 

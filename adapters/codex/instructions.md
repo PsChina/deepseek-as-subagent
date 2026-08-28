@@ -9,38 +9,32 @@ Use this file as an optional stronger project/global policy in `AGENTS.md` or Co
 You have access to DeepSeek through the `deepseek` MCP server. DeepSeek runs its
 own agent loop inside the configured workspace.
 
-### Choose the delegation API
+### API reference and selection
 
-For changes, tests, builds, lint, Git, dependencies, or anything that might
-write the workspace, use the full coding API. It has Read, Write, Edit, Bash,
-Glob, Grep, and NotebookEdit; Bash runs on the trusted host.
+- `ping()` — check server availability.
+- `delegate_to_deepseek(task, context="")` — wait for full coding to finish;
+  it cannot be steered, queried, or cancelled while running.
+- `delegate_to_deepseek_readonly(task, context="")` — wait for Read/Glob/Grep
+  analysis only; no Bash or workspace mutation, and no background controls.
+- `start_deepseek(task, context="")` / `start_deepseek_readonly(task, context="")`
+  — start coding/read-only background work and return `job_id`.
+- `get_deepseek_status(job_id)` / `get_deepseek_result(job_id)` — read job state
+  or final result.
+- `send_deepseek_message(job_id, message)` / `cancel_deepseek(job_id)` — steer
+  or cancel a background job.
+- `get_deepseek_recovery()` / `acknowledge_deepseek_mutations(transaction_ids)`
+  — inspect and acknowledge exact reviewed coding-mutation records.
 
-```text
-delegate_to_deepseek(task, context)
-start_deepseek(task, context) -> job_id
-```
+`task` gives the goal and acceptance criteria; optional `context` gives paths,
+constraints, and conventions. `job_id` comes from `start_*`; `message` is an
+additional instruction; `transaction_ids` is the exact recovery ID list.
 
-For clearly read-only investigation—reading/searching code, code review, log
-analysis, root-cause analysis, or call-graph investigation—use the readonly
-API. It has only Read, Glob, and Grep: no Bash, no workspace mutation, and no
-Docker/Podman dependency.
-
-```text
-delegate_to_deepseek_readonly(task, context)
-start_deepseek_readonly(task, context) -> job_id
-```
-
-Do not pass a mode, backend, or permissions parameter. The selected API fixes
-the profile for the entire job, including steering and background control.
-
-For either background API, use:
-
-```text
-send_deepseek_message(job_id, message)
-get_deepseek_status(job_id)
-cancel_deepseek(job_id)
-get_deepseek_result(job_id)
-```
+Use `delegate_*` when the host can wait for completion. Use `start_*` when it
+needs steering, status, or cancellation. Use readonly only for pure
+reading/search/review of existing files or text with no command at any step;
+use coding for everything else or uncertainty. Steering cannot change frozen
+capabilities: a readonly job that later needs a command or mutation must be
+cancelled or finished, then replaced with a new coding job.
 
 One DeepSeek execution may run per canonical workspace across both API types and
 across MCP server processes. Background jobs and their IDs are scoped to the
@@ -72,7 +66,8 @@ Typical fits:
 
 The delegation decision should happen before the main agent reads large amounts of repository content. Otherwise the main agent and DeepSeek both pay the same reading cost.
 
-Allowed lightweight discovery before deciding:
+Allowed lightweight discovery by the **main agent** before deciding (this is
+not a capability of the readonly DeepSeek API):
 - directory/file listing
 - file counts / sizes
 - path discovery

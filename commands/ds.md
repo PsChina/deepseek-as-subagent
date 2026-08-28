@@ -5,6 +5,8 @@ description: 显式派工给 DeepSeek sub-agent（绕过 Claude 自动决策）�
 # /ds — Delegate to DeepSeek
 
 把后面跟的任务**强制**派给 DeepSeek 处理，绕过 Claude 的自动决策（"该派 / 不该派"）。
+`/ds` 固定调用完整 coding API；明确只做静态文件分析的任务应由主 Agent 选择
+`delegate_to_deepseek_readonly`。
 
 ## 你要做的
 

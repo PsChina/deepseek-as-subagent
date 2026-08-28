@@ -43,8 +43,8 @@ environment variables; use `--force-replace` only after inspecting that state.
 That flag is a trust-boundary reset: it rebuilds a clean server table and does
 not preserve those launch customizations.
 It validates an existing DeepSeek runtime config before touching Codex. New
-installs enable coding Bash through the `trusted_host` backend; read-only
-delegation needs no container runtime.
+installs enable coding Bash on the trusted host; read-only delegation needs no
+container runtime.
 Fresh registrations use:
 
 - `default_tools_approval_mode = "writes"`;
@@ -133,6 +133,15 @@ The readonly APIs provide only Read, Glob, and Grep. They expose neither Bash
 nor workspace mutation and work without Docker/Podman. Do not pass a mode,
 backend, or permission argument; the selected API freezes the profile for the
 job.
+
+For either `start_*` API, use the same job controls:
+
+```text
+send_deepseek_message(job_id, message)
+get_deepseek_status(job_id)
+cancel_deepseek(job_id)
+get_deepseek_result(job_id)
+```
 
 Steering is applied at model/tool safe points. Cancellation wakes retry backoff
 and promptly terminates an in-flight provider or local-tool subprocess. A

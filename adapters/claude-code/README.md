@@ -17,6 +17,19 @@ The skill and command symlinks target installer-owned copies under
 break an installed Claude setup. Re-run the installer to publish repo updates.
 The installer never edits shell startup files.
 
+## Delegation capabilities
+
+Use `delegate_to_deepseek` or `start_deepseek` for coding: they always expose
+Read, Write, Edit, Bash, Glob, Grep, and NotebookEdit. Bash runs on the trusted
+host with `cwd=workspace`; it is bounded and credential-isolated, but not an OS
+sandbox.
+
+Use `delegate_to_deepseek_readonly` or `start_deepseek_readonly` for static
+file analysis. They always expose only Read, Glob, and Grep—no Bash and no
+workspace mutation. Both `start_*` APIs return a `job_id` controlled by the
+same `send_deepseek_message`, status, cancel, and result APIs. The selected API
+fixes its capability for the whole job, including after steering.
+
 ## Install
 
 From repo root:

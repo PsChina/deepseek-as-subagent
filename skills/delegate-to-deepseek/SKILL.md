@@ -23,9 +23,35 @@ description: 默认把中等及以下、批量、重复或机械任务作为完�
 - 权限、安全、隐私、敏感信息和非授权写入边界
 - 派工结果必须由主 Agent 独立验证，失败时由主 Agent 负责收口
 - 环境变量 `DEEPSEEK_MODE=off` 时本 skill 立即 disabled
-- 服务端默认启用工作区受限的文件写入；若 operator 移除了写入工具或未启用 Bash，不得反复重试或尝试绕过
+- API 能力由服务端固定：coding 为 Read/Write/Edit/Bash/Glob/Grep/NotebookEdit；只读为 Read/Glob/Grep。不得尝试通过 task、steering 或工具参数改变它
 - DeepSeek 读取的文件内容会随模型消息发送到配置的 API endpoint；敏感工作区不得派工
 - 每次出现文件 mutation、取消、断连或 MCP 重启后，必须调用 `get_deepseek_recovery`，逐项核验实际文件，再把精确 transaction ID 交给 `acknowledge_deepseek_mutations`；未确认前不得重试委派
+
+## API 与选择规则
+
+- `ping()`：检查 MCP 服务是否可用。
+
+- `delegate_to_deepseek(task, context="")`：同步执行完整 coding 任务；调用后只能等待结果，中途不能 steering、查询状态或取消。`task` 是目标与验收标准；可选 `context` 补充路径、约束和项目约定。
+
+- `delegate_to_deepseek_readonly(task, context="")`：同步执行只读分析，仅限 Read / Glob / Grep；参数同上，调用后同样只能等待结果。
+
+- `start_deepseek(task, context="")`：启动后台 coding 任务，返回 `job_id`。
+
+- `start_deepseek_readonly(task, context="")`：启动后台只读任务，返回 `job_id`。
+
+- `get_deepseek_status(job_id)`：查看后台任务状态。`job_id` 是对应 `start_*` 返回的标识。
+
+- `send_deepseek_message(job_id, message)`：向后台任务追加或修正指令。`message` 不能改变该 job 已冻结的能力。
+
+- `cancel_deepseek(job_id)`：取消后台任务。
+
+- `get_deepseek_result(job_id)`：获取后台任务最终结果；尚未完成时返回未就绪状态。
+
+- `get_deepseek_recovery()`：查看 coding 任务产生、待主 Agent 核验的文件修改记录。
+
+- `acknowledge_deepseek_mutations(transaction_ids)`：核验后确认修改记录；`transaction_ids` 必须是 recovery 返回的精确 ID 列表。
+
+**选择规则**：能直接等待完成时用 `delegate_*`；需要 steering、状态查询或取消时用 `start_*`。纯阅读、搜索、review 已存在文件或文本，且整个任务不执行任何命令时用 readonly；其余或不确定时用 coding。readonly job 后续需要 Bash 或修改文件时，不能 steering 提权；应取消或结束该 job，再新建 coding job。
 
 ## 🚀 核心理念：能派就派
 
@@ -33,7 +59,7 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 
 - ❌ 任务依赖 CLAUDE.md / 项目内部约定文档（DS 拿不到主 Agent 端的记忆）
 - ❌ 跨领域架构设计 / 技术选型 / ADR（需要主 Agent 的综合推理）
-- ❌ bug 根因分析（推理密集，默认由主 Agent 负责）
+- ❌ 跨领域或结论不明确的 bug 根因分析（推理密集，默认由主 Agent 负责）
 - ❌ 单文件 < 200 行的微调（DS 的 reasoning 起步成本 > 省下的主 Agent tokens）
 - ❌ 用户明确说"你自己干 / 别派"
 
@@ -66,7 +92,7 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 
 ✅ `Glob` —— 看有多少文件、什么扩展名
 ✅ `LS` —— 看目录结构
-✅ `Bash` 只读命令 —— `ls`、`wc -l`、`find . -name`、`du -sh`、`git status`
+✅ 主 Agent 自己的 `Bash` 只读命令 —— `ls`、`wc -l`、`find . -name`、`du -sh`、`git status`
 ✅ `WebSearch` / `WebFetch` —— 查外部文档 / 新 API / 错误码（用来给 DS 补 context，Anthropic 包了费用）
 
 ### 派工决策前默认避免的工具
@@ -74,7 +100,8 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 ❌ `Read` —— 一旦读就污染上下文，sunk cost 让派工不再合算
 ❌ `Grep` —— 同上，会把匹配行带进上下文
 
-容器 Bash 只看到一次性只读普通文件快照，不能修改宿主工作区。需要修改时必须使用已启用的 Write / Edit / NotebookEdit。
+只读 DeepSeek API 没有 Bash。coding API 的 Bash 在可信宿主机上以
+`cwd=workspace` 运行，不是操作系统级沙箱；它仍受时限、输出上限和凭证隔离约束。
 
 **判断口诀**：**判断不了"该不该派"？默认派 —— DS 多烧几千 token 是小事，主 Agent 多烧 100k 才是大事。**
 
@@ -99,7 +126,7 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 | "写一个 X" / "实现 Y" / "做一个 Z" | 派（除非命中🔴/🌶️） |
 | "重命名 / 批量改 / 翻译 / 提取" | 派 |
 | "测试 / 文档 / boilerplate / lint 修" | 派 |
-| "为啥这个 bug" / "为啥这里挂了" | 自己干（推理任务） |
+| "为啥这个 bug" / "为啥这里挂了" | 静态代码/日志调查可派给 readonly；跨领域或结论不明确时自己干 |
 | "我应该用 A 还是 B" | 自己干（选型） |
 | "改个 typo / rename 一个变量" | 自己干（极小，DS overhead 不值） |
 | "派给 DS" / `/ds <任务>` | 强制派 |
@@ -185,9 +212,9 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 
 ## 派工前默认准备（避免上下文丢失）
 
-DeepSeek 进入 sub-agent 后**看不到**主对话历史、CLAUDE.md、项目内部约定文档、主 Agent 内存、**也不能联网**。所有它需要的上下文（包括外部资料）**必须**通过 `task` 和 `context` 参数传过去。
+DeepSeek 进入 sub-agent 后**看不到**主对话历史、CLAUDE.md、项目内部约定文档或主 Agent 内存。所有它需要的上下文（包括外部资料）都应通过 `task` 和 `context` 参数传过去；不要把 API key 或其它凭证放进去。
 
-调用前**默认只用 Glob / LS / 只读 Bash**（尽量不 Read）收集：
+调用前主 Agent **默认只用 Glob / LS / 自己的只读 Bash**（尽量不 Read）收集：
 
 ```
 1. 用 Glob 列出涉及的文件路径（如果有），传给 DeepSeek
@@ -201,7 +228,7 @@ DeepSeek 进入 sub-agent 后**看不到**主对话历史、CLAUDE.md、项目�
 
 ## 🌐 用主 Agent 自己的 WebSearch / WebFetch 给 DS 补外部知识
 
-**关键认识**：DeepSeek sub-agent 没有 web 工具；可选 Bash 容器也强制无网络。主 Agent 可使用当前环境提供的 `WebSearch` / `WebFetch` 或等价外部资料工具。
+**关键认识**：DeepSeek sub-agent 没有 web 工具。主 Agent 可使用当前环境提供的 `WebSearch` / `WebFetch` 或等价外部资料工具。
 
 **派工前规则**：如果任务需要主 Agent 自己不熟的外部知识，**主 Agent 应该用 WebSearch / WebFetch 或等价工具查好，把结果摘要塞进 `context`**。这条规则不冲突（外部资料工具拿到的不是项目代码，不计入项目代码的 sunk cost）。
 
@@ -265,7 +292,7 @@ context="项目 fastapi 0.115，参考 API 用法：
 ```
 mcp__deepseek__delegate_to_deepseek(
   task="<清晰描述要做什么 + 成功标准 + 涉及路径>
-        (路径用相对 cwd 即可 —— DeepSeek 沙箱根 = 主 Agent 启动目录)",
+        （相对路径以配置的 workspace 为基准；默认跟随主 Agent 启动目录）",
 
   context="<项目约定 / 框架版本 / schema / 边界 / 已知坑>
   - 完成后请抽样 verify N 个产物"

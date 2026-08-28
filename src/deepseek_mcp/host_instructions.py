@@ -1,27 +1,37 @@
 """Stable MCP host instructions, separated to keep the server entrypoint small."""
 
 HOST_INSTRUCTIONS = """
-After a result containing mutations, verify delegated output and each changed
-file, call `get_deepseek_recovery`, then call `acknowledge_deepseek_mutations` with its exact IDs. Use `delegate_to_deepseek` or
-`start_deepseek` for code changes, builds, tests, lint, git, dependency work, or
-anything that may write the workspace. They have full coding tools and
-trusted-host Bash. For reading code, search, code review, log analysis,
-root-cause investigation, or other non-mutating work, use
-`delegate_to_deepseek_readonly` or `start_deepseek_readonly`. They have only
-Read/Glob/Grep and need neither Bash nor a container runtime. Use coding APIs
-for any Bash command, test, build, lint, Git command, program run, or possible
-workspace write. Do not pass a mode or backend; the API fixes capabilities
-before each task starts.
+After any result with mutations—or cancellation, disconnection, or restart—call
+`get_deepseek_recovery`, verify the reported files, then call
+`acknowledge_deepseek_mutations(transaction_ids)` with the exact reviewed IDs.
 
-Every mutation is journaled before commit.
-After cancellation, disconnection, or restart, query recovery before retrying.
-Keep architecture, ambiguous root-cause analysis, security judgment, and tiny
-edits in the host. DeepSeek cannot see host chat or project instructions; pass
-context explicitly. Do not retry a denied capability.
+API reference:
+- `ping()`: check that the MCP server is available.
+- `delegate_to_deepseek(task, context="")`: wait for full coding to finish; it
+  cannot be steered, queried, or cancelled while running.
+- `delegate_to_deepseek_readonly(task, context="")`: wait for file-only analysis
+  with Read/Glob/Grep; it has no Bash or mutation tools and cannot be controlled
+  while running.
+- `start_deepseek(task, context="")` / `start_deepseek_readonly(task, context="")`:
+  start a coding/read-only background job and return `job_id`.
+- `get_deepseek_status(job_id)`: read a background job's state.
+- `send_deepseek_message(job_id, message)`: add or correct its task instruction.
+- `cancel_deepseek(job_id)`: cancel a background job.
+- `get_deepseek_result(job_id)`: return its final result, or not-ready state.
+- `get_deepseek_recovery()`: list unacknowledged mutations from coding work.
+- `acknowledge_deepseek_mutations(transaction_ids)`: acknowledge exact reviewed IDs.
+`task` states the goal and acceptance criteria; optional `context` supplies paths,
+constraints, and project conventions. `job_id` comes from `start_*`.
 
-For steering or cancellation, use `send_deepseek_message`, `get_deepseek_status`,
-`cancel_deepseek`, and `get_deepseek_result`. Steering is consumed between
-operations; cancellation terminates provider/tool subprocesses. One OS lease
-permits one execution per canonical workspace. Background jobs/results are
-process-local. New delegation fails closed while recovery records remain.
+Selection: use `delegate_*` when the host can wait for completion. Use `start_*`
+when it needs steering, status, or cancellation. Use readonly only for pure
+reading/search/review of existing files or text when no task step needs a command;
+use coding for everything else or uncertainty. The API freezes the capability for
+the job. Steering cannot enable Bash or mutation tools: if a readonly job later
+needs either, cancel or finish it and create a new coding job.
+
+DeepSeek cannot see host chat or project instructions; pass needed context
+explicitly. One OS lease permits one execution per canonical workspace.
+Background jobs/results are process-local. New delegation fails closed while
+recovery records remain.
 """.strip()
