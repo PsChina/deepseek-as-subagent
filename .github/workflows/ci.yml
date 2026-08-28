@@ -13,6 +13,7 @@ jobs:
   test:
     name: "${{ matrix.os }} / Python ${{ matrix.python-version }}"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -27,36 +28,44 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-audit.lock
 
-      - name: Install dependencies
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --require-hashes -r requirements.lock
-          python -m pip install --require-hashes -r requirements-audit.lock
-          python -m pip install -e . --no-deps
+      - name: Install hash-locked dependencies
+        run: python -m pip install --only-binary=:all: --require-hashes -r requirements.lock
+
+      - name: Install package without dependency resolution
+        run: python -m pip install --no-deps --no-build-isolation .
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
-      - name: Verify dependencies
+      - name: Check installed dependency consistency
         run: python -m pip check
 
-      - name: Audit dependencies
-        run: python -m pip_audit -r requirements.lock
+      - name: Install hash-locked vulnerability scanner
+        run: python -m pip install --only-binary=:all: --require-hashes -r requirements-audit.lock
 
-      - name: Compile package
-        run: python -m compileall -q src adapters scripts
+      - name: Audit the installed environment
+        run: python -m pip_audit --local --progress-spinner off
 
-      - name: Check shell syntax
-        if: runner.os != 'Windows'
+      - name: Compile package and adapter helpers
+        run: >-
+          python -m compileall -q
+          src/deepseek_mcp
+          adapters/codex
+          scripts
+
+      - name: Validate shell installers
         shell: bash
-        run: |
-          bash -n install.sh curl-install.sh adapters/codex/install.sh adapters/codex/uninstall.sh scripts/claude_helpers.sh
+        run: bash -n install.sh uninstall.sh scripts/claude_helpers.sh adapters/codex/install.sh adapters/codex/uninstall.sh
