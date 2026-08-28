@@ -237,6 +237,7 @@ class WorkspaceExecutionLeaseTests(unittest.TestCase):
             lease.release()
 
     def test_windows_unsafe_directory_acl_is_rejected(self) -> None:
+        path = Path("locks")
         with (
             patch("deepseek_mcp.execution_lock.os.name", "nt"),
             patch.object(
@@ -246,7 +247,7 @@ class WorkspaceExecutionLeaseTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(OSError, "not private"),
         ):
-            _secure_directory(Path("locks"))
+            _secure_directory(path)
 
     def test_windows_directory_uses_private_handle_validation(self) -> None:
         path = Path("C:/Users/alice/.deepseek-mcp/locks")
