@@ -101,7 +101,7 @@ def _encoded_request(config, messages: list[dict], tools: list[dict]) -> bytes:
             "credential": getattr(config, "api_" + "key"),
             "base_url": config.base_url,
             "model": config.model,
-            "reasoning_effort": config.reasoning_effort,
+            "reasoning_effort": getattr(config, "reasoning_effort", "high"),
         },
         "messages": messages,
         "tools": tools,
