@@ -273,7 +273,10 @@ No third-party proxy or cloud relay is introduced by this project. Delegated pro
 {
   "api_key": "sk-...",
   "flash": "deepseek-v4-flash",
+  "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
+  "pro_reasoning_effort": "high",
+  "_reasoning_effort_options": ["none", "low", "high", "max"],
   "max_turns": 50,
   "max_run_seconds": 18000,
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
@@ -285,6 +288,14 @@ profiles. You can change these strings when DeepSeek publishes a new model
 revision, or when a compatible endpoint uses different model names, without
 changing how Claude/Codex calls the MCP tools. The public tool argument remains
 only `model="flash"` or `model="pro"`.
+
+`flash_reasoning_effort` and `pro_reasoning_effort` accept `none`, `low`, `high`,
+or `max`. `none` disables thinking; the other values explicitly enable thinking
+at that effort. `_reasoning_effort_options` is only an in-file hint and is ignored
+at runtime. If an effort field is absent, deepseek-mcp leaves thinking controls
+unspecified for that slot so the provider's existing default applies; this keeps
+older configs and OpenAI-compatible gateways compatible. New installer-generated
+configs explicitly set both slots to `high`.
 
 For upgrade compatibility, a legacy single `model` field is still accepted when
 `flash` and `pro` are absent; its value is used for both slots. Do not combine
