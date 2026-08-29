@@ -90,7 +90,8 @@ def _request_arguments(
         "messages": messages,
         "max_tokens": MAX_OUTPUT_TOKENS_PER_REQUEST,
     }
-    _apply_reasoning_settings(arguments, settings.get("reasoning_effort", "high"))
+    if "reasoning_effort" in settings:
+        _apply_reasoning_settings(arguments, settings["reasoning_effort"])
     if tools:
         arguments["tools"] = tools
     return arguments
@@ -232,8 +233,7 @@ def main() -> None:
     except BaseException:
         try:
             _write_payload(
-                {"kind": "error", "summary": "category=client", "retryable": False
-                }
+                {"kind": "error", "summary": "category=client", "retryable": False}
             )
         except BaseException:
             pass
