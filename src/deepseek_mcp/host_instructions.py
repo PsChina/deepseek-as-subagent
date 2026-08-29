@@ -1,9 +1,12 @@
 """Stable MCP host instructions, separated to keep the server entrypoint small."""
 
 HOST_INSTRUCTIONS = """
-After any result with mutations—or cancellation, disconnection, or restart—call
-`get_deepseek_recovery`, verify the reported files, then call
-`acknowledge_deepseek_mutations(transaction_ids)` with the exact reviewed IDs.
+Recovery records cover Write/Edit/NotebookEdit commits; trusted-host Bash changes
+are not transaction-journaled. After any result with reported mutations—or
+cancellation, disconnection, or restart—call `get_deepseek_recovery`, verify the
+reported files, then call `acknowledge_deepseek_mutations(transaction_ids)` with
+the exact reviewed IDs. If coding Bash may have run before an interruption,
+inspect the workspace independently before continuing.
 After every delegation, verify delegated output against the requested acceptance
 criteria before relying on it.
 
@@ -33,7 +36,10 @@ the job. Steering cannot enable Bash or mutation tools: if a readonly job later
 needs either, cancel or finish it and create a new coding job.
 
 DeepSeek cannot see host chat or project instructions; pass needed context
-explicitly. One OS lease permits one execution per canonical workspace.
-Background jobs/results are process-local. New delegation fails closed while
-recovery records remain.
+explicitly. One OS lease permits one DeepSeek execution per canonical workspace,
+but it cannot prevent the host, IDE, or other processes from editing that workspace.
+While a coding background job is running, the host should steer, query, or cancel
+that job instead of independently mutating the same workspace; resume host-side
+edits after the job reaches a terminal state. Background jobs/results are
+process-local. New delegation fails closed while recovery records remain.
 """.strip()
