@@ -9,6 +9,8 @@ from deepseek_mcp.config import (
     Config,
     DEFAULT_FLASH_MODEL,
     DEFAULT_PRO_MODEL,
+    DEFAULT_REASONING_EFFORT,
+    REASONING_EFFORT_OPTIONS,
 )
 
 
@@ -28,14 +30,45 @@ class ConfigModelSlotTests(unittest.TestCase):
         self.assertEqual(config.flash_model, DEFAULT_FLASH_MODEL)
         self.assertEqual(config.pro_model, DEFAULT_PRO_MODEL)
         self.assertEqual(config.model, DEFAULT_FLASH_MODEL)
+        self.assertEqual(config.flash_reasoning_effort, DEFAULT_REASONING_EFFORT)
+        self.assertEqual(config.pro_reasoning_effort, DEFAULT_REASONING_EFFORT)
+        self.assertEqual(config.reasoning_effort, DEFAULT_REASONING_EFFORT)
+        self.assertEqual(REASONING_EFFORT_OPTIONS, ("none", "low", "high", "max"))
 
-    def test_flash_and_pro_accept_user_provider_model_names(self) -> None:
+    def test_flash_and_pro_accept_user_provider_model_names_and_efforts(self) -> None:
         config = self._load_from_data(
-            {"flash": "deepseek-v4.1-flash", "pro": "deepseek-v4.1-pro"}
+            {
+                "flash": "deepseek-v4.1-flash",
+                "flash_reasoning_effort": "none",
+                "pro": "deepseek-v4.1-pro",
+                "pro_reasoning_effort": "max",
+                "_reasoning_effort_options": ["none", "low", "high", "max"],
+            }
         )
         self.assertEqual(config.flash_model, "deepseek-v4.1-flash")
         self.assertEqual(config.pro_model, "deepseek-v4.1-pro")
         self.assertEqual(config.model, "deepseek-v4.1-flash")
+        self.assertEqual(config.flash_reasoning_effort, "none")
+        self.assertEqual(config.pro_reasoning_effort, "max")
+        self.assertEqual(config.reasoning_effort, "none")
+
+    def test_reasoning_effort_hint_field_is_runtime_irrelevant(self) -> None:
+        config = self._load_from_data(
+            {
+                "_reasoning_effort_options": "documentation-only",
+                "flash_reasoning_effort": "low",
+                "pro_reasoning_effort": "high",
+            }
+        )
+        self.assertEqual(config.flash_reasoning_effort, "low")
+        self.assertEqual(config.pro_reasoning_effort, "high")
+
+    def test_reasoning_effort_rejects_unknown_values(self) -> None:
+        for field in ("flash_reasoning_effort", "pro_reasoning_effort"):
+            with self.subTest(field=field), self.assertRaisesRegex(
+                RuntimeError, "none, low, high, max"
+            ):
+                self._load_from_data({field: "ultra"})
 
     def test_legacy_single_model_maps_to_both_slots(self) -> None:
         config = self._load_from_data({"model": "vendor-legacy-model"})
