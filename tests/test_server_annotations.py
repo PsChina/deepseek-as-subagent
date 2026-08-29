@@ -590,7 +590,7 @@ server._record_usage(1, {
             )
             self.assertEqual(actual, hints, name)
 
-    def test_legacy_public_tool_schemas_remain_exactly_compatible(self) -> None:
+    def test_public_tool_schemas_add_only_flash_pro_model_selector(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
         self.assertEqual(
@@ -601,22 +601,35 @@ server._record_usage(1, {
                 "type": "object",
             },
         )
-        self.assertEqual(
-            tools["delegate_to_deepseek"].inputSchema,
-            {
-                "properties": {
-                    "context": {
-                        "default": "",
-                        "title": "Context",
-                        "type": "string",
+        model = {
+            "default": "flash",
+            "enum": ["flash", "pro"],
+            "title": "Model",
+            "type": "string",
+        }
+        for name in (
+            "delegate_to_deepseek",
+            "delegate_to_deepseek_readonly",
+            "start_deepseek",
+            "start_deepseek_readonly",
+        ):
+            self.assertEqual(
+                tools[name].inputSchema,
+                {
+                    "properties": {
+                        "task": {"title": "Task", "type": "string"},
+                        "context": {
+                            "default": "",
+                            "title": "Context",
+                            "type": "string",
+                        },
+                        "model": model,
                     },
-                    "task": {"title": "Task", "type": "string"},
+                    "required": ["task"],
+                    "title": f"{name}Arguments",
+                    "type": "object",
                 },
-                "required": ["task"],
-                "title": "delegate_to_deepseekArguments",
-                "type": "object",
-            },
-        )
+            )
 
 
 if __name__ == "__main__":
