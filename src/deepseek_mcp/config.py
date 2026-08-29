@@ -17,6 +17,8 @@ CONFIG_PATH = Path.home() / ".deepseek-mcp" / "config.json"
 MAX_CONFIG_BYTES = 1024 * 1024
 DEFAULT_FLASH_MODEL = "deepseek-v4-flash"
 DEFAULT_PRO_MODEL = "deepseek-v4-pro"
+DEFAULT_REASONING_EFFORT = "high"
+REASONING_EFFORT_OPTIONS = ("none", "low", "high", "max")
 # Kept as the active-model default for internal/backward-compatible Config construction.
 DEFAULT_MODEL = DEFAULT_FLASH_MODEL
 DEFAULT_MAX_TURNS = 50
@@ -43,6 +45,9 @@ CONFIG_KEYS = frozenset(
         "model",  # legacy single-model config; accepted for upgrade compatibility
         "flash",
         "pro",
+        "flash_reasoning_effort",
+        "pro_reasoning_effort",
+        "_reasoning_effort_options",  # installer hint only; ignored by runtime
         "max_turns",
         "max_run_seconds",
         "allowed_tools",
@@ -273,6 +278,26 @@ def _load_model_slots(data: dict) -> tuple[str, str]:
     )
 
 
+def _validate_reasoning_effort(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or value not in REASONING_EFFORT_OPTIONS:
+        allowed = ", ".join(REASONING_EFFORT_OPTIONS)
+        raise RuntimeError(f"{field_name} must be one of: {allowed}")
+    return value
+
+
+def _load_reasoning_efforts(data: dict) -> tuple[str, str]:
+    return (
+        _validate_reasoning_effort(
+            data.get("flash_reasoning_effort", DEFAULT_REASONING_EFFORT),
+            "flash_reasoning_effort",
+        ),
+        _validate_reasoning_effort(
+            data.get("pro_reasoning_effort", DEFAULT_REASONING_EFFORT),
+            "pro_reasoning_effort",
+        ),
+    )
+
+
 def _parse_base_url(value: object):
     if not isinstance(value, str) or not value:
         raise RuntimeError("base_url must be a non-empty string")
@@ -323,6 +348,10 @@ class Config:
     # User-configurable provider model IDs behind the stable public Flash/Pro slots.
     flash_model: str = DEFAULT_FLASH_MODEL
     pro_model: str = DEFAULT_PRO_MODEL
+    # Active effort plus the user-configured effort attached to each public slot.
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    flash_reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    pro_reasoning_effort: str = DEFAULT_REASONING_EFFORT
 
     def __post_init__(self) -> None:
         if is_unsafe_workspace_root(self.workspace):
@@ -333,6 +362,15 @@ class Config:
         self.model = _validate_model(self.model)
         self.flash_model = _validate_model(self.flash_model, "flash")
         self.pro_model = _validate_model(self.pro_model, "pro")
+        self.reasoning_effort = _validate_reasoning_effort(
+            self.reasoning_effort, "reasoning_effort"
+        )
+        self.flash_reasoning_effort = _validate_reasoning_effort(
+            self.flash_reasoning_effort, "flash_reasoning_effort"
+        )
+        self.pro_reasoning_effort = _validate_reasoning_effort(
+            self.pro_reasoning_effort, "pro_reasoning_effort"
+        )
         self.base_url = _validate_base_url(self.base_url)
         self.max_turns = _validate_max_turns(self.max_turns)
         self.max_run_seconds = _validate_max_run_seconds(self.max_run_seconds)
@@ -356,6 +394,7 @@ class Config:
     @classmethod
     def _from_data(cls, data: dict, credential: str) -> "Config":
         flash_model, pro_model = _load_model_slots(data)
+        flash_effort, pro_effort = _load_reasoning_efforts(data)
         return cls(
             credential,
             workspace=_load_workspace(data),
@@ -368,6 +407,9 @@ class Config:
             base_url=data.get("base_url", "https://api.deepseek.com"),
             flash_model=flash_model,
             pro_model=pro_model,
+            reasoning_effort=flash_effort,
+            flash_reasoning_effort=flash_effort,
+            pro_reasoning_effort=pro_effort,
         )
 
     @classmethod
