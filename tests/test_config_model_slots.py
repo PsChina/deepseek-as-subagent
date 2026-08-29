@@ -10,6 +10,7 @@ from deepseek_mcp.config import (
     DEFAULT_FLASH_MODEL,
     DEFAULT_PRO_MODEL,
     DEFAULT_REASONING_EFFORT,
+    PROVIDER_DEFAULT_REASONING_EFFORT,
     REASONING_EFFORT_OPTIONS,
 )
 
@@ -25,14 +26,19 @@ class ConfigModelSlotTests(unittest.TestCase):
             ):
                 return Config.load()
 
-    def test_flash_and_pro_have_official_defaults(self) -> None:
+    def test_flash_and_pro_have_official_model_defaults(self) -> None:
         config = self._load_from_data({})
         self.assertEqual(config.flash_model, DEFAULT_FLASH_MODEL)
         self.assertEqual(config.pro_model, DEFAULT_PRO_MODEL)
         self.assertEqual(config.model, DEFAULT_FLASH_MODEL)
-        self.assertEqual(config.flash_reasoning_effort, DEFAULT_REASONING_EFFORT)
-        self.assertEqual(config.pro_reasoning_effort, DEFAULT_REASONING_EFFORT)
-        self.assertEqual(config.reasoning_effort, DEFAULT_REASONING_EFFORT)
+        self.assertEqual(DEFAULT_REASONING_EFFORT, "high")
+        self.assertEqual(
+            config.flash_reasoning_effort, PROVIDER_DEFAULT_REASONING_EFFORT
+        )
+        self.assertEqual(
+            config.pro_reasoning_effort, PROVIDER_DEFAULT_REASONING_EFFORT
+        )
+        self.assertEqual(config.reasoning_effort, PROVIDER_DEFAULT_REASONING_EFFORT)
         self.assertEqual(REASONING_EFFORT_OPTIONS, ("none", "low", "high", "max"))
 
     def test_flash_and_pro_accept_user_provider_model_names_and_efforts(self) -> None:
@@ -52,6 +58,13 @@ class ConfigModelSlotTests(unittest.TestCase):
         self.assertEqual(config.pro_reasoning_effort, "max")
         self.assertEqual(config.reasoning_effort, "none")
 
+    def test_reasoning_effort_can_be_configured_per_slot_independently(self) -> None:
+        config = self._load_from_data({"flash_reasoning_effort": "low"})
+        self.assertEqual(config.flash_reasoning_effort, "low")
+        self.assertEqual(
+            config.pro_reasoning_effort, PROVIDER_DEFAULT_REASONING_EFFORT
+        )
+
     def test_reasoning_effort_hint_field_is_runtime_irrelevant(self) -> None:
         config = self._load_from_data(
             {
@@ -70,11 +83,19 @@ class ConfigModelSlotTests(unittest.TestCase):
             ):
                 self._load_from_data({field: "ultra"})
 
-    def test_legacy_single_model_maps_to_both_slots(self) -> None:
+    def test_internal_provider_default_marker_is_not_a_user_option(self) -> None:
+        for field in ("flash_reasoning_effort", "pro_reasoning_effort"):
+            with self.subTest(field=field), self.assertRaisesRegex(
+                RuntimeError, "none, low, high, max"
+            ):
+                self._load_from_data({field: PROVIDER_DEFAULT_REASONING_EFFORT})
+
+    def test_legacy_single_model_maps_to_both_slots_without_new_reasoning_fields(self) -> None:
         config = self._load_from_data({"model": "vendor-legacy-model"})
         self.assertEqual(config.flash_model, "vendor-legacy-model")
         self.assertEqual(config.pro_model, "vendor-legacy-model")
         self.assertEqual(config.model, "vendor-legacy-model")
+        self.assertEqual(config.reasoning_effort, PROVIDER_DEFAULT_REASONING_EFFORT)
 
     def test_legacy_model_cannot_be_mixed_with_new_slots(self) -> None:
         for data in (
