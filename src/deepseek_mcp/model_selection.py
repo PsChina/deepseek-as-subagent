@@ -5,15 +5,11 @@ from typing import Literal
 
 ModelChoice = Literal["flash", "pro"]
 
-_MODEL_IDS = {
-    "flash": "deepseek-v4-flash",
-    "pro": "deepseek-v4-pro",
-}
 
-
-def resolve_model(choice: str) -> str:
-    """Resolve the stable public profile to the provider model id."""
-    try:
-        return _MODEL_IDS[choice]
-    except KeyError:
-        raise ValueError("model must be exactly 'flash' or 'pro'") from None
+def resolve_model(choice: str, *, flash_model: str, pro_model: str) -> str:
+    """Resolve a stable public profile to the user-configured provider model ID."""
+    if choice == "flash":
+        return flash_model
+    if choice == "pro":
+        return pro_model
+    raise ValueError("model must be exactly 'flash' or 'pro'")
