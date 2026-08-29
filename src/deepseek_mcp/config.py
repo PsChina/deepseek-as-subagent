@@ -18,6 +18,7 @@ MAX_CONFIG_BYTES = 1024 * 1024
 DEFAULT_FLASH_MODEL = "deepseek-v4-flash"
 DEFAULT_PRO_MODEL = "deepseek-v4-pro"
 DEFAULT_REASONING_EFFORT = "high"
+PROVIDER_DEFAULT_REASONING_EFFORT = "provider-default"
 REASONING_EFFORT_OPTIONS = ("none", "low", "high", "max")
 # Kept as the active-model default for internal/backward-compatible Config construction.
 DEFAULT_MODEL = DEFAULT_FLASH_MODEL
@@ -55,6 +56,7 @@ CONFIG_KEYS = frozenset(
     }
 )
 logger = logging.getLogger(__name__)
+
 def _validate_private_directory(path: Path) -> None:
     if os.name != "posix":
         return
@@ -71,6 +73,7 @@ def _validate_private_directory(path: Path) -> None:
             f"Config directory must be owned by the current user with mode 0700: {path}"
         )
 
+
 def _validate_private_file(descriptor: int) -> None:
     metadata = os.fstat(descriptor)
     if not stat.S_ISREG(metadata.st_mode):
@@ -82,6 +85,7 @@ def _validate_private_file(descriptor: int) -> None:
             f"Config must be owned by the current user and private; "
             f"run: chmod 700 {CONFIG_PATH.parent} && chmod 600 {CONFIG_PATH}"
         )
+
 
 def _read_config_text() -> str:
     if os.name == "nt":
@@ -184,6 +188,7 @@ def _load_api_key(data: dict) -> str:
         logger.warning("DeepSeek API key does not start with 'sk-'; verify the key")
     return credential
 
+
 def _workspace_setting(data: dict) -> tuple[object | None, bool]:
     environment = os.getenv("DEEPSEEK_WORKSPACE")
     if environment is not None:
@@ -285,16 +290,22 @@ def _validate_reasoning_effort(value: object, field_name: str) -> str:
     return value
 
 
+def _validate_runtime_reasoning_effort(value: object, field_name: str) -> str:
+    if value == PROVIDER_DEFAULT_REASONING_EFFORT:
+        return PROVIDER_DEFAULT_REASONING_EFFORT
+    return _validate_reasoning_effort(value, field_name)
+
+
+def _load_reasoning_effort(data: dict, field_name: str) -> str:
+    if field_name not in data:
+        return PROVIDER_DEFAULT_REASONING_EFFORT
+    return _validate_reasoning_effort(data[field_name], field_name)
+
+
 def _load_reasoning_efforts(data: dict) -> tuple[str, str]:
     return (
-        _validate_reasoning_effort(
-            data.get("flash_reasoning_effort", DEFAULT_REASONING_EFFORT),
-            "flash_reasoning_effort",
-        ),
-        _validate_reasoning_effort(
-            data.get("pro_reasoning_effort", DEFAULT_REASONING_EFFORT),
-            "pro_reasoning_effort",
-        ),
+        _load_reasoning_effort(data, "flash_reasoning_effort"),
+        _load_reasoning_effort(data, "pro_reasoning_effort"),
     )
 
 
@@ -362,13 +373,13 @@ class Config:
         self.model = _validate_model(self.model)
         self.flash_model = _validate_model(self.flash_model, "flash")
         self.pro_model = _validate_model(self.pro_model, "pro")
-        self.reasoning_effort = _validate_reasoning_effort(
+        self.reasoning_effort = _validate_runtime_reasoning_effort(
             self.reasoning_effort, "reasoning_effort"
         )
-        self.flash_reasoning_effort = _validate_reasoning_effort(
+        self.flash_reasoning_effort = _validate_runtime_reasoning_effort(
             self.flash_reasoning_effort, "flash_reasoning_effort"
         )
-        self.pro_reasoning_effort = _validate_reasoning_effort(
+        self.pro_reasoning_effort = _validate_runtime_reasoning_effort(
             self.pro_reasoning_effort, "pro_reasoning_effort"
         )
         self.base_url = _validate_base_url(self.base_url)
