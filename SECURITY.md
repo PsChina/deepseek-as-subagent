@@ -51,11 +51,23 @@ boundary. The trusted-host executor has workspace cwd, disabled stdin, bounded
 stdout/stderr, timeout, command checks, process-tree cleanup, and credential
 isolation. It supports macOS, Linux, and Windows.
 
+Bash is intentionally outside the crash-safe mutation journal. Shell commands
+may modify, rename, delete, or generate workspace files directly, and those
+changes are not represented by `get_deepseek_recovery`. The journal/recovery
+guarantee applies to mutations committed through Write, Edit, and NotebookEdit.
+After an interrupted coding run in which Bash may have executed, the host must
+inspect the workspace independently before continuing or retrying work.
+
 ## Concurrency, recovery, and lifecycle
 
 An OS-backed lease keyed by workspace filesystem identity prevents concurrent
 delegation against the same workspace. Different workspaces run independently.
 The lease is released after the active execution and its child processes finish.
+The lease coordinates DeepSeek MCP executions only; it cannot stop the host
+agent, an IDE, the user, or another local process from editing the same files.
+While a coding background job is running, the host should steer, query, or
+cancel that job instead of independently mutating the same workspace, then
+resume host-side edits after the job reaches a terminal state.
 
 Before `Write`, `Edit`, or `NotebookEdit` publishes an atomic replacement, the
 tool child persists a private mutation intent. `get_deepseek_recovery` audits
