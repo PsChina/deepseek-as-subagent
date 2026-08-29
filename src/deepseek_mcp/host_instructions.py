@@ -28,10 +28,17 @@ API reference:
 - `acknowledge_deepseek_mutations(transaction_ids)`: acknowledge exact reviewed IDs.
 `task` states the goal and acceptance criteria; optional `context` supplies paths,
 constraints, and project conventions. `model` is exactly `flash` or `pro`: omit it
-for Flash; choose Pro for unusually difficult debugging, architecture, complex
-multi-file reasoning, or a retry when Flash was insufficient. A background job
-keeps the model chosen at start; steering cannot change it. `job_id` comes from
-`start_*`.
+for Flash. A background job keeps the model chosen at start; steering cannot change
+it. `job_id` comes from `start_*`.
+
+Model routing guidance:
+- `flash`: default general-purpose subagent, roughly Sonnet/Terra-tier. Use it for
+  normal coding, review, investigation, refactoring, and routine multi-file work.
+- `pro`: stronger difficult-task subagent, roughly Opus/Sol-tier. Use it for complex
+  debugging, architecture, difficult multi-file reasoning, or when Flash was
+  insufficient.
+Do not select Pro merely because it is available; prefer Flash unless the task
+clearly benefits from the stronger tier.
 
 Selection: use `delegate_*` when the host can wait for completion. Use `start_*`
 when it needs steering, status, or cancellation. Use readonly only for pure
