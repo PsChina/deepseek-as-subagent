@@ -320,18 +320,72 @@ def _write_all(descriptor: int, data: bytes) -> None:
 
 
 def _rename(descriptor: int, parent: _Directory, name: str, replace: bool = False) -> None:
-    class _RenameInfo(ctypes.Structure):
+    """Rename relative to the already validated parent directory handle."""
+    if not name or "\x00" in name:
+        raise OSError("Windows rename target is invalid")
+
+    class _RenameMode(ctypes.Union):
         _fields_ = (
-            ("replace", wintypes.BOOLEAN), ("root", wintypes.HANDLE),
-            ("name_length", wintypes.DWORD), ("name", wintypes.WCHAR * len(name)),
+            ("replace", wintypes.BOOLEAN),
+            ("flags", wintypes.ULONG),
         )
 
-    info = _RenameInfo(replace, parent.handle, len(name.encode("utf-16-le")), name)
-    handle = msvcrt.get_osfhandle(descriptor)
-    if not _SET_HANDLE_INFO(
-        handle, _RENAME_INFO, ctypes.byref(info), ctypes.sizeof(info)
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
+    class _RenameInfo(ctypes.Structure):
+        _anonymous_ = ("mode",)
+        _fields_ = (
+            ("mode", _RenameMode),
+            ("root", wintypes.HANDLE),
+            ("name_length", wintypes.ULONG),
+            ("name", wintypes.WCHAR * 1),
+        )
+
+    class _IoStatusValue(ctypes.Union):
+        _fields_ = (
+            ("status", wintypes.LONG),
+            ("pointer", wintypes.LPVOID),
+        )
+
+    class _IoStatusBlock(ctypes.Structure):
+        _anonymous_ = ("value",)
+        _fields_ = (
+            ("value", _IoStatusValue),
+            ("information", ctypes.c_size_t),
+        )
+
+    encoded = name.encode("utf-16-le")
+    name_offset = _RenameInfo.name.offset
+    buffer_size = max(ctypes.sizeof(_RenameInfo), name_offset + len(encoded))
+    buffer = ctypes.create_string_buffer(buffer_size)
+    info = ctypes.cast(buffer, ctypes.POINTER(_RenameInfo)).contents
+    info.replace = 1 if replace else 0
+    info.root = parent.handle
+    info.name_length = len(encoded)
+    ctypes.memmove(ctypes.addressof(buffer) + name_offset, encoded, len(encoded))
+
+    ntdll = ctypes.WinDLL("ntdll")
+    operation = ntdll.NtSetInformationFile
+    operation.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_IoStatusBlock),
+        wintypes.LPVOID,
+        wintypes.ULONG,
+        ctypes.c_int,
+    )
+    operation.restype = wintypes.LONG
+    to_dos_error = ntdll.RtlNtStatusToDosError
+    to_dos_error.argtypes = (wintypes.LONG,)
+    to_dos_error.restype = wintypes.ULONG
+
+    io_status = _IoStatusBlock()
+    status = int(operation(
+        msvcrt.get_osfhandle(descriptor),
+        ctypes.byref(io_status),
+        ctypes.byref(buffer),
+        buffer_size,
+        10,  # FileRenameInformation
+    ))
+    if status < 0:
+        raise ctypes.WinError(int(to_dos_error(status)))
 
 
 def _mark_delete(descriptor: int) -> None:
