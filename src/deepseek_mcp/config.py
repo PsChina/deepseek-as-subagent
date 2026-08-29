@@ -15,7 +15,10 @@ from .safety import is_unsafe_workspace_root
 from .workspace_guard import configure_workspace_identity
 CONFIG_PATH = Path.home() / ".deepseek-mcp" / "config.json"
 MAX_CONFIG_BYTES = 1024 * 1024
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_FLASH_MODEL = "deepseek-v4-flash"
+DEFAULT_PRO_MODEL = "deepseek-v4-pro"
+# Kept as the active-model default for internal/backward-compatible Config construction.
+DEFAULT_MODEL = DEFAULT_FLASH_MODEL
 DEFAULT_MAX_TURNS = 50
 MAX_TURNS = 100
 DEFAULT_MAX_RUN_SECONDS = 5 * 60 * 60
@@ -37,7 +40,9 @@ CONFIG_KEYS = frozenset(
     {
         "api_key",
         "workspace",
-        "model",
+        "model",  # legacy single-model config; accepted for upgrade compatibility
+        "flash",
+        "pro",
         "max_turns",
         "max_run_seconds",
         "allowed_tools",
@@ -244,12 +249,28 @@ def _load_allowed_tools(data: dict) -> list[str]:
     return list(tools)
 
 
-def _validate_model(value: object) -> str:
+def _validate_model(value: object, field_name: str = "model") -> str:
     if not isinstance(value, str) or not value.strip():
-        raise RuntimeError("model must be a non-empty string")
+        raise RuntimeError(f"{field_name} must be a non-empty string")
     if value != value.strip() or any(ord(char) < 32 for char in value):
-        raise RuntimeError("model must not contain surrounding or control whitespace")
+        raise RuntimeError(
+            f"{field_name} must not contain surrounding or control whitespace"
+        )
     return value
+
+
+def _load_model_slots(data: dict) -> tuple[str, str]:
+    """Load user-configurable provider model IDs for the public Flash/Pro slots."""
+    if "model" in data:
+        if "flash" in data or "pro" in data:
+            raise RuntimeError("legacy model cannot be combined with flash/pro")
+        legacy = _validate_model(data["model"], "model")
+        # Preserve old single-model configs exactly across the routing upgrade.
+        return legacy, legacy
+    return (
+        _validate_model(data.get("flash", DEFAULT_FLASH_MODEL), "flash"),
+        _validate_model(data.get("pro", DEFAULT_PRO_MODEL), "pro"),
+    )
 
 
 def _parse_base_url(value: object):
@@ -291,6 +312,7 @@ def _validate_base_url(value: object) -> str:
 class Config:
     api_key: str
     workspace: Path
+    # Active provider model for this execution. Public hosts never set this directly.
     model: str = DEFAULT_MODEL
     max_turns: int = DEFAULT_MAX_TURNS
     allowed_tools: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_TOOLS))
@@ -298,6 +320,9 @@ class Config:
     max_run_seconds: int = DEFAULT_MAX_RUN_SECONDS
     delegation_capability: str = field(default="coding", repr=False)
     expected_workspace_identity: str | None = field(default=None, repr=False)
+    # User-configurable provider model IDs behind the stable public Flash/Pro slots.
+    flash_model: str = DEFAULT_FLASH_MODEL
+    pro_model: str = DEFAULT_PRO_MODEL
 
     def __post_init__(self) -> None:
         if is_unsafe_workspace_root(self.workspace):
@@ -306,6 +331,8 @@ class Config:
             self.workspace, self.expected_workspace_identity
         )
         self.model = _validate_model(self.model)
+        self.flash_model = _validate_model(self.flash_model, "flash")
+        self.pro_model = _validate_model(self.pro_model, "pro")
         self.base_url = _validate_base_url(self.base_url)
         self.max_turns = _validate_max_turns(self.max_turns)
         self.max_run_seconds = _validate_max_run_seconds(self.max_run_seconds)
@@ -328,16 +355,19 @@ class Config:
 
     @classmethod
     def _from_data(cls, data: dict, credential: str) -> "Config":
+        flash_model, pro_model = _load_model_slots(data)
         return cls(
             credential,
             workspace=_load_workspace(data),
-            model=data.get("model", DEFAULT_MODEL),
+            model=flash_model,
             max_turns=_load_max_turns(data),
             max_run_seconds=_validate_max_run_seconds(
                 data.get("max_run_seconds", DEFAULT_MAX_RUN_SECONDS)
             ),
             allowed_tools=_load_allowed_tools(data),
             base_url=data.get("base_url", "https://api.deepseek.com"),
+            flash_model=flash_model,
+            pro_model=pro_model,
         )
 
     @classmethod
