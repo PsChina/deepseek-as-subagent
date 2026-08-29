@@ -369,6 +369,7 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(payload["result"]["final_message"], oldest)
         self.assertIsNotNone(usage)
         self.assertEqual(len(start_results), 1)
+        self._assert_terminal(manager, start_results[0]["job_id"])
 
     def test_thread_start_failure_rolls_back_job_and_workspace_lease(self) -> None:
         manager = self._manager()
