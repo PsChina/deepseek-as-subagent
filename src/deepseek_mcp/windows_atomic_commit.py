@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Callable
 
 from .file_identity import FileIdentity, MissingFile, ToolInputError
+from . import windows_handle_rename
 
 _ALREADY_EXISTS = frozenset({80, 183})
 _PARTIAL_REPLACE = 1177
@@ -144,84 +145,10 @@ def is_partial_replace(error: OSError) -> bool:
 def rename(
     descriptor: int, parent: int, name: str, *, replace: bool,
 ) -> None:
-    """Rename one open file relative to an anchored directory handle.
-
-    SetFileInformationByHandle(FileRenameInfo) rejects a non-null
-    RootDirectory on some supported Windows builds. NtSetInformationFile uses
-    the native FILE_RENAME_INFORMATION contract and reliably supports the
-    handle-relative form required here to keep the destination anchored.
-    """
-    if os.name != "nt":
-        raise OSError("Windows handle rename is unavailable")
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    if not name or "\x00" in name:
-        raise OSError("Windows rename target is invalid")
-
-    class _RenameMode(ctypes.Union):
-        _fields_ = (
-            ("replace", wintypes.BOOLEAN),
-            ("flags", wintypes.ULONG),
-        )
-
-    class _RenameInfo(ctypes.Structure):
-        _anonymous_ = ("mode",)
-        _fields_ = (
-            ("mode", _RenameMode),
-            ("root", wintypes.HANDLE),
-            ("name_length", wintypes.ULONG),
-            ("name", wintypes.WCHAR * 1),
-        )
-
-    class _IoStatusValue(ctypes.Union):
-        _fields_ = (
-            ("status", wintypes.LONG),
-            ("pointer", wintypes.LPVOID),
-        )
-
-    class _IoStatusBlock(ctypes.Structure):
-        _anonymous_ = ("value",)
-        _fields_ = (
-            ("value", _IoStatusValue),
-            ("information", ctypes.c_size_t),
-        )
-
-    encoded = name.encode("utf-16-le")
-    name_offset = _RenameInfo.name.offset
-    buffer_size = max(ctypes.sizeof(_RenameInfo), name_offset + len(encoded))
-    buffer = ctypes.create_string_buffer(buffer_size)
-    info = ctypes.cast(buffer, ctypes.POINTER(_RenameInfo)).contents
-    info.replace = 1 if replace else 0
-    info.root = parent
-    info.name_length = len(encoded)
-    ctypes.memmove(ctypes.addressof(buffer) + name_offset, encoded, len(encoded))
-
-    ntdll = ctypes.WinDLL("ntdll")
-    operation = ntdll.NtSetInformationFile
-    operation.argtypes = (
-        wintypes.HANDLE,
-        ctypes.POINTER(_IoStatusBlock),
-        wintypes.LPVOID,
-        wintypes.ULONG,
-        ctypes.c_int,
+    """Rename one open file relative to an anchored directory handle."""
+    windows_handle_rename.rename(
+        descriptor, parent, name, replace=replace
     )
-    operation.restype = wintypes.LONG
-    to_dos_error = ntdll.RtlNtStatusToDosError
-    to_dos_error.argtypes = (wintypes.LONG,)
-    to_dos_error.restype = wintypes.ULONG
-
-    io_status = _IoStatusBlock()
-    status = int(operation(
-        msvcrt.get_osfhandle(descriptor),
-        ctypes.byref(io_status),
-        ctypes.byref(buffer),
-        buffer_size,
-        10,  # FileRenameInformation
-    ))
-    if status < 0:
-        raise ctypes.WinError(int(to_dos_error(status)))
 
 
 def mark_delete(descriptor: int) -> None:
