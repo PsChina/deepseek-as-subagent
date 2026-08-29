@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from deepseek_mcp import server
-from deepseek_mcp.config import Config
+from deepseek_mcp.config import Config, DEFAULT_MODEL
 from deepseek_mcp.execution_profile import CODING_PROFILE, READONLY_PROFILE
 from deepseek_mcp.job_manager import JobError
 
@@ -20,7 +20,8 @@ class ModelSelectionTests(unittest.TestCase):
     def _config(self, workspace: Path) -> Config:
         return Config("sk-test", workspace, allowed_tools=["Read"])
 
-    def test_public_delegation_tools_default_to_flash(self) -> None:
+    def test_config_and_public_tools_default_to_flash(self) -> None:
+        self.assertEqual(DEFAULT_MODEL, "deepseek-v4-flash")
         for tool in (
             server.delegate_to_deepseek,
             server.delegate_to_deepseek_readonly,
