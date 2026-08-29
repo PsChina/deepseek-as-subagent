@@ -31,17 +31,17 @@ description: 默认把中等及以下、批量、重复或机械任务作为完�
 
 - `ping()`：检查 MCP 服务是否可用。
 
-- `delegate_to_deepseek(task, context="")`：同步执行完整 coding 任务；调用后只能等待结果，中途不能 steering、查询状态或取消。`task` 是目标与验收标准；可选 `context` 补充路径、约束和项目约定。
+- `delegate_to_deepseek(task, context="", model="flash")`：同步执行完整 coding 任务；调用后只能等待结果，中途不能 steering、查询状态或取消。`task` 是目标与验收标准；可选 `context` 补充路径、约束和项目约定。
 
-- `delegate_to_deepseek_readonly(task, context="")`：同步执行只读分析，仅限 Read / Glob / Grep；参数同上，调用后同样只能等待结果。
+- `delegate_to_deepseek_readonly(task, context="", model="flash")`：同步执行只读分析，仅限 Read / Glob / Grep；参数同上，调用后同样只能等待结果。
 
-- `start_deepseek(task, context="")`：启动后台 coding 任务，返回 `job_id`。
+- `start_deepseek(task, context="", model="flash")`：启动后台 coding 任务，返回 `job_id`。
 
-- `start_deepseek_readonly(task, context="")`：启动后台只读任务，返回 `job_id`。
+- `start_deepseek_readonly(task, context="", model="flash")`：启动后台只读任务，返回 `job_id`。
 
 - `get_deepseek_status(job_id)`：查看后台任务状态。`job_id` 是对应 `start_*` 返回的标识。
 
-- `send_deepseek_message(job_id, message)`：向后台任务追加或修正指令。`message` 不能改变该 job 已冻结的能力。
+- `send_deepseek_message(job_id, message)`：向后台任务追加或修正指令。`message` 不能改变该 job 已冻结的能力或模型。
 
 - `cancel_deepseek(job_id)`：取消后台任务。
 
@@ -51,19 +51,39 @@ description: 默认把中等及以下、批量、重复或机械任务作为完�
 
 - `acknowledge_deepseek_mutations(transaction_ids)`：核验后确认修改记录；`transaction_ids` 必须是 recovery 返回的精确 ID 列表。
 
-**选择规则**：能直接等待完成时用 `delegate_*`；需要 steering、状态查询或取消时用 `start_*`。纯阅读、搜索、review 已存在文件或文本，且整个任务不执行任何命令时用 readonly；其余或不确定时用 coding。readonly job 后续需要 Bash 或修改文件时，不能 steering 提权；应取消或结束该 job，再新建 coding job。
+### 模型路由
+
+`model` 只允许 `flash` 或 `pro`。不传时固定使用 `flash`。
+
+- `flash`：默认通用子代理，能力定位约为 **Sonnet / Terra 档**（roughly Sonnet/Terra-tier）。用于正常 coding、review、调查、重构、测试、批处理和常规多文件任务。
+- `pro`：困难任务子代理，能力定位约为 **Opus / Sol 档**（roughly Opus/Sol-tier）。用于复杂 debugging、架构级推理、困难多文件推理，或 Flash 已明显不足/失败后的升级。
+- 不要因为 Pro 可用就默认选择 Pro；没有明确困难信号时保持 Flash。
+- 后台 job 在 `start_*` 时冻结模型；`send_deepseek_message` 不得把运行中的 Flash job 切成 Pro，反之亦然。需要换模型时结束或取消当前 job，再新建 job。
+
+**重要：`flash/pro` 是稳定路由槽位，不是 provider 的真实模型名。** 主 Agent 永远只传 `model="flash"` 或 `model="pro"`，不得把 `deepseek-v4-*`、未来 V4.1/V5 名称或第三方兼容端点的模型名直接塞进 MCP 参数。实际 provider 模型名由用户在 `~/.deepseek-mcp/config.json` 中配置，例如：
+
+```json
+{
+  "flash": "deepseek-v4-flash",
+  "pro": "deepseek-v4-pro"
+}
+```
+
+用户可在模型升级后自行修改这两个值，而不改变主 Agent 的调用方式。旧版单 `model` 字段仅作为升级兼容；新配置应使用 `flash` / `pro`。
+
+**选择规则**：能直接等待完成时用 `delegate_*`；需要 steering、状态查询或取消时用 `start_*`。纯阅读、搜索、review 已存在文件或文本，且整个任务不执行任何命令时用 readonly；其余或不确定时用 coding。readonly job 后续需要 Bash 或修改文件时，不能 steering 提权；应取消或结束该 job，再新建 coding job。模型选择与 coding/readonly 能力选择相互独立。
 
 ## 🚀 核心理念：能派就派
 
-DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜。主 Agent 的稀缺资源是高成本模型配额，DeepSeek 的稀缺资源主要是调用费用。**默认派**，以下场景默认由主 Agent 自己处理：
+默认 Flash 已经是强通用子代理，并且通常比主 Agent 模型便宜；真正困难的任务再显式升级到 Pro。主 Agent 的稀缺资源是高成本模型配额，DeepSeek 的稀缺资源主要是调用费用。**默认派**，以下场景默认由主 Agent 自己处理：
 
 - ❌ 任务依赖 CLAUDE.md / 项目内部约定文档（DS 拿不到主 Agent 端的记忆）
-- ❌ 跨领域架构设计 / 技术选型 / ADR（需要主 Agent 的综合推理）
-- ❌ 跨领域或结论不明确的 bug 根因分析（推理密集，默认由主 Agent 负责）
+- ❌ 跨领域架构设计 / 技术选型 / ADR（需要主 Agent 的综合推理；主 Agent 若决定委派此类困难任务，应使用 `model="pro"`）
+- ❌ 跨领域或结论不明确的 bug 根因分析（推理密集，默认由主 Agent 负责；若决定委派深入调查，应使用 `model="pro"`）
 - ❌ 单文件 < 200 行的微调（DS 的 reasoning 起步成本 > 省下的主 Agent tokens）
 - ❌ 用户明确说"你自己干 / 别派"
 
-**其他任务默认派**。包括但不限于："写个 X"、"补测试"、"修这个 lint"、"重命名 Y 到 Z"、"扫日志"、"翻译这段"、"实现这个 endpoint"。
+**其他任务默认派**。包括但不限于："写个 X"、"补测试"、"修这个 lint"、"重命名 Y 到 Z"、"扫日志"、"翻译这段"、"实现这个 endpoint"。默认不传 `model`，即使用 Flash。
 
 ## 默认时机：尽量在主 Agent 读源码之前决定是否派工
 
@@ -111,10 +131,10 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 
 | 难度 | 例子 | 默认 |
 |---|---|---|
-| 🟢 **简单** | 写 hello world / 单脚本、写测试用例、补文档、单 endpoint CRUD、单组件实现 | ✅ **派** |
-| 🟡 **中等** | 3-10 文件 batch 改、一个 feature 的实现（spec 清晰）、补全测试、生成 boilerplate、简单 refactor、扫日志 / ETL | ✅ **派** |
-| 🟠 **中等偏上** | 10+ 文件批量、一个领域内的 refactor、性能优化（数据已给）、i18n 提取、协议转换 | ✅ **派**（必要时拆批） |
-| 🔴 **困难** | 跨领域架构设计、技术选型、ADR、bug 根因分析、需要项目深度约定 | ❌ **自己干** |
+| 🟢 **简单** | 写 hello world / 单脚本、写测试用例、补文档、单 endpoint CRUD、单组件实现 | ✅ **派 Flash** |
+| 🟡 **中等** | 3-10 文件 batch 改、一个 feature 的实现（spec 清晰）、补全测试、生成 boilerplate、简单 refactor、扫日志 / ETL | ✅ **派 Flash** |
+| 🟠 **中等偏上** | 10+ 文件批量、一个领域内的 refactor、性能优化（数据已给）、i18n 提取、协议转换 | ✅ **派 Flash**（必要时拆批；明显推理密集可升 Pro） |
+| 🔴 **困难** | 跨领域架构设计、技术选型、ADR、bug 根因分析、需要项目深度约定 | ❌ **默认自己干**；若高把握决定派则 **Pro** |
 | 🌶️ **极小** | 单文件 < 200 行的 typo / rename / 加注释 | ❌ **自己干**（DS overhead 不划算） |
 
 **简单 / 中等 / 中等偏上默认都派**。不要因为"听起来简单我顺手就做了"而省略派工 —— 那省的是 5 分钟，烧的是几万主 Agent tokens。（主 Agent 高把握时可自行处理。）
@@ -123,13 +143,13 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 
 | 用户说 / 看到 | 主 Agent 行为 |
 |---|---|
-| "写一个 X" / "实现 Y" / "做一个 Z" | 派（除非命中🔴/🌶️） |
-| "重命名 / 批量改 / 翻译 / 提取" | 派 |
-| "测试 / 文档 / boilerplate / lint 修" | 派 |
-| "为啥这个 bug" / "为啥这里挂了" | 静态代码/日志调查可派给 readonly；跨领域或结论不明确时自己干 |
+| "写一个 X" / "实现 Y" / "做一个 Z" | 派 Flash（除非命中🔴/🌶️） |
+| "重命名 / 批量改 / 翻译 / 提取" | 派 Flash |
+| "测试 / 文档 / boilerplate / lint 修" | 派 Flash |
+| "为啥这个 bug" / "为啥这里挂了" | 静态代码/日志调查可派 readonly Flash；明显困难且决定派深入调查时 Pro；跨领域或结论不明确时默认自己干 |
 | "我应该用 A 还是 B" | 自己干（选型） |
 | "改个 typo / rename 一个变量" | 自己干（极小，DS overhead 不值） |
-| "派给 DS" / `/ds <任务>` | 强制派 |
+| "派给 DS" / `/ds <任务>` | 强制派；默认 Flash，任务明显困难时可 Pro |
 | "你自己干" / "别派" | 强制不派 |
 
 ---
@@ -147,7 +167,7 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 | **拆任务税** | 主 Agent 想"怎么拆 / 给什么 context / 怎么 task" 本身烧主 Agent tokens |
 | **上下文重读税** | 主 Agent 一个对话里读过的文件下次还能引用；DS 每次 delegate 是独立进程，**同样的文件要重新读 N 遍** |
 | **验证税** | DS 每完成一次主 Agent 要 Read 抽样验证；拆越多次 → 验证越多 |
-| **DS 起步费** | v4-pro thinking mode 每次启动 ~5-10k reasoning tokens 起步；拆 10 次 = 50-100k 起步费 |
+| **DS 起步费** | thinking mode 每次委派都有 reasoning 起步开销；拆成多个微任务会重复支付起步成本 |
 | **碎片返工税** | 子任务之间缺全局视野，产物不一致；返工时拆+重做+重验全来一遍 |
 
 ### 数学直觉（按主 Agent 等价成本）
@@ -205,8 +225,8 @@ DeepSeek v4-pro 已经很强，在当前配置下通常比主 Agent 模型便宜
 
 ### 唯一应该警惕的"不该派"信号
 
-- DS 的 reasoning tokens 起步开销大（v4-pro thinking mode）：**单纯写一个 hello world 也烧 ~8k tokens**
-- 所以"几乎无 Read、改动 < 200 行" → 主 Agent 自己 5 行就搞定，比 DS 8k tokens 划算
+- DS 的 thinking/reasoning 每次委派都有起步开销，极小任务可能不划算
+- 所以"几乎无 Read、改动 < 200 行" → 主 Agent 自己几行就能搞定时，通常比启动 DS 更划算
 
 ---
 
@@ -289,6 +309,8 @@ context="项目 fastapi 0.115，参考 API 用法：
 
 ## 派工模板
 
+普通任务省略 `model`，默认 Flash：
+
 ```
 mcp__deepseek__delegate_to_deepseek(
   task="<清晰描述要做什么 + 成功标准 + 涉及路径>
@@ -296,6 +318,16 @@ mcp__deepseek__delegate_to_deepseek(
 
   context="<项目约定 / 框架版本 / schema / 边界 / 已知坑>
   - 完成后请抽样 verify N 个产物"
+)
+```
+
+困难任务需要明确升级时：
+
+```
+mcp__deepseek__delegate_to_deepseek(
+  task="<困难任务 + 成功标准>",
+  context="<必要上下文>",
+  model="pro"
 )
 ```
 
@@ -350,6 +382,7 @@ DeepSeek 自报"完成"不等于真的完成。**主 Agent 必须验证**：
 | capability/tool not allowed | 当前安全配置未授权；不要绕过，主 Agent 接管或让 operator 审核配置 |
 | busy / workspace already owned | 同一工作区已有执行；取回/取消当前 job 后再决定，不要并发写 |
 | Agent loop 超 max_turns | 任务太大；拆小再派（"先做前 25 个文件"） |
+| Flash 质量不足 | 先独立验证；任务仍适合委派时可新建 `model="pro"` 的任务重试 |
 | 产物质量差 | 验证后修；累计 2 次差 → 后续主动跳过 delegate（本会话） |
 | 用户连续 2 次 `pure` 启动 | 默认不派工，等用户显式 `/ds` 才派 |
 
@@ -364,7 +397,7 @@ DeepSeek 自报"完成"不等于真的完成。**主 Agent 必须验证**：
 
 | 用户说 | 主 Agent 行为 |
 |---|---|
-| "派给 DS" / "外包给 deepseek" | 强制调用本工具，不再自行判断 |
+| "派给 DS" / "外包给 deepseek" | 强制调用本工具，不再自行判断；默认 Flash，明显困难任务可 Pro |
 | "你自己干" / "别派" | 禁止调本工具，本对话主动 fallback |
 | `/ds <task>` (slash command) | 等同"派给 DS" |
 | 启动用 `pure` 命令 | DEEPSEEK_MODE=off，本工具立即返回 disabled |
