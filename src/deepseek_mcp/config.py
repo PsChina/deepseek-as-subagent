@@ -15,7 +15,7 @@ from .safety import is_unsafe_workspace_root
 from .workspace_guard import configure_workspace_identity
 CONFIG_PATH = Path.home() / ".deepseek-mcp" / "config.json"
 MAX_CONFIG_BYTES = 1024 * 1024
-DEFAULT_MODEL = "deepseek-v4-pro"
+DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_MAX_TURNS = 50
 MAX_TURNS = 100
 DEFAULT_MAX_RUN_SECONDS = 5 * 60 * 60
