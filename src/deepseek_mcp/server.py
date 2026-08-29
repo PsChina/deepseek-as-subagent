@@ -37,6 +37,7 @@ from .execution_profile import (
 )
 from .host_instructions import HOST_INSTRUCTIONS as _HOST_INSTRUCTIONS
 from .job_manager import DeepSeekJobManager, JobBusy, JobError, validate_delegation_input
+from .model_selection import ModelChoice, resolve_model
 from .private_logging import PrivateBoundedLogStream
 from .process_hardening import disable_core_dumps
 from .transaction_recovery import (
@@ -51,6 +52,7 @@ def _deepseek_mode() -> str:
     if value not in _VALID_MODES:
         raise JobError("DEEPSEEK_MODE must be exactly 'auto' or 'off'")
     return value
+
 logger = logging.getLogger(__name__)
 _PACKAGE_LOGGER = logging.getLogger("deepseek_mcp")
 _NULL_LOG_HANDLER = logging.NullHandler()
@@ -168,7 +170,6 @@ _RECOVERY_ACK = ToolAnnotations(
     readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False,
 )
 
-
 @mcp.tool(annotations=_READ_ONLY)
 def ping() -> str:
     """Health check for the deepseek-mcp server.
@@ -190,7 +191,6 @@ def ping() -> str:
         config_status = f"NOT_CONFIGURED ({e})"
     return f"pong from deepseek-mcp v{__version__} | mode={mode} | {config_status}"
 
-
 @mcp.tool(annotations=_RESULT_WITH_BOOKKEEPING)
 def get_deepseek_recovery() -> str:
     """List durable, unacknowledged workspace mutation outcomes."""
@@ -211,6 +211,7 @@ def acknowledge_deepseek_mutations(transaction_ids: list[str]) -> str:
         return _json({"ok": False, "error": str(error)})
     return _json({"ok": True, "acknowledged": removed, "pending": pending})
 
+
 def _shorten_path(p: Path) -> str:
     """Shorten long paths for compact ping output."""
     s = str(p)
@@ -227,11 +228,16 @@ def _shorten_path(p: Path) -> str:
 def _json(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
-def _load_config(profile: ExecutionProfile = CODING_PROFILE) -> Config:
+
+def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice = "flash") -> Config:
     if _deepseek_mode() == "off":
         raise JobError("DeepSeek delegation is disabled (DEEPSEEK_MODE=off)")
     try:
-        return configure_delegation(Config.load(), profile)
+        config = configure_delegation(Config.load(), profile)
+        config.model = resolve_model(model)
+        return config
+    except JobError:
+        raise
     except Exception as e:
         raise JobError(f"deepseek-mcp not configured: {e}") from e
 
@@ -291,9 +297,9 @@ async def _run_sync_cancellable(full_task: str, config: Config) -> dict:
                 raise MutationOutcomeCancelled(message, tuple(records)) from None
         raise
 
-async def _delegate(task: str, context: str, profile: ExecutionProfile) -> str:
+async def _delegate(task: str, context: str, profile: ExecutionProfile, model: ModelChoice) -> str:
     try:
-        config, full_task = _prepare_sync_request(task, context, profile)
+        config, full_task = _prepare_sync_request(task, context, profile, model)
     except JobError as e:
         return str(e)
     try:
@@ -316,29 +322,25 @@ async def _delegate(task: str, context: str, profile: ExecutionProfile) -> str:
     _record_usage(len(task), result)
     return _format_sync_result(result)
 
-
 @mcp.tool(annotations=_AGENT_EXECUTION)
-async def delegate_to_deepseek(task: str, context: str = "") -> str:
-    """Run a full coding delegation with trusted-host Bash."""
-    return await _delegate(task, context, CODING_PROFILE)
-
+async def delegate_to_deepseek(task: str, context: str = "", model: ModelChoice = "flash") -> str:
+    """Run a full coding delegation; Flash is default, Pro is for hard tasks."""
+    return await _delegate(task, context, CODING_PROFILE, model)
 
 @mcp.tool(annotations=_READONLY_AGENT_EXECUTION)
-async def delegate_to_deepseek_readonly(task: str, context: str = "") -> str:
-    """Run a pure file-analysis delegation without command execution."""
-    return await _delegate(task, context, READONLY_PROFILE)
+async def delegate_to_deepseek_readonly(task: str, context: str = "", model: ModelChoice = "flash") -> str:
+    """Run pure file analysis; Flash is default, Pro is for hard tasks."""
+    return await _delegate(task, context, READONLY_PROFILE, model)
 
 
-def _prepare_sync_request(
-    task: str, context: str, profile: ExecutionProfile,
-) -> tuple[Config, str]:
+def _prepare_sync_request(task: str, context: str, profile: ExecutionProfile, model: ModelChoice = "flash") -> tuple[Config, str]:
     if _deepseek_mode() == "off":
         raise JobError(
             "DeepSeek delegation is disabled (DEEPSEEK_MODE=off). "
             "Continue the task yourself in the main conversation."
         )
     try:
-        config = _load_config(profile)
+        config = _load_config(profile, model)
     except JobError:
         raise
     except Exception as error:
@@ -348,7 +350,8 @@ def _prepare_sync_request(
     except JobError as error:
         raise JobError(f"ERROR: invalid DeepSeek delegation input: {error}") from None
     logger.info(
-        "delegate_to_deepseek invoked. Task length=%d, context length=%d",
+        "delegate_to_deepseek invoked. model=%s task length=%d, context length=%d",
+        model,
         len(task),
         len(context),
     )
@@ -365,26 +368,23 @@ def _log_sync_completion(result: dict) -> None:
     )
 
 
-def _start_delegation(task: str, context: str, profile: ExecutionProfile) -> str:
+def _start_delegation(task: str, context: str, profile: ExecutionProfile, model: ModelChoice) -> str:
     try:
-        payload = job_manager.start(task, context, _load_config(profile))
+        payload = job_manager.start(task, context, _load_config(profile, model))
     except JobError as e:
         return _json({"ok": False, "error": str(e)})
-    logger.info("Background DeepSeek job started: %s", payload["job_id"])
+    logger.info("Background DeepSeek job started: %s model=%s", payload["job_id"], model)
     return _json({"ok": True, **payload})
 
-
 @mcp.tool(annotations=_AGENT_EXECUTION)
-def start_deepseek(task: str, context: str = "") -> str:
-    """Start a steerable full coding job with trusted-host Bash."""
-    return _start_delegation(task, context, CODING_PROFILE)
-
+def start_deepseek(task: str, context: str = "", model: ModelChoice = "flash") -> str:
+    """Start a coding job; Flash is default, Pro is for hard tasks."""
+    return _start_delegation(task, context, CODING_PROFILE, model)
 
 @mcp.tool(annotations=_READONLY_AGENT_EXECUTION)
-def start_deepseek_readonly(task: str, context: str = "") -> str:
-    """Start a steerable pure file-analysis job."""
-    return _start_delegation(task, context, READONLY_PROFILE)
-
+def start_deepseek_readonly(task: str, context: str = "", model: ModelChoice = "flash") -> str:
+    """Start a read-only job; Flash is default, Pro is for hard tasks."""
+    return _start_delegation(task, context, READONLY_PROFILE, model)
 
 @mcp.tool(annotations=_READ_ONLY)
 def get_deepseek_status(job_id: str) -> str:
@@ -394,7 +394,6 @@ def get_deepseek_status(job_id: str) -> str:
     except JobError as e:
         return _json({"ok": False, "error": str(e)})
     return _json({"ok": True, **payload})
-
 
 @mcp.tool(annotations=_AGENT_CONTROL)
 def send_deepseek_message(job_id: str, message: str) -> str:
@@ -410,7 +409,6 @@ def send_deepseek_message(job_id: str, message: str) -> str:
     logger.info("Queued steering message for DeepSeek job %s", job_id)
     return _json({"ok": True, **payload})
 
-
 @mcp.tool(annotations=_LOCAL_CANCELLATION)
 def cancel_deepseek(job_id: str) -> str:
     """Request cancellation of a running DeepSeek background job.
@@ -424,7 +422,6 @@ def cancel_deepseek(job_id: str) -> str:
         return _json({"ok": False, "error": str(e)})
     logger.info("Cancellation requested for DeepSeek job %s", job_id)
     return _json({"ok": True, **payload})
-
 
 @mcp.tool(annotations=_RESULT_WITH_BOOKKEEPING)
 def get_deepseek_result(job_id: str) -> str:

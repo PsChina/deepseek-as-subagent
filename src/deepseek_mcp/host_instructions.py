@@ -12,13 +12,14 @@ criteria before relying on it.
 
 API reference:
 - `ping()`: check that the MCP server is available.
-- `delegate_to_deepseek(task, context="")`: wait for full coding to finish; it
-  cannot be steered, queried, or cancelled while running.
-- `delegate_to_deepseek_readonly(task, context="")`: wait for file-only analysis
-  with Read/Glob/Grep; it has no Bash or mutation tools and cannot be controlled
-  while running.
-- `start_deepseek(task, context="")` / `start_deepseek_readonly(task, context="")`:
-  start a coding/read-only background job and return `job_id`.
+- `delegate_to_deepseek(task, context="", model="flash")`: wait for full coding to
+  finish; it cannot be steered, queried, or cancelled while running.
+- `delegate_to_deepseek_readonly(task, context="", model="flash")`: wait for
+  file-only analysis with Read/Glob/Grep; it has no Bash or mutation tools and
+  cannot be controlled while running.
+- `start_deepseek(task, context="", model="flash")` /
+  `start_deepseek_readonly(task, context="", model="flash")`: start a coding or
+  read-only background job and return `job_id`.
 - `get_deepseek_status(job_id)`: read a background job's state.
 - `send_deepseek_message(job_id, message)`: add or correct its task instruction.
 - `cancel_deepseek(job_id)`: cancel a background job.
@@ -26,7 +27,18 @@ API reference:
 - `get_deepseek_recovery()`: list unacknowledged mutations from coding work.
 - `acknowledge_deepseek_mutations(transaction_ids)`: acknowledge exact reviewed IDs.
 `task` states the goal and acceptance criteria; optional `context` supplies paths,
-constraints, and project conventions. `job_id` comes from `start_*`.
+constraints, and project conventions. `model` is exactly `flash` or `pro`: omit it
+for Flash. A background job keeps the model chosen at start; steering cannot change
+it. `job_id` comes from `start_*`.
+
+Model routing guidance:
+- `flash`: default general-purpose subagent, roughly Sonnet/Terra-tier. Use it for
+  normal coding, review, investigation, refactoring, and routine multi-file work.
+- `pro`: stronger difficult-task subagent, roughly Opus/Sol-tier. Use it for complex
+  debugging, architecture, difficult multi-file reasoning, or when Flash was
+  insufficient.
+Do not select Pro merely because it is available; prefer Flash unless the task
+clearly benefits from the stronger tier.
 
 Selection: use `delegate_*` when the host can wait for completion. Use `start_*`
 when it needs steering, status, or cancellation. Use readonly only for pure
