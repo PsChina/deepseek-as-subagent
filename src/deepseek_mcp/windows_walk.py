@@ -14,6 +14,22 @@ _RESERVED_STEMS = frozenset(
     | {f"LPT{index}" for index in range(1, 10)}
 )
 
+if os.name == "nt":  # pragma: no cover - exercised by the Windows CI matrix
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _FileBasicInfo(ctypes.Structure):
+        _fields_ = (
+            ("creation_time", ctypes.c_longlong),
+            ("last_access_time", ctypes.c_longlong),
+            ("last_write_time", ctypes.c_longlong),
+            ("change_time", ctypes.c_longlong),
+            ("attributes", wintypes.DWORD),
+        )
+
+_FILE_BASIC_INFO = 0
+
 
 def safe_part(part: str) -> bool:
     if not part or ":" in part or part.rstrip(" .") != part:
@@ -66,3 +82,17 @@ def descriptor_matches(descriptor: int, path: Path) -> bool:
         return handle_matches(msvcrt.get_osfhandle(descriptor), path, directory=False)
     except (OSError, ToolInputError):
         return False
+
+
+def descriptor_change_time(descriptor: int) -> int | None:
+    """Return the NTFS change-time token for an open descriptor on Windows."""
+    if os.name != "nt":
+        return None
+    info = _FileBasicInfo()
+    handle = msvcrt.get_osfhandle(descriptor)
+    ok = file_io._GET_HANDLE_INFO(
+        handle, _FILE_BASIC_INFO, ctypes.byref(info), ctypes.sizeof(info)
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(info.change_time)
