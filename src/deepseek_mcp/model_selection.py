@@ -25,3 +25,20 @@ def resolve_reasoning_effort(
     if choice == "pro":
         return pro_effort
     raise ValueError("model must be exactly 'flash' or 'pro'")
+
+
+def resolve_profile(
+    choice: str,
+    *,
+    flash_model: str,
+    pro_model: str,
+    flash_effort: str,
+    pro_effort: str,
+) -> tuple[str, str]:
+    """Resolve provider model ID and reasoning effort for one public profile."""
+    return (
+        resolve_model(choice, flash_model=flash_model, pro_model=pro_model),
+        resolve_reasoning_effort(
+            choice, flash_effort=flash_effort, pro_effort=pro_effort
+        ),
+    )
