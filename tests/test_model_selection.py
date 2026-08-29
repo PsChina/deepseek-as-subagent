@@ -62,11 +62,13 @@ class ModelSelectionTests(unittest.TestCase):
                 pro_model="vendor-smart-model",
             )
 
-    def test_load_config_uses_configured_flash_by_default(self) -> None:
+    def test_load_config_uses_configured_flash_profile_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = self._config(Path(tmpdir))
             config.flash_model = "custom-flash"
             config.pro_model = "custom-pro"
+            config.flash_reasoning_effort = "low"
+            config.pro_reasoning_effort = "max"
             with (
                 patch.object(server.Config, "load", return_value=config),
                 patch.object(server, "configure_delegation", side_effect=lambda cfg, _profile: cfg),
@@ -75,12 +77,15 @@ class ModelSelectionTests(unittest.TestCase):
 
         self.assertIs(loaded, config)
         self.assertEqual(loaded.model, "custom-flash")
+        self.assertEqual(loaded.reasoning_effort, "low")
 
-    def test_load_config_can_select_configured_pro(self) -> None:
+    def test_load_config_can_select_configured_pro_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = self._config(Path(tmpdir))
             config.flash_model = "custom-flash"
             config.pro_model = "custom-pro"
+            config.flash_reasoning_effort = "none"
+            config.pro_reasoning_effort = "max"
             with (
                 patch.object(server.Config, "load", return_value=config),
                 patch.object(server, "configure_delegation", side_effect=lambda cfg, _profile: cfg),
@@ -88,11 +93,12 @@ class ModelSelectionTests(unittest.TestCase):
                 loaded = server._load_config(READONLY_PROFILE, "pro")
 
         self.assertEqual(loaded.model, "custom-pro")
+        self.assertEqual(loaded.reasoning_effort, "max")
 
     def test_background_job_receives_selected_model_once(self) -> None:
         manager = Mock()
         manager.start.return_value = {"job_id": "job-1", "status": "running"}
-        config = Mock(model="custom-pro")
+        config = Mock(model="custom-pro", reasoning_effort="max")
         with (
             patch.object(server, "job_manager", manager),
             patch.object(server, "_load_config", return_value=config) as load_config,
