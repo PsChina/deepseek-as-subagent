@@ -63,7 +63,6 @@ credential-isolated, but it is not an OS sandbox.
 ```bash
 git clone https://github.com/PsChina/deepseek-as-subagent.git
 cd deepseek-as-subagent
-git checkout REVIEWED_TAG_OR_COMMIT
 # Inspect install.sh and requirements.lock, then:
 ./install.sh
 ```

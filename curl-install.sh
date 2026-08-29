@@ -11,7 +11,6 @@ an explicitly reviewed revision instead:
 
   git clone https://github.com/PsChina/deepseek-as-subagent.git
   cd deepseek-as-subagent
-  git checkout REVIEWED_TAG_OR_COMMIT
   # Inspect install.sh and requirements.lock, then run:
   ./install.sh
 

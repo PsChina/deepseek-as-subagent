@@ -62,7 +62,6 @@ Coding Bash 在可信宿主机上以 `cwd=workspace` 运行；它有时限、输
 ```bash
 git clone https://github.com/PsChina/deepseek-as-subagent.git
 cd deepseek-as-subagent
-git checkout REVIEWED_TAG_OR_COMMIT
 # 先审查 install.sh 与 requirements.lock，再执行：
 ./install.sh
 ```
