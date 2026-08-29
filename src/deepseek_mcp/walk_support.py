@@ -40,6 +40,7 @@ def read_descriptor(descriptor: int, max_bytes: int) -> bytes:
 def read_open_entry(descriptor: int, max_bytes: int) -> bytes:
     try:
         before = os.fstat(descriptor)
+        before_change = windows_walk.descriptor_change_time(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise ToolInputError("workspace entry is not a regular file")
         if before.st_size > max_bytes:
@@ -47,11 +48,14 @@ def read_open_entry(descriptor: int, max_bytes: int) -> bytes:
         os.lseek(descriptor, 0, os.SEEK_SET)
         data = read_descriptor(descriptor, max_bytes)
         after = os.fstat(descriptor)
+        after_change = windows_walk.descriptor_change_time(descriptor)
         fields = (
             "st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns"
         )
-        if len(data) != before.st_size or any(
-            getattr(before, name) != getattr(after, name) for name in fields
+        if (
+            len(data) != before.st_size
+            or before_change != after_change
+            or any(getattr(before, name) != getattr(after, name) for name in fields)
         ):
             raise ToolInputError("workspace entry changed while reading")
         return data
