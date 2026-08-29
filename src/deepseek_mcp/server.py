@@ -185,7 +185,8 @@ def ping() -> str:
         ws_short = _shorten_path(cfg.workspace)
         tools = ",".join(cfg.allowed_tools)
         config_status = (
-            f"workspace={ws_short} (sandbox), model={cfg.model}, tools={tools}"
+            f"workspace={ws_short} (sandbox), flash={cfg.flash_model}, "
+            f"pro={cfg.pro_model}, tools={tools}"
         )
     except Exception as e:
         config_status = f"NOT_CONFIGURED ({e})"
@@ -234,7 +235,11 @@ def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice 
         raise JobError("DeepSeek delegation is disabled (DEEPSEEK_MODE=off)")
     try:
         config = configure_delegation(Config.load(), profile)
-        config.model = resolve_model(model)
+        config.model = resolve_model(
+            model,
+            flash_model=config.flash_model,
+            pro_model=config.pro_model,
+        )
         return config
     except JobError:
         raise
