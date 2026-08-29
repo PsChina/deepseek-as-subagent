@@ -28,6 +28,7 @@ class WindowsWalkPolicyTests(unittest.TestCase):
             patch.object(walk_support.os, "fstat", return_value=info),
             patch.object(walk_support.os, "lseek"),
             patch.object(walk_support, "read_descriptor", return_value=b"x"),
+            patch.object(windows_walk, "descriptor_change_time", return_value=1),
             self.assertRaisesRegex(ValueError, "changed while reading"),
         ):
             walk_support.read_open_entry(7, 100)
