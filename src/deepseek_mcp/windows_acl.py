@@ -81,10 +81,13 @@ if os.name == "nt":  # pragma: no cover - exercised by the Windows CI matrix
     class _TokenUser(ctypes.Structure):
         _fields_ = (("user", _SidAndAttributes),)
 
+    class _TokenOwner(ctypes.Structure):
+        _fields_ = (("owner", ctypes.c_void_p),)
+
 
 _SE_FILE_OBJECT = 1
 _OWNER_DACL = 0x1 | 0x4
-_TOKEN_QUERY, _TOKEN_USER = 0x8, 1
+_TOKEN_QUERY, _TOKEN_USER, _TOKEN_OWNER = 0x8, 1, 4
 _ALLOW_ACE, _INHERIT_ONLY = 0, 0x8
 _ALLOW_TYPES = frozenset({0, 4, 5, 9, 11})
 # Creator Owner, Local System, Builtin Administrators, Creator Owner Rights.
@@ -101,26 +104,40 @@ def _require_windows() -> None:
         raise WindowsAclError("Windows ACL validation is unavailable")
 
 
-def _current_user_sid() -> tuple[object, int]:
+def _current_token_sid(info_class: int) -> tuple[object, int]:
     _require_windows()
     token = wintypes.HANDLE()
     if not _OPEN_TOKEN(_GET_PROCESS(), _TOKEN_QUERY, ctypes.byref(token)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         size = wintypes.DWORD()
-        _TOKEN_INFO(token, _TOKEN_USER, None, 0, ctypes.byref(size))
+        _TOKEN_INFO(token, info_class, None, 0, ctypes.byref(size))
         if not size.value:
             raise ctypes.WinError(ctypes.get_last_error())
         buffer = ctypes.create_string_buffer(size.value)
-        if not _TOKEN_INFO(
-            token, _TOKEN_USER, buffer, size.value, ctypes.byref(size)
-        ):
+        if not _TOKEN_INFO(token, info_class, buffer, size.value, ctypes.byref(size)):
             raise ctypes.WinError(ctypes.get_last_error())
-        sid = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents.user.sid
+        if info_class == _TOKEN_USER:
+            sid = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents.user.sid
+        elif info_class == _TOKEN_OWNER:
+            sid = ctypes.cast(buffer, ctypes.POINTER(_TokenOwner)).contents.owner
+        else:  # Defensive: this helper only understands SID-bearing token classes.
+            raise WindowsAclError("unsupported Windows token SID information class")
+        if not sid:
+            raise WindowsAclError("Windows access token returned an empty SID")
         return buffer, int(sid)
     finally:
         if not _CLOSE_HANDLE(token):
             raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _current_user_sid() -> tuple[object, int]:
+    return _current_token_sid(_TOKEN_USER)
+
+
+def _current_owner_sid() -> tuple[object, int]:
+    """Return the access token's default owner SID for newly created objects."""
+    return _current_token_sid(_TOKEN_OWNER)
 
 
 def _well_known_sid(kind: int) -> tuple[object, int]:
@@ -144,6 +161,21 @@ def _allowed_sids() -> tuple[list[object], list[int]]:
 
 def _sid_is_allowed(sid: int, allowed: list[int]) -> bool:
     return any(_EQUAL_SID(sid, candidate) for candidate in allowed)
+
+
+def _owner_sid_is_allowed(
+    owner: int,
+    current_user: int,
+    token_owner: int,
+    allowed: list[int],
+) -> bool:
+    """Accept the user owner, or the token's default owner when already trusted."""
+    if _EQUAL_SID(owner, current_user):
+        return True
+    return bool(
+        _EQUAL_SID(owner, token_owner)
+        and _sid_is_allowed(token_owner, allowed)
+    )
 
 
 def _ace_applies_to_object(flags: int) -> bool:
@@ -175,7 +207,7 @@ def _validate_aces(dacl: int, allowed: list[int]) -> None:
 
 
 def validate_private_handle(handle: int) -> None:
-    """Require current-user ownership and no foreign write-capable allow ACE."""
+    """Require a trusted token owner and no foreign write-capable allow ACE."""
     _require_windows()
     owner = ctypes.c_void_p()
     dacl = ctypes.c_void_p()
@@ -188,12 +220,20 @@ def validate_private_handle(handle: int) -> None:
         raise ctypes.WinError(code)
     try:
         buffers, allowed = _allowed_sids()
-        if not owner.value or not _EQUAL_SID(owner, allowed[0]):
-            raise WindowsAclError("Windows path is not owned by the current user")
+        token_owner_buffer, token_owner = _current_owner_sid()
+        if (
+            not owner.value
+            or not _owner_sid_is_allowed(
+                owner.value, allowed[0], token_owner, allowed
+            )
+        ):
+            raise WindowsAclError(
+                "Windows path is not owned by the current user or trusted token owner"
+            )
         if not dacl.value:
             raise WindowsAclError("Windows path has an unrestricted DACL")
         _validate_aces(dacl.value, allowed)
-        del buffers
+        del token_owner_buffer, buffers
     finally:
         if descriptor.value and _LOCAL_FREE(descriptor):
             raise ctypes.WinError(ctypes.get_last_error())
