@@ -269,7 +269,10 @@ max_retries=0
 {
   "api_key": "sk-...",
   "flash": "deepseek-v4-flash",
+  "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
+  "pro_reasoning_effort": "high",
+  "_reasoning_effort_options": ["none", "low", "high", "max"],
   "max_turns": 50,
   "max_run_seconds": 18000,
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
@@ -279,6 +282,13 @@ max_retries=0
 `flash` 和 `pro` 是两个稳定 MCP 路由槽位背后的真实 provider 模型名。DeepSeek 后续升级
 到新版本，或者兼容 API 端点使用不同模型名时，用户只需要修改这里的字符串，不需要改变
 Claude/Codex 的 MCP 调用方式；公共参数始终只传 `model="flash"` 或 `model="pro"`。
+
+`flash_reasoning_effort` 和 `pro_reasoning_effort` 可配置为 `none`、`low`、`high`、`max`。
+`none` 表示关闭 thinking；其余三档会显式开启 thinking 并使用对应 effort。
+`_reasoning_effort_options` 只是配置文件里的提示字段，运行时忽略。若某个 effort 字段缺失，
+deepseek-mcp 不会向该槽位请求附加 thinking/reasoning 参数，而是沿用 provider 原有默认行为；
+这样可以保持旧配置和 OpenAI-compatible 网关的请求形态。新安装器生成的配置会显式把两个
+槽位都设为 `high`。
 
 为了兼容旧版本，当 `flash` / `pro` 都不存在时，旧的单 `model` 字段仍然可以读取，并会
 同时映射到两个槽位。不要把旧 `model` 和新 `flash` / `pro` 混用。
