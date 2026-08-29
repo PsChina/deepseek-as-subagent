@@ -200,7 +200,7 @@ def _format_glob_result(
     matches: list[Path], result_limit: bool, traversal_limit: bool, root: Path
 ) -> str:
     matches.sort()
-    rel_matches = [str(path.relative_to(root)) for path in matches]
+    rel_matches = [path.relative_to(root).as_posix() for path in matches]
     truncated = result_limit or traversal_limit
     prefix = "Found at least" if truncated else "Found"
     summary = f"{prefix} {len(matches)} match(es)"
@@ -447,7 +447,6 @@ def _format_grep_result(results: list[str], pattern: str, truncated: bool) -> st
     if truncated:
         header += " (results incomplete)"
     return _truncate(header + ":\n" + "\n".join(results))
-
 def _execute_grep(args: dict, workspace: Path) -> str:
     """正则搜索文件内容。args: {pattern: str, path?: str, glob?: str, max_matches?: int}"""
     try:
