@@ -14,6 +14,7 @@ class ParentLivenessWindowsModelTests(unittest.TestCase):
             OpenProcess=Mock(return_value=0x1_0000_0001),
             WaitForSingleObject=Mock(return_value=wait_result),
             CloseHandle=Mock(return_value=True),
+            GetTickCount64=Mock(return_value=1_000),
         )
 
     def test_windows_wait_preserves_pointer_sized_process_handle(self) -> None:
