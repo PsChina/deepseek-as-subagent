@@ -25,6 +25,7 @@ MAX_OUTPUT_TOKENS_PER_REQUEST = 16_384
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024
+_REASONING_EFFORTS = frozenset({"none", "low", "high", "max"})
 
 for _name in ("openai", "httpx", "httpcore"):
     _logger = logging.getLogger(_name)
@@ -71,6 +72,16 @@ def _trust_proxy_environment(base_url: str) -> bool:
     )
 
 
+def _apply_reasoning_settings(arguments: dict[str, Any], effort: object) -> None:
+    if not isinstance(effort, str) or effort not in _REASONING_EFFORTS:
+        raise ValueError("invalid reasoning effort")
+    if effort == "none":
+        arguments["extra_body"] = {"thinking": {"type": "disabled"}}
+        return
+    arguments["reasoning_effort"] = effort
+    arguments["extra_body"] = {"thinking": {"type": "enabled"}}
+
+
 def _request_arguments(
     settings: dict[str, str], messages: list[dict], tools: list[dict]
 ) -> dict[str, Any]:
@@ -79,6 +90,8 @@ def _request_arguments(
         "messages": messages,
         "max_tokens": MAX_OUTPUT_TOKENS_PER_REQUEST,
     }
+    if "reasoning_effort" in settings:
+        _apply_reasoning_settings(arguments, settings["reasoning_effort"])
     if tools:
         arguments["tools"] = tools
     return arguments

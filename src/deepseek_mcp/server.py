@@ -37,7 +37,7 @@ from .execution_profile import (
 )
 from .host_instructions import HOST_INSTRUCTIONS as _HOST_INSTRUCTIONS
 from .job_manager import DeepSeekJobManager, JobBusy, JobError, validate_delegation_input
-from .model_selection import ModelChoice, resolve_model
+from .model_selection import ModelChoice, resolve_profile
 from .private_logging import PrivateBoundedLogStream
 from .process_hardening import disable_core_dumps
 from .transaction_recovery import (
@@ -46,7 +46,6 @@ from .transaction_recovery import (
 )
 
 _VALID_MODES = frozenset({"auto", "off"})
-
 def _deepseek_mode() -> str:
     value = os.getenv("DEEPSEEK_MODE", "auto")
     if value not in _VALID_MODES:
@@ -185,7 +184,8 @@ def ping() -> str:
         ws_short = _shorten_path(cfg.workspace)
         tools = ",".join(cfg.allowed_tools)
         config_status = (
-            f"workspace={ws_short} (sandbox), model={cfg.model}, tools={tools}"
+            f"workspace={ws_short} (sandbox), flash={cfg.flash_model}/{cfg.flash_reasoning_effort}, "
+            f"pro={cfg.pro_model}/{cfg.pro_reasoning_effort}, tools={tools}"
         )
     except Exception as e:
         config_status = f"NOT_CONFIGURED ({e})"
@@ -234,7 +234,11 @@ def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice 
         raise JobError("DeepSeek delegation is disabled (DEEPSEEK_MODE=off)")
     try:
         config = configure_delegation(Config.load(), profile)
-        config.model = resolve_model(model)
+        config.model, config.reasoning_effort = resolve_profile(
+            model, flash_model=config.flash_model, pro_model=config.pro_model,
+            flash_effort=config.flash_reasoning_effort,
+            pro_effort=config.pro_reasoning_effort,
+        )
         return config
     except JobError:
         raise

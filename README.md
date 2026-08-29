@@ -99,6 +99,7 @@ result back. Token savings are end-to-end.
 - **MCP server** (Python, stdio transport)
 - **Coding and read-only delegation**: `delegate_to_deepseek` / `delegate_to_deepseek_readonly`
 - **Steerable background jobs**: `start_deepseek` / `start_deepseek_readonly` plus shared controls
+- **Flash / Pro model routing**: host chooses a stable profile; users control the actual provider model IDs in config
 - **Local DeepSeek agent loop** (`agent_loop.py`) with OpenAI-compatible function calling
 - **Fixed capability APIs**: coding gets Read / Write / Edit / Bash / Glob / Grep / NotebookEdit; read-only gets Read / Glob / Grep
 - **Bash execution**: bounded credential-isolated trusted-host commands through the tool-child boundary
@@ -110,11 +111,11 @@ result back. Token savings are end-to-end.
 
 ## Compatibility
 
-The existing MCP entry points `ping()` and
-`delegate_to_deepseek(task, context="")` keep their input schema; the
-background-job and recovery tools are additive. This is input-schema compatible,
-but mutation-capable legacy hosts must adopt the additive recovery query/verify/ack
-handshake before starting another delegation; read-only use needs no change.
+The four delegation entry points accept one additive optional argument,
+`model="flash" | "pro"`. Existing calls that omit it remain valid and now default
+to the Flash profile. Background-job and recovery tools remain additive.
+Mutation-capable legacy hosts must adopt the recovery query/verify/ack handshake
+before starting another delegation; read-only use needs no change.
 Clients should not parse health/error text byte-for-byte because diagnostics are now more specific. Provider calls still
 use DeepSeek's [OpenAI-compatible Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/).
 Local Python module signatures are implementation details rather than a stable
@@ -171,9 +172,15 @@ clearly read-only, choose coding.
 Use a synchronous API when the task can run to completion without mid-flight
 intervention. The MCP request remains open until DeepSeek finishes:
 
-- `delegate_to_deepseek(task, context)` for coding, Bash, tests, or any task
-  that might write the workspace.
-- `delegate_to_deepseek_readonly(task, context)` for static file analysis only.
+- `delegate_to_deepseek(task, context, model="flash")` for coding, Bash, tests,
+  or any task that might write the workspace.
+- `delegate_to_deepseek_readonly(task, context, model="flash")` for static file
+  analysis only.
+
+`model` is optional and accepts only `flash` or `pro`. Omit it for normal work;
+select `pro` explicitly for difficult debugging, architecture-level reasoning,
+or when Flash has already proved insufficient. The host never passes a provider
+model ID directly.
 
 ### Steerable background delegation
 
@@ -181,7 +188,7 @@ For longer tasks that may need new instructions or cancellation, choose the
 matching background API, then use the same controls for either job type:
 
 ```text
-start_deepseek(task, context) / start_deepseek_readonly(task, context) -> job_id
+start_deepseek(task, context, model="flash") / start_deepseek_readonly(task, context, model="flash") -> job_id
 send_deepseek_message(job_id, message)
 get_deepseek_status(job_id)
 cancel_deepseek(job_id)
@@ -190,8 +197,9 @@ get_deepseek_result(job_id)
 
 Either `start_*` API returns quickly while the DeepSeek agent continues in a
 background worker. Steering changes only the task instruction: it cannot change
-the job's fixed tools or Bash availability. Cancellation wakes retry backoff and
-promptly terminates an in-flight provider or local-tool subprocess.
+the job's fixed tools, Bash availability, or selected model profile. Cancellation
+wakes retry backoff and promptly terminates an in-flight provider or local-tool
+subprocess.
 
 If a readonly job later needs a command or workspace mutation, cancel or finish
 it, then create a new coding job with `start_deepseek`; steering cannot upgrade
@@ -224,7 +232,7 @@ rolls back workspace files.
 ### Claude Code helpers
 
 - `delegate_to_deepseek` / `delegate_to_deepseek_readonly` — Claude selects the
-  matching fixed capability for coding or static analysis
+  matching fixed capability and Flash/Pro profile
 - `/ds <task>` — force synchronous coding delegation
 - `DEEPSEEK_MODE=off claude` — start one session with DeepSeek disabled
 
@@ -264,12 +272,34 @@ No third-party proxy or cloud relay is introduced by this project. Delegated pro
 ```json
 {
   "api_key": "sk-...",
-  "model": "deepseek-v4-pro",
+  "flash": "deepseek-v4-flash",
+  "flash_reasoning_effort": "high",
+  "pro": "deepseek-v4-pro",
+  "pro_reasoning_effort": "high",
+  "_reasoning_effort_options": ["none", "low", "high", "max"],
   "max_turns": 50,
   "max_run_seconds": 18000,
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
 }
 ```
+
+`flash` and `pro` are the provider model IDs behind the two stable MCP routing
+profiles. You can change these strings when DeepSeek publishes a new model
+revision, or when a compatible endpoint uses different model names, without
+changing how Claude/Codex calls the MCP tools. The public tool argument remains
+only `model="flash"` or `model="pro"`.
+
+`flash_reasoning_effort` and `pro_reasoning_effort` accept `none`, `low`, `high`,
+or `max`. `none` disables thinking; the other values explicitly enable thinking
+at that effort. `_reasoning_effort_options` is only an in-file hint and is ignored
+at runtime. If an effort field is absent, deepseek-mcp leaves thinking controls
+unspecified for that slot so the provider's existing default applies; this keeps
+older configs and OpenAI-compatible gateways compatible. New installer-generated
+configs explicitly set both slots to `high`.
+
+For upgrade compatibility, a legacy single `model` field is still accepted when
+`flash` and `pro` are absent; its value is used for both slots. Do not combine
+legacy `model` with the new `flash` / `pro` fields.
 
 `allowed_tools` is retained for configuration compatibility and validation. It
 does not select capabilities for a delegation: each MCP API applies its own

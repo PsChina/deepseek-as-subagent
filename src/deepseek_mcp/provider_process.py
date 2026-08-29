@@ -96,12 +96,16 @@ def _request_end(deadline: Deadline | None) -> tuple[Deadline, bool]:
 
 
 def _encoded_request(config, messages: list[dict], tools: list[dict]) -> bytes:
+    settings = {
+        "credential": getattr(config, "api_" + "key"),
+        "base_url": config.base_url,
+        "model": config.model,
+    }
+    reasoning_effort = getattr(config, "reasoning_effort", None)
+    if reasoning_effort not in (None, "provider-default"):
+        settings["reasoning_effort"] = reasoning_effort
     payload = {
-        "settings": {
-            "credential": getattr(config, "api_" + "key"),
-            "base_url": config.base_url,
-            "model": config.model,
-        },
+        "settings": settings,
         "messages": messages,
         "tools": tools,
     }

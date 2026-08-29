@@ -95,6 +95,7 @@ Codex 和其它 MCP 客户端见下方安装说明。
 - **MCP server**（Python，stdio）
 - **coding 与只读委派**：`delegate_to_deepseek` / `delegate_to_deepseek_readonly`
 - **后台可控任务**：`start_deepseek` / `start_deepseek_readonly` 与共用控制 API
+- **Flash / Pro 模型路由**：主 Agent 只选稳定档位，用户在配置里控制真实 provider 模型名
 - **DeepSeek 本地 agent loop**（`agent_loop.py`）
 - **固定 capability API**：coding 为 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit；只读为 Read / Glob / Grep
 - **Bash 执行**：通过 tool-child 边界运行有界且隔离凭证的 `trusted_host`
@@ -106,11 +107,10 @@ Codex 和其它 MCP 客户端见下方安装说明。
 
 ## 兼容性
 
-既有 MCP 入口 `ping()` 与 `delegate_to_deepseek(task, context="")` 保持
-输入 schema；后台任务与恢复工具都是增量新增。这保证输入 schema 兼容，
-但会写文件的老宿主必须接入新增的“恢复查询 → 文件核验 → 精确确认”流程，
-才能继续下一次委派；只读用法无需调整。健康检查和错误文本包含了更明确的
-诊断信息，不承诺逐字节不变。Provider 仍使用 DeepSeek 的
+四个委派入口新增一个可选参数 `model="flash" | "pro"`。旧调用不传该参数时仍然合法，
+并默认选择 Flash 档。后台任务和恢复工具仍然是增量能力。会写文件的老宿主必须接入
+“恢复查询 → 文件核验 → 精确确认”流程，才能继续下一次委派；只读用法无需调整。
+健康检查和错误文本包含更明确的诊断信息，不承诺逐字节不变。Provider 仍使用 DeepSeek 的
 [OpenAI-compatible Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)。
 本地 Python 模块签名属于实现细节，不作为稳定公共 API。
 
@@ -162,9 +162,13 @@ coding。
 任务不需要中途干预时，按能力直接使用同步 API：
 
 ```text
-delegate_to_deepseek(task, context)
-delegate_to_deepseek_readonly(task, context)
+delegate_to_deepseek(task, context, model="flash")
+delegate_to_deepseek_readonly(task, context, model="flash")
 ```
+
+`model` 是可选参数，只允许 `flash` / `pro`。普通任务省略即可，默认 Flash；复杂 debugging、
+架构级推理、困难多文件推理，或 Flash 已明显不足时才显式选择 Pro。主 Agent 不直接传真实
+provider 模型名。
 
 前者用于 coding、Bash、测试或任何可能写工作区的任务；后者只用于静态文件分析。
 MCP 请求会一直保持到 DeepSeek 完成。
@@ -175,14 +179,14 @@ MCP 请求会一直保持到 DeepSeek 完成。
 job 都使用同一组控制接口：
 
 ```text
-start_deepseek(task, context) / start_deepseek_readonly(task, context) -> job_id
+start_deepseek(task, context, model="flash") / start_deepseek_readonly(task, context, model="flash") -> job_id
 send_deepseek_message(job_id, message)
 get_deepseek_status(job_id)
 cancel_deepseek(job_id)
 get_deepseek_result(job_id)
 ```
 
-两个 `start_*` API 都会很快返回，DeepSeek 在后台 worker 中继续执行，因此同一个 MCP session 后续还能继续发送控制请求。steering 只能更新任务指令，不能改变该 job 已冻结的工具或 Bash 可用性。
+两个 `start_*` API 都会很快返回，DeepSeek 在后台 worker 中继续执行，因此同一个 MCP session 后续还能继续发送控制请求。steering 只能更新任务指令，不能改变该 job 已冻结的工具、Bash 可用性或模型档位。
 
 如果 readonly job 后续需要执行命令或修改工作区，应取消或结束它，再用
 `start_deepseek` 新建 coding job；steering 不能升级既有 readonly job。
@@ -212,7 +216,7 @@ DeepSeek API key，也不会删除或回滚工作区文件。
 
 ### Claude Code 辅助入口
 
-- `delegate_to_deepseek` —— 合适时自动调用
+- `delegate_to_deepseek` / `delegate_to_deepseek_readonly` —— Claude 自动选择 capability 与 Flash/Pro 档位
 - `/ds <task>` —— 强制同步委派
 - `pure` —— 本次 Claude 会话禁用 DeepSeek
 
@@ -264,12 +268,30 @@ max_retries=0
 ```json
 {
   "api_key": "sk-...",
-  "model": "deepseek-v4-pro",
+  "flash": "deepseek-v4-flash",
+  "flash_reasoning_effort": "high",
+  "pro": "deepseek-v4-pro",
+  "pro_reasoning_effort": "high",
+  "_reasoning_effort_options": ["none", "low", "high", "max"],
   "max_turns": 50,
   "max_run_seconds": 18000,
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
 }
 ```
+
+`flash` 和 `pro` 是两个稳定 MCP 路由槽位背后的真实 provider 模型名。DeepSeek 后续升级
+到新版本，或者兼容 API 端点使用不同模型名时，用户只需要修改这里的字符串，不需要改变
+Claude/Codex 的 MCP 调用方式；公共参数始终只传 `model="flash"` 或 `model="pro"`。
+
+`flash_reasoning_effort` 和 `pro_reasoning_effort` 可配置为 `none`、`low`、`high`、`max`。
+`none` 表示关闭 thinking；其余三档会显式开启 thinking 并使用对应 effort。
+`_reasoning_effort_options` 只是配置文件里的提示字段，运行时忽略。若某个 effort 字段缺失，
+deepseek-mcp 不会向该槽位请求附加 thinking/reasoning 参数，而是沿用 provider 原有默认行为；
+这样可以保持旧配置和 OpenAI-compatible 网关的请求形态。新安装器生成的配置会显式把两个
+槽位都设为 `high`。
+
+为了兼容旧版本，当 `flash` / `pro` 都不存在时，旧的单 `model` 字段仍然可以读取，并会
+同时映射到两个槽位。不要把旧 `model` 和新 `flash` / `pro` 混用。
 
 `allowed_tools` 为兼容已有配置和校验而保留；它不用于为某次委派选择能力。
 MCP API 会在加载配置后应用各自固定的 profile。
