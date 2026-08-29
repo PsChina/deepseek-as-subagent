@@ -177,7 +177,7 @@ def write_exclusive(path: Path) -> None:
     temp_path = Path(raw_temp)
     expected = os.fstat(descriptor)
     try:
-        os.fchmod(descriptor, 0o600)
+        if os.name == "posix": os.fchmod(descriptor, 0o600)
         _validate_windows_descriptor(descriptor, temp_path)
         _write_all(descriptor, payload)
         os.fsync(descriptor)
@@ -364,7 +364,7 @@ def _generation_entries(root: Path) -> list[tuple[Path, os.stat_result]]:
                 raise GuardError("generation root has too many entries")
             path = root / entry.name
             try:
-                info = entry.stat(follow_symlinks=False)
+                info = path.lstat() if _is_windows() else entry.stat(follow_symlinks=False)
             except OSError as exc:
                 raise GuardError("generation entry is unavailable") from exc
             _validate_generation_entry(path, info)

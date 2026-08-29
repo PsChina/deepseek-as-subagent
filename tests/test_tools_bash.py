@@ -78,7 +78,16 @@ class ExecuteBashTests(unittest.TestCase):
         ):
             environment = _host_environment(Path(tmpdir))
 
-        self.assertEqual(environment, {"PATH": "/bin", "HOME": tmpdir})
+        expected = {"PATH": "/bin", "HOME": tmpdir}
+        if os.name == "nt":
+            drive, path = os.path.splitdrive(tmpdir)
+            expected.update({
+                "USERPROFILE": tmpdir,
+                "HOMEDRIVE": drive,
+                "HOMEPATH": path or os.sep,
+            })
+        self.assertEqual(environment, expected)
+        self.assertNotIn(provider_key, environment)
 
     @unittest.skipIf(os.name == "nt", "POSIX shell command")
     def test_trusted_host_bounds_stdout_and_stderr(self) -> None:

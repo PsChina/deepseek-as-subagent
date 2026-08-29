@@ -291,22 +291,26 @@ class InstallerPathGuardTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX ownership and mode semantics")
     def test_valid_private_venv_symlink_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            generation = Path(tmpdir) / "generation.safe"
+            root = Path(tmpdir)
+            target = root / "trusted-python"
+            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            target.chmod(0o500)
+            generation = root / "generation.safe"
             binary = generation / "bin"
             binary.mkdir(parents=True, mode=0o700)
             generation.chmod(0o700)
             binary.chmod(0o700)
             candidate = binary / "python"
-            candidate.symlink_to(Path(sys.executable).resolve())
+            candidate.symlink_to(target)
 
             result = _guard("validate-venv", str(generation), str(candidate))
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_installers_route_sensitive_paths_through_guard(self) -> None:
-        codex_install = (ROOT / "adapters/codex/install.sh").read_text()
-        codex_uninstall = (ROOT / "adapters/codex/uninstall.sh").read_text()
-        root_install = (ROOT / "install.sh").read_text()
+        codex_install = (ROOT / "adapters/codex/install.sh").read_text(encoding="utf-8")
+        codex_uninstall = (ROOT / "adapters/codex/uninstall.sh").read_text(encoding="utf-8")
+        root_install = (ROOT / "install.sh").read_text(encoding="utf-8")
         for script in (codex_install, codex_uninstall, root_install):
             self.assertIn("installer_path_guard.py", script)
             self.assertRegex(script, r"(?:secure|validate)-files")
@@ -345,7 +349,8 @@ class InstallerPathGuardTests(unittest.TestCase):
             result = _guard("prune-generations", str(root), str(current))
 
             self.assertEqual(result.returncode, 0, result.stderr.decode())
-            self.assertEqual(stat_mode(root), 0o700)
+            if os.name != "nt":
+                self.assertEqual(stat_mode(root), 0o700)
             self.assertTrue(current.is_dir())
             self.assertTrue(newest_previous.is_dir())
             self.assertFalse(middle.exists())

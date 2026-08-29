@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Callable
 
 from .file_identity import FileIdentity, MissingFile, ToolInputError
+from . import windows_handle_rename
 
 _ALREADY_EXISTS = frozenset({80, 183})
 _PARTIAL_REPLACE = 1177
@@ -145,28 +146,9 @@ def rename(
     descriptor: int, parent: int, name: str, *, replace: bool,
 ) -> None:
     """Rename one open file relative to an anchored directory handle."""
-    if os.name != "nt":
-        raise OSError("Windows handle rename is unavailable")
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    class _RenameInfo(ctypes.Structure):
-        _fields_ = (
-            ("replace", wintypes.BOOLEAN),
-            ("root", wintypes.HANDLE),
-            ("name_length", wintypes.DWORD),
-            ("name", wintypes.WCHAR * len(name)),
-        )
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    operation = kernel.SetFileInformationByHandle
-    info = _RenameInfo(replace, parent, len(name.encode("utf-16-le")), name)
-    if not operation(
-        msvcrt.get_osfhandle(descriptor), 3,
-        ctypes.byref(info), ctypes.sizeof(info),
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
+    windows_handle_rename.rename(
+        descriptor, parent, name, replace=replace
+    )
 
 
 def mark_delete(descriptor: int) -> None:

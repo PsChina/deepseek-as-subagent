@@ -223,7 +223,11 @@ class WindowsCASModelTests(unittest.TestCase):
         with (
             patch.object(windows_file_io, "_absolute_local", return_value=absolute),
             patch.object(windows_file_io, "_open", side_effect=(10, 11, 12)) as opened,
-            patch.object(windows_file_io, "_validate"),
+            patch.object(
+                windows_file_io,
+                "_validate",
+                side_effect=("c:\\", "c:\\ancestor", "c:\\ancestor\\parent"),
+            ),
             patch.object(windows_file_io, "_validate_acl"),
             patch.object(windows_file_io, "_close") as close,
         ):
@@ -249,7 +253,7 @@ class WindowsCASModelTests(unittest.TestCase):
             patch.object(
                 windows_file_io,
                 "_validate",
-                side_effect=(None, validation_error),
+                side_effect=("c:\\", validation_error),
             ),
             patch.object(
                 windows_file_io,

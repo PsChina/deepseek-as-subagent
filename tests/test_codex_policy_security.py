@@ -25,6 +25,16 @@ class CodexPolicySecurityTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
+    @staticmethod
+    def _unmarked_config(command: Path) -> str:
+        document = tomlkit.document()
+        servers = tomlkit.table()
+        deepseek = tomlkit.table()
+        deepseek["command"] = str(command)
+        servers["deepseek"] = deepseek
+        document["mcp_servers"] = servers
+        return tomlkit.dumps(document)
+
     def _install(self, force: bool = False) -> dict[str, object]:
         return codex_configure.begin_transaction(
             self.config,
@@ -69,8 +79,7 @@ class CodexPolicySecurityTests(unittest.TestCase):
             self.venv_root / "generation.previous" / "bin" / "deepseek-mcp"
         )
         self.config.write_text(
-            f'[mcp_servers.deepseek]\ncommand = "{previous}"\n',
-            encoding="utf-8",
+            self._unmarked_config(previous), encoding="utf-8"
         )
 
         self._install()
@@ -87,11 +96,13 @@ class CodexPolicySecurityTests(unittest.TestCase):
         ]
         for candidate in candidates:
             with self.subTest(candidate=candidate):
-                original = f'[mcp_servers.deepseek]\ncommand = "{candidate}"\n'
+                original = self._unmarked_config(candidate)
                 self.config.write_text(original, encoding="utf-8")
                 with self.assertRaises(codex_configure.OwnershipError):
                     self._install()
-                self.assertEqual(self.config.read_text(), original)
+                self.assertEqual(
+                    self.config.read_text(encoding="utf-8"), original
+                )
                 self.manifest.unlink(missing_ok=True)
                 self.backup.unlink(missing_ok=True)
 

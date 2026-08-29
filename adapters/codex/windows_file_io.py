@@ -16,6 +16,7 @@ else:
     import atomic_commit
     import windows_acl
 from deepseek_mcp import windows_file_io as _shared_windows_file_io
+from deepseek_mcp import windows_handle_rename
 
 MAX_CONFIG_BYTES = 1024 * 1024
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -142,13 +143,15 @@ def _attributes(handle: int) -> int:
     return int(info.attributes)
 
 
-def _validate(handle: int, expected: str, *, directory: bool) -> None:
+def _validate(handle: int, expected: str, *, directory: bool) -> str:
     attributes = _attributes(handle)
     actual_directory = bool(attributes & _DIRECTORY)
     if attributes & _REPARSE or actual_directory != directory:
         raise WindowsPathError("Codex config path is a reparse point or wrong type")
-    if _final_path(handle) != expected:
+    canonical = _shared_windows_file_io._canonical_existing_path(expected)
+    if _final_path(handle) != canonical:
         raise WindowsPathError("Codex config path escaped its expected location")
+    return canonical
 
 
 def _validate_acl(handle: int) -> None:
@@ -166,18 +169,18 @@ def _open_parent(path: Path) -> _Directory:
     handle = _open(current, _READ, _OPEN_EXISTING, directory=True, share=_SHARE_RW)
     ancestors: list[int] = []
     try:
-        _validate(handle, current, directory=True)
+        current = _validate(handle, current, directory=True)
         for part in (piece for piece in tail.split("\\") if piece):
             candidate = _normalized(ntpath.join(current, part))
             child = _open(candidate, _READ, _OPEN_EXISTING, directory=True, share=_SHARE_RW)
             try:
-                _validate(child, candidate, directory=True)
+                canonical = _validate(child, candidate, directory=True)
             except BaseException:
                 with suppress(OSError):
                     _close(child)
                 raise
             ancestors.append(handle)
-            handle, current = child, candidate
+            handle, current = child, canonical
         _validate_acl(handle)
         return _Directory(handle, current, tuple(ancestors))
     except BaseException:
@@ -318,18 +321,10 @@ def _write_all(descriptor: int, data: bytes) -> None:
 
 
 def _rename(descriptor: int, parent: _Directory, name: str, replace: bool = False) -> None:
-    class _RenameInfo(ctypes.Structure):
-        _fields_ = (
-            ("replace", wintypes.BOOLEAN), ("root", wintypes.HANDLE),
-            ("name_length", wintypes.DWORD), ("name", wintypes.WCHAR * len(name)),
-        )
-
-    info = _RenameInfo(replace, parent.handle, len(name.encode("utf-16-le")), name)
-    handle = msvcrt.get_osfhandle(descriptor)
-    if not _SET_HANDLE_INFO(
-        handle, _RENAME_INFO, ctypes.byref(info), ctypes.sizeof(info)
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
+    """Rename relative to the already validated parent directory handle."""
+    windows_handle_rename.rename(
+        descriptor, parent.handle, name, replace=replace
+    )
 
 
 def _mark_delete(descriptor: int) -> None:

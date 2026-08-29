@@ -40,6 +40,7 @@ jobs:
           cache-dependency-path: |
             requirements.lock
             requirements-audit.lock
+            requirements-ci-bootstrap.lock
 
       - name: Install hash-locked dependencies
         run: >-
@@ -53,6 +54,10 @@ jobs:
 
       - name: Check installed dependency consistency
         run: python -m pip check
+
+      - name: Pin audited runner toolchain
+        run: >-
+          python -m pip install --only-binary=:all: --require-hashes -r requirements-ci-bootstrap.lock
 
       - name: Install hash-locked vulnerability scanner
         run: >-

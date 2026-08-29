@@ -361,6 +361,7 @@ class JobManagerTests(unittest.TestCase):
             release_payload.set()
             collector.join(2)
             starter.join(2)
+            self._assert_terminal(manager, start_results[0]["job_id"])
 
         self.assertFalse(collector.is_alive())
         self.assertFalse(starter.is_alive())
