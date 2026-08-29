@@ -100,7 +100,7 @@ Codex 和其它 MCP 客户端见下方安装说明。
 - **Bash 执行**：通过 tool-child 边界运行有界且隔离凭证的 `trusted_host`
 - **工作区路径边界**：文件工具拒绝指向工作区外的符号链接
 - **跨进程执行租约**：多个 MCP server 也不能同时对同一工作区执行 DeepSeek
-- **崩溃安全 mutation journal**：恢复查询、文件核验、精确确认完成前禁止再次委派
+- **Write / Edit / NotebookEdit 的崩溃安全 mutation journal**：恢复查询、文件核验、精确确认完成前禁止再次委派；`trusted_host` Bash 的改动不进入 journal
 - **显式网络重试策略**：关闭 OpenAI SDK 内层重试，避免代理/TLS timeout 环境下出现重试叠加
 - Claude Code 的 skill 与 `/ds` 命令；临时禁用请运行 `DEEPSEEK_MODE=off claude`
 
@@ -191,12 +191,15 @@ steering 会在模型 / 工具操作之间的安全点生效。cancel 会立即�
 
 如果新 steering 在 DeepSeek 已经规划出 tool call、但某个旧 tool call 尚未真正执行时到达，该旧 tool call 会被跳过，DeepSeek 下一轮直接按最新指令重新规划。
 
-每个规范化工作区同一时间只允许一个 DeepSeek execution，包括由不同 MCP server 进程启动的执行。后台 job ID 与结果只在当前 MCP session 内有效，关闭宿主前应先取回结果。
+每个规范化工作区同一时间只允许一个 DeepSeek execution，包括由不同 MCP server 进程启动的执行。这个租约只协调 DeepSeek MCP execution，无法阻止主 Agent、IDE、用户或其它本地进程修改工作区。coding 后台 job 运行期间，主 Agent 应优先通过 steering、status 或 cancel 控制该 job，不要同时独立修改同一工作区；等 job 进入终态后再恢复主 Agent 侧写入。后台 job ID 与结果只在当前 MCP session 内有效，关闭宿主前应先取回结果。
 
 ### 3. mutation 恢复
 
-每次文件 mutation 都会在 commit 前写入持久 journal。结果报告 mutation，或
-发生取消、断连、MCP 重启后，先执行：
+通过 `Write`、`Edit`、`NotebookEdit` 提交的 mutation 会在 commit 前写入持久
+journal。`trusted_host` Bash 不经过这套事务 journal，它可以直接修改、重命名、
+删除或生成工作区文件，这些变化不会出现在 `get_deepseek_recovery` 中。如果 coding
+任务中 Bash 可能已经执行后发生取消、断连或异常中断，应先独立检查工作区状态再继续
+或重试。结果报告 journal mutation，或发生取消、断连、MCP 重启后，先执行：
 
 ```text
 get_deepseek_recovery()
