@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from deepseek_mcp import server
 from deepseek_mcp.config import Config, DEFAULT_MODEL
 from deepseek_mcp.execution_profile import CODING_PROFILE, READONLY_PROFILE
-from deepseek_mcp.job_manager import JobError
+from deepseek_mcp.model_selection import resolve_model
 
 
 class ModelSelectionTests(unittest.TestCase):
@@ -32,10 +32,10 @@ class ModelSelectionTests(unittest.TestCase):
             self.assertEqual(parameter.default, "flash")
 
     def test_model_aliases_are_exact(self) -> None:
-        self.assertEqual(server._resolve_model("flash"), "deepseek-v4-flash")
-        self.assertEqual(server._resolve_model("pro"), "deepseek-v4-pro")
-        with self.assertRaisesRegex(JobError, "flash.*pro"):
-            server._resolve_model("other")
+        self.assertEqual(resolve_model("flash"), "deepseek-v4-flash")
+        self.assertEqual(resolve_model("pro"), "deepseek-v4-pro")
+        with self.assertRaisesRegex(ValueError, "flash.*pro"):
+            resolve_model("other")
 
     def test_load_config_overrides_legacy_config_model_with_flash_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
