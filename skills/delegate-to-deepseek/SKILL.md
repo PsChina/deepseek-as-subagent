@@ -15,7 +15,7 @@ description: 默认把中等及以下、批量、重复或机械任务作为完�
 - DeepSeek 读取的文件内容会发送到配置的 API endpoint；敏感工作区不得派工。
 - coding 能力固定为 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit；readonly 固定为 Read / Glob / Grep。不得通过 task、steering 或其它参数提权。
 - coding Bash 是受边界约束的 trusted-host Bash，不是操作系统级沙箱。
-- 派工结果必须由主 Agent独立验证，失败由主 Agent 收口。
+- 派工结果必须由主 Agent 独立验证，失败由主 Agent 收口。
 - 出现文件 mutation、取消、断连或 MCP 重启后，先调用 `get_deepseek_recovery()`，核验实际文件，再用精确 transaction IDs 调用 `acknowledge_deepseek_mutations(...)`；未确认前不要重试 mutation delegation。
 
 ## 2. API 选择
@@ -43,7 +43,7 @@ description: 默认把中等及以下、批量、重复或机械任务作为完�
 - **Pro**：困难任务子代理，约 **Opus / Sol 档**。用于复杂 debugging、架构级推理、困难多文件推理，或 Flash 已明显不足后的升级。
 - 没有明确困难信号时保持 Flash；不要因为 Pro 可用就默认 Pro。
 - 主 Agent 只选择 `flash/pro`，不要尝试控制 reasoning effort；thinking 档位由用户配置决定。
-- background job 启动时冻结模型与能力。需要换模型时结束/取消当前 job，再新建 job。
+- background job 启动时冻结模型、reasoning effort 与能力。需要换模型时结束/取消当前 job，再新建 job。
 
 ## 4. 默认派工策略
 
@@ -65,128 +65,61 @@ description: 默认把中等及以下、批量、重复或机械任务作为完�
 
 这些是成本优化启发式，不是绝对限制。主 Agent 对任务边界、失败代价和验证手段有高把握时，可以调整；但不可突破第 1 节的边界。
 
-### 快速判断
-
-| 信号 | 默认行为 |
-|---|---|
-| “写 / 实现 / 补测试 / 批量改 / 翻译 / 提取” | Flash |
-| 普通 review / 静态调查 | readonly Flash |
-| 明显复杂 debug / 架构级推理 | Pro（若决定委派） |
-| Flash 已验证不足 | 新建 Pro 任务 |
-| 极小改动 | 主 Agent 自己做 |
-| “派给 DS” / `/ds` | 强制派，默认 Flash；明显困难可 Pro |
-| “你自己干 / 别派” | 不派 |
-
 ## 5. 派工时机
 
 尽量在主 Agent 大量读取项目源码之前决定是否派工，避免主 Agent 和 DeepSeek 重复加载同一批上下文。
 
-派工决策前优先使用：
-
-- Glob / LS / 目录树
-- 主 Agent 的只读 Bash：`ls`、`find`、`wc -l`、`git status` 等
-- 必要的外部 WebSearch / WebFetch，用于补最新 API / spec / 错误码
-
-避免仅为了决定“要不要派”而先 Read/Grep 大量源码。如果主 Agent 已经拥有相关上下文，则直接利用已有上下文，不必机械遵守该启发式。
+派工决策前优先使用 Glob / LS / 目录树、只读 Bash（如 `ls`、`find`、`wc -l`、`git status`）和必要的外部 WebSearch / WebFetch。避免仅为了决定“要不要派”而先 Read/Grep 大量源码；若主 Agent 已经拥有相关上下文，直接利用即可。
 
 ## 6. 派工粒度
 
-优先派**完整逻辑单元**，不要把一个 feature 拆成大量微任务。
+优先派**完整逻辑单元**，不要把一个 feature 拆成大量微任务。合适的单元应尽量满足：目标清晰、输入/输出边界明确、可独立验证、所需 context 能一次性给齐。
 
-合适的单元应尽量满足：
-
-- 目标清晰
-- 输入/输出边界明确
-- 可独立验证
-- 所需 context 能一次性给齐
-
-主 Agent负责识别单元、定义接口和最终整合；DeepSeek 负责单元内部的 Read / Implement / Test 循环。
-
-如果一个子任务必须频繁回来询问主 Agent 或依赖前一个子任务的临时结果，通常应合并，而不是继续拆细。
+主 Agent 负责识别单元、定义接口和最终整合；DeepSeek 负责单元内部的 Read / Implement / Test 循环。如果子任务必须频繁回来询问主 Agent 或依赖前一个子任务的临时结果，通常应合并。
 
 ## 7. task / context 怎么写
 
 DeepSeek 看不到主对话历史、主 Agent 私有记忆或未显式提供的项目约定。调用时给足完成任务所需的信息，但不要放 API key、凭证或不应发送到外部 API 的敏感数据。
 
-`task` 至少包含：
+`task` 至少写清：目标、范围/路径（已知时）、边界、可验证成功标准。
 
-- 要做什么
-- 涉及路径/范围（已知时）
-- 明确边界
-- 可验证的成功标准
+`context` 只补必要信息：技术栈/版本、命名/schema/接口约定、已知项目规则、外部文档关键结论、已知坑或失败现象。
 
-`context` 只补充真正必要的信息，例如：
-
-- 项目技术栈 / 版本
-- 命名、schema、接口约定
-- 主 Agent 已知的项目规则摘要
-- 外部文档/API 的关键结论
-- 已知坑或失败现象
-
-普通任务省略 `model`：
+普通任务省略 `model`；困难任务明确升级：
 
 ```text
 mcp__deepseek__delegate_to_deepseek(
   task="<目标 + 范围 + 成功标准>",
-  context="<必要约定 / 外部资料摘要>"
-)
-```
-
-困难任务显式升级：
-
-```text
-mcp__deepseek__delegate_to_deepseek(
-  task="<困难任务 + 成功标准>",
   context="<必要上下文>",
-  model="pro"
+  model="pro"  # 普通任务删除此行，默认 Flash
 )
 ```
 
 ## 8. 外部知识 pre-flight
 
-DeepSeek 没有 web 工具。任务依赖最新或不熟悉的外部知识时，主 Agent 先查官方/可靠资料，把**摘要**放进 `context`，再派工。
-
-常见触发：
-
-- 新版本框架 / API
-- 小众依赖
-- 协议 / spec
-- SaaS API
-- 明确错误码 / breaking change
-
-不需要为 Python stdlib、基础 SQL、常见 shell 等常识做额外 pre-flight。
+DeepSeek 没有 web 工具。任务依赖最新或不熟悉的框架/API、小众依赖、协议/spec、SaaS API、错误码或 breaking change 时，主 Agent 先查官方/可靠资料，把**摘要**放进 `context` 再派工。常识性内容无需额外搜索。
 
 ## 9. 派工后验收
 
-DeepSeek 自报完成不等于完成。主 Agent 至少做与风险匹配的独立验证：
+DeepSeek 自报完成不等于完成。主 Agent 至少：
 
-1. 查看关键 diff / 产物文件。
-2. 检查 schema、接口、边界和数量级是否符合要求。
+1. 查看关键 diff / 产物。
+2. 检查 schema、接口、边界和数量级。
 3. 能运行测试/静态检查时运行。
-4. mutation 任务按 recovery 协议核验和 acknowledge。
+4. mutation 任务按 recovery 协议核验并 acknowledge。
 
-问题处理：
+小问题主 Agent 直接修；明显遗漏但仍适合委派时给明确反馈重试；Flash 能力不足可新建 Pro 任务；大范围错误、权限问题或连续失败则停止派工并接管。
 
-- 小问题：主 Agent 直接修。
-- 明显遗漏但任务仍适合委派：补充明确反馈后重试；Flash 能力不足时可升级 Pro。
-- 大范围错误、权限问题或连续失败：停止派工，由主 Agent 接管。
-
-## 10. Fallback
+## 10. Fallback 与用户控制
 
 | 情况 | 处理 |
 |---|---|
 | MCP / API 未配置或不可用 | 主 Agent 接管 |
-| capability/tool not allowed | 不绕过权限；主 Agent 接管或让 operator 调整配置 |
+| capability/tool not allowed | 不绕过权限；接管或让 operator 调整配置 |
 | busy / workspace already owned | 处理现有 job 后再派，不并发写同一 workspace |
 | 超 max_turns / 任务过大 | 按独立逻辑单元拆分 |
 | Flash 质量不足 | 验证后新建 Pro 任务 |
 | 连续两次质量差 | 本会话停止主动派工 |
-
-## 11. 用户显式控制
-
-| 用户说 | 行为 |
-|---|---|
-| “派给 DS / DeepSeek” | 强制派，默认 Flash；明显困难可 Pro |
-| `/ds <task>` | 同上 |
-| “你自己干 / 别派” | 不派 |
+| 用户说“派给 DS / DeepSeek”或 `/ds` | 强制派，默认 Flash；明显困难可 Pro |
+| 用户说“你自己干 / 别派” | 不派 |
 | `DEEPSEEK_MODE=off` / pure 模式 | 不派 |
