@@ -51,13 +51,19 @@ def is_protected_host_path(path: Path) -> bool:
 
 
 def is_unsafe_workspace_root(path: Path) -> bool:
-    """Reject broad home/ancestor roots and known credential/control roots."""
+    """Reject filesystem/home roots and known credential/control roots."""
     try:
         candidate = path.resolve(strict=True)
         home = Path.home().resolve(strict=True)
     except (OSError, RuntimeError):
         return True
-    return candidate == home or candidate in home.parents or is_protected_host_path(candidate)
+    filesystem_root = Path(candidate.anchor)
+    return (
+        candidate == filesystem_root
+        or candidate == home
+        or candidate in home.parents
+        or is_protected_host_path(candidate)
+    )
 
 # 危险命令检测的两种粒度：
 #   1) DANGEROUS_TOKENS：第一个 token（程序名）整体匹配，难以用 \ 编码绕过
