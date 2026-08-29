@@ -308,9 +308,9 @@ class InstallerPathGuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_installers_route_sensitive_paths_through_guard(self) -> None:
-        codex_install = (ROOT / "adapters/codex/install.sh").read_text()
-        codex_uninstall = (ROOT / "adapters/codex/uninstall.sh").read_text()
-        root_install = (ROOT / "install.sh").read_text()
+        codex_install = (ROOT / "adapters/codex/install.sh").read_text(encoding="utf-8")
+        codex_uninstall = (ROOT / "adapters/codex/uninstall.sh").read_text(encoding="utf-8")
+        root_install = (ROOT / "install.sh").read_text(encoding="utf-8")
         for script in (codex_install, codex_uninstall, root_install):
             self.assertIn("installer_path_guard.py", script)
             self.assertRegex(script, r"(?:secure|validate)-files")
@@ -349,7 +349,8 @@ class InstallerPathGuardTests(unittest.TestCase):
             result = _guard("prune-generations", str(root), str(current))
 
             self.assertEqual(result.returncode, 0, result.stderr.decode())
-            self.assertEqual(stat_mode(root), 0o700)
+            if os.name != "nt":
+                self.assertEqual(stat_mode(root), 0o700)
             self.assertTrue(current.is_dir())
             self.assertTrue(newest_previous.is_dir())
             self.assertFalse(middle.exists())
