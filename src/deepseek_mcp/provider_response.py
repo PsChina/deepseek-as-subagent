@@ -46,7 +46,7 @@ class ProviderChoice:
 @dataclass(frozen=True)
 class ProviderResponse:
     raw: dict
-    usage: ProviderUsage
+    usage: ProviderUsage | None
     choices: list[ProviderChoice]
 
     @classmethod
@@ -74,11 +74,17 @@ class ProviderResponse:
         return _without_none(value) if exclude_none else value
 
 
-def _usage(value: object) -> ProviderUsage:
+def _usage(value: object) -> ProviderUsage | None:
+    if value is None:
+        return None
     if not isinstance(value, dict):
-        raise ProviderResponseError("provider usage is missing or invalid")
-    prompt = value.get("prompt_tokens")
-    completion = value.get("completion_tokens")
+        raise ProviderResponseError("provider usage is invalid")
+    if "prompt_tokens" not in value or "completion_tokens" not in value:
+        # Some OpenAI-compatible servers omit usage or return only one counter.
+        # The agent loop meters the request and response bytes in that case.
+        return None
+    prompt = value["prompt_tokens"]
+    completion = value["completion_tokens"]
     if (
         isinstance(prompt, bool)
         or not isinstance(prompt, int)

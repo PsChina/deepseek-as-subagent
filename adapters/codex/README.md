@@ -58,9 +58,11 @@ write approval. Delegation/control/cancellation are conservatively annotated as
 mutating. Result retrieval and recovery query perform local bookkeeping writes;
 the fresh config explicitly approves those plus exact recovery acknowledgement.
 
-If `~/.deepseek-mcp/config.json` still contains the API-key placeholder, edit it
-before delegating on POSIX. On Windows, leave the placeholder and set
-`DEEPSEEK_API_KEY` in the environment instead. The default DeepSeek capability
+For DeepSeek's hosted API, replace the key placeholder in
+`~/.deepseek-mcp/config.json` on POSIX. On Windows, leave the placeholder and
+set `DEEPSEEK_API_KEY` in the environment instead. A local loopback
+OpenAI-compatible endpoint needs no key; if it requires authentication, set
+`OPENAI_API_KEY` before starting Codex. The default DeepSeek capability
 set is `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, and `NotebookEdit`, so
 delegated coding tasks can modify the workspace and run bounded commands
 immediately after installation. Use the explicit read-only APIs for static

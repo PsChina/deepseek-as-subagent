@@ -10,7 +10,7 @@ automatically. This README documents what gets installed.
 | `~/.claude.json` entry `mcpServers.deepseek` | MCP server registration |
 | `~/.claude/skills/delegate-to-deepseek/` (symlink) | Teaches Claude when to delegate |
 | `~/.claude/commands/ds.md` (symlink) | `/ds <task>` slash command for explicit delegation |
-| `~/.deepseek-mcp/config.json` | DeepSeek API key + model settings (workspace auto-follows `claude` cwd) |
+| `~/.deepseek-mcp/config.json` | Provider credentials + model settings (workspace auto-follows `claude` cwd) |
 
 The skill and command symlinks target installer-owned copies under
 `~/.deepseek-mcp/claude-helpers/`, so moving or deleting the checkout does not

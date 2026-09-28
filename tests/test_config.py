@@ -284,8 +284,54 @@ class ConfigTests(unittest.TestCase):
                 patch("deepseek_mcp.config._load_api_key") as load_key,
             ):
                 Config.validate_runtime_settings()
-
         load_key.assert_not_called()
+
+    def test_deepseek_credential_flow_remains_compatible(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"DEEPSEEK_API_KEY": "sk-deepseek", "OPENAI_API_KEY": "sk-openai"},
+            clear=True,
+        ):
+            self.assertEqual(
+                _load_api_key({}, "https://api.deepseek.com/v1"), "sk-deepseek"
+            )
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _load_api_key({"api_key": "sk-config"}, "https://api.deepseek.com"),
+                "sk-config",
+            )
+
+    def test_local_provider_needs_no_deepseek_key_and_does_not_leak_it(self) -> None:
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-private"}, clear=True):
+            self.assertEqual(
+                _load_api_key({}, "http://127.0.0.1:8080/v1"), "local-no-auth"
+            )
+        with patch.dict(
+            os.environ,
+            {"DEEPSEEK_API_KEY": "sk-private", "OPENAI_API_KEY": "local-auth"},
+            clear=True,
+        ):
+            self.assertEqual(
+                _load_api_key({}, "http://localhost:8080/v1"), "local-auth"
+            )
+
+    def test_custom_provider_model_id_and_provider_default_reasoning_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config._from_data(
+                {
+                    "workspace": tmpdir,
+                    "allowed_tools": ["Read"],
+                    "base_url": "http://[::1]:8080/v1",
+                    "flash": "qwen3.8-27b-q3",
+                    "pro": "unsloth/Qwen...",
+                    "flash_reasoning_effort": "provider-default",
+                },
+                "local-no-auth",
+            )
+
+        self.assertEqual(config.flash_model, "qwen3.8-27b-q3")
+        self.assertEqual(config.pro_model, "unsloth/Qwen...")
+        self.assertEqual(config.reasoning_effort, "provider-default")
 
     def test_model_must_be_a_nonempty_string(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

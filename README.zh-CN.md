@@ -10,8 +10,8 @@
 [![Mentioned in Awesome MCP Servers](https://awesome.re/mentioned-badge.svg)](https://github.com/punkpeye/awesome-mcp-servers)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](https://github.com/PsChina/deepseek-as-subagent)
 
-> 让 DeepSeek 在 Claude Code / Codex CLI 里作为**真正的 sub-agent**运行，而不只是一个 LLM 接口。
-> 主 Agent 保留主对话、规划、判断与验收；DeepSeek 拿到自己的工具循环，负责执行型工作。
+> 让 DeepSeek 或你自己的 OpenAI-compatible 本地模型，在 Claude Code / Codex CLI 里作为**真正的 sub-agent**运行。
+> 主 Agent 保留主对话、规划、判断与验收；所选模型获得自己的工具循环，负责执行型工作。
 > Coding API 使用工作区受限写入和有界 `trusted_host` Bash；独立只读 API 提供不执行命令的纯文件分析。
 
 ### 完整 coding 委派
@@ -26,7 +26,7 @@
                                               ├─ cancel_deepseek(job_id)
                                               └─ get_deepseek_result(job_id)
          ▼
-       DeepSeek coding sub-agent
+       所选模型 coding sub-agent
          │  Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
          │  在工作区内自主读取、修改、运行和测试
          ▼
@@ -49,7 +49,7 @@ Coding Bash 在可信宿主机上以 `cwd=workspace` 运行；它有时限、输
                                                        ├─ cancel_deepseek(job_id)
                                                        └─ get_deepseek_result(job_id)
          ▼
-       DeepSeek 只读 sub-agent
+       所选模型只读 sub-agent
          │  Read / Glob / Grep
          │  自主阅读、搜索、review 和静态分析
          ▼
@@ -71,8 +71,9 @@ cd deepseek-as-subagent
 之后会注册 MCP server，把 skill + `/ds` 命令复制到受保护的 generation，
 不会修改 shell 启动文件。helper 在核心注册提交后尽力部署；遇到外来目标会保留并告警。
 
-安装后，POSIX 编辑 `~/.deepseek-mcp/config.json` 填入 DeepSeek API key；
-Windows 仅设置 `DEEPSEEK_API_KEY` 环境变量。然后运行 `claude`，例如：
+使用 DeepSeek 官方 API 时，POSIX 在 `~/.deepseek-mcp/config.json` 配置 key；
+Windows 设置 `DEEPSEEK_API_KEY` 环境变量。本地 loopback OpenAI-compatible
+服务不需要 DeepSeek key。然后运行 `claude`，例如：
 
 ```text
 /ds 检查当前工作区并总结代码结构
@@ -85,9 +86,9 @@ Codex 和其它 MCP 客户端见下方安装说明。
 
 ## 和普通 DeepSeek MCP 有什么不同？
 
-很多 DeepSeek MCP 只暴露一次模型调用。主 Agent 仍然需要自己读文件、整理上下文、再把内容喂给 DeepSeek，因此只省“思考”成本，不省“读写执行”成本。
+很多 DeepSeek MCP 只暴露一次模型调用。主 Agent 仍然需要自己读文件、整理上下文、再把内容喂给模型，因此只省“思考”成本，不省“读写执行”成本。
 
-本项目给 DeepSeek **完整 agent loop**：工具调度、文件 I/O、coding 时的命令执行与多轮推理都由 DeepSeek 自己完成。主 Agent 可以直接把一个完整逻辑单元交出去，再拿结果回来验收。
+本项目为配置的模型提供**完整 agent loop**：工具调度、文件 I/O、coding 时的命令执行与多轮推理都由模型自己完成。主 Agent 可以直接把一个完整逻辑单元交出去，再拿结果回来验收。
 
 ## 包含什么
 
@@ -109,8 +110,9 @@ Codex 和其它 MCP 客户端见下方安装说明。
 四个委派入口新增一个可选参数 `model="flash" | "pro"`。旧调用不传该参数时仍然合法，
 并默认选择 Flash 档。后台任务和恢复工具仍然是增量能力。会写文件的老宿主必须接入
 “恢复查询 → 文件核验 → 精确确认”流程，才能继续下一次委派；只读用法无需调整。
-健康检查和错误文本包含更明确的诊断信息，不承诺逐字节不变。Provider 仍使用 DeepSeek 的
-[OpenAI-compatible Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)。
+健康检查和错误文本包含更明确的诊断信息，不承诺逐字节不变。Provider 使用
+OpenAI-compatible Chat Completions API，也包括 DeepSeek 的
+[兼容端点](https://api-docs.deepseek.com/api/create-chat-completion/)。
 本地 Python 模块签名属于实现细节，不作为稳定公共 API。
 
 ## 安装
@@ -252,13 +254,13 @@ max_retries=0
 │    ├─ 同步 delegate                                             │
 │    └─ 可 steering 的后台 job manager                            │
 │         ↓                                                       │
-│       DeepSeek agent loop + 工作区受限工具                       │
-│    ↓ HTTPS                                                      │
-│  api.deepseek.com                                               │
+│       coding agent loop + 工作区受限工具                         │
+│    ↓ 配置的 OpenAI-compatible API                               │
+│  DeepSeek API 或本地 endpoint                                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-本项目不引入第三方代理或云中转。委派任务、模型消息，以及 agent 选择读取的文件/工具输出会发送到配置的 DeepSeek-compatible API；只应委派该端点获准接收的数据。
+本项目不引入第三方代理或云中转。委派任务、模型消息，以及 agent 选择读取的文件/工具输出会发送到配置的 OpenAI-compatible API；只应委派该端点获准接收的数据。
 
 ## 配置
 
@@ -271,7 +273,7 @@ max_retries=0
   "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
   "pro_reasoning_effort": "high",
-  "_reasoning_effort_options": ["none", "low", "high", "max"],
+  "_reasoning_effort_options": ["provider-default", "none", "low", "high", "max"],
   "max_turns": 50,
   "max_run_seconds": 18000,
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
@@ -282,12 +284,41 @@ max_retries=0
 到新版本，或者兼容 API 端点使用不同模型名时，用户只需要修改这里的字符串，不需要改变
 Claude/Codex 的 MCP 调用方式；公共参数始终只传 `model="flash"` 或 `model="pro"`。
 
-`flash_reasoning_effort` 和 `pro_reasoning_effort` 可配置为 `none`、`low`、`high`、`max`。
-`none` 表示关闭 thinking；其余三档会显式开启 thinking 并使用对应 effort。
-`_reasoning_effort_options` 只是配置文件里的提示字段，运行时忽略。若某个 effort 字段缺失，
-deepseek-mcp 不会向该槽位请求附加 thinking/reasoning 参数，而是沿用 provider 原有默认行为；
-这样可以保持旧配置和 OpenAI-compatible 网关的请求形态。新安装器生成的配置会显式把两个
-槽位都设为 `high`。
+`flash_reasoning_effort` 和 `pro_reasoning_effort` 可配置为 `provider-default`、`none`、
+`low`、`high` 或 `max`。字段缺失或设为 `provider-default` 时，不发送 reasoning 参数，
+由 provider 使用自己的默认行为。`none` 表示关闭 DeepSeek thinking；其余三档会显式开启
+thinking 并使用对应 effort。`_reasoning_effort_options` 只是配置文件里的提示字段，运行时忽略。
+新安装器生成的配置会显式把两个槽位都设为 `high`；连接通用本地服务时，请删除这些字段
+或将其设为 `provider-default`。
+
+## 本地 / OpenAI-compatible 模型
+
+在现有配置里设置 `base_url` 和模型 ID。公共的 `flash`、`pro` 仍然只是宿主侧的 profile，
+两个槽位可以指向同一个模型：
+
+```json
+{
+  "base_url": "http://127.0.0.1:8080/v1",
+  "flash": "your-local-model",
+  "pro": "your-local-model"
+}
+```
+
+支持实现 OpenAI-compatible `/v1/chat/completions` 接口的服务，例如 llama.cpp server、
+LM Studio、vLLM、SGLang、Ollama 的兼容端点及其他兼容服务。这些是接口层面的例子；本项目
+没有声称测试过每个服务版本或模型。HTTP 仍仅允许 `localhost`、`127.0.0.1` 和 `[::1]`；
+远程 endpoint 必须使用 HTTPS。
+
+未启用认证的 loopback 服务不需要 key。程序会使用 dummy 凭证，且不会把
+`DEEPSEEK_API_KEY` 发给 loopback 服务。若本地服务需要 key，在启动 Claude Code 或 Codex 前
+设置 `OPENAI_API_KEY`。远程兼容 endpoint 也支持 `OPENAI_API_KEY`；DeepSeek 官方 endpoint
+继续使用 `DEEPSEEK_API_KEY`。Windows 凭证仍只从环境变量读取。
+
+服务至少要支持 `/v1/chat/completions` 和 OpenAI-compatible tool calling，并提供足够容纳委派
+任务及工具历史的上下文，且能返回格式合理的结构化 tool call。模型发出工具调用后，agent loop
+会继续执行所选的 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit，再把结果发回模型。
+若 endpoint 不返回 usage，运行仍受基于字节的资源预算限制；因为 provider 未报告 token 数，
+返回的 token 计数可能为零。
 
 为了兼容旧版本，当 `flash` / `pro` 都不存在时，旧的单 `model` 字段仍然可以读取，并会
 同时映射到两个槽位。不要把旧 `model` 和新 `flash` / `pro` 混用。
@@ -309,7 +340,7 @@ MCP API 会在加载配置后应用各自固定的 profile。
 "workspace": "/abs/path"
 ```
 
-运行时可用环境变量覆盖：`DEEPSEEK_API_KEY`、`DEEPSEEK_WORKSPACE`、`DEEPSEEK_MODE=off`。
+运行时可用环境变量覆盖：`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_WORKSPACE`、`DEEPSEEK_MODE=off`。
 
 `delegate_to_deepseek` 与 `start_deepseek` 固定使用完整 coding 工具和有界
 `trusted_host` Bash。`delegate_to_deepseek_readonly` 与

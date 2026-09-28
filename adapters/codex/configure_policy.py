@@ -32,7 +32,7 @@ EXECUTION_TOOLS = frozenset({
 })
 RECOVERY_TOOLS = ("get_deepseek_recovery", "acknowledge_deepseek_mutations")
 FORWARDED_ENV_VARS = [
-    "DEEPSEEK_API_KEY", "DEEPSEEK_WORKSPACE", "DEEPSEEK_MODE",
+    "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_WORKSPACE", "DEEPSEEK_MODE",
     "HTTP_PROXY", "HTTPS_PROXY",
     "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy",
     "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",

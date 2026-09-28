@@ -15,11 +15,11 @@ The actual provider model IDs and reasoning effort for each slot are user-config
   "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
   "pro_reasoning_effort": "high",
-  "_reasoning_effort_options": ["none", "low", "high", "max"]
+  "_reasoning_effort_options": ["provider-default", "none", "low", "high", "max"]
 }
 ```
 
-`_reasoning_effort_options` is a documentation hint only and is ignored at runtime. The effective fields are `flash_reasoning_effort` and `pro_reasoning_effort`. Supported values are `none`, `low`, `high`, and `max`; `none` disables thinking, while the other values enable thinking at the selected effort.
+`_reasoning_effort_options` is a documentation hint only and is ignored at runtime. The effective fields are `flash_reasoning_effort` and `pro_reasoning_effort`. Supported values are `provider-default`, `none`, `low`, `high`, and `max`; `provider-default` sends no reasoning controls, `none` disables thinking, and the other values enable thinking at the selected effort.
 
 Reasoning controls are sent only when the corresponding `*_reasoning_effort` field is explicitly present. If an effort field is absent, deepseek-mcp leaves thinking controls unspecified for that slot so the provider's existing default applies. This preserves the request shape of older configs and OpenAI-compatible gateways. New installer-generated configs explicitly set both slots to `high`.
 

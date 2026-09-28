@@ -281,18 +281,31 @@ class RetryPolicyTests(unittest.TestCase):
             _run_turn(state, 1)
         provider.assert_not_called()
 
-    def test_missing_usage_fails_closed(self) -> None:
+    def test_missing_usage_uses_byte_budget_fallback(self) -> None:
         state = _tool_state(deadline=time.monotonic() + 10)
         response = _final_response()
         response.usage = None
 
-        with self.assertRaisesRegex(AgentLoopError, "missing token usage"):
-            _record_response(state, response)
+        _record_response(state, response, request_bytes=300)
+
+        self.assertEqual(state.prompt_tokens, 0)
+        self.assertEqual(state.completion_tokens, 0)
+        self.assertGreaterEqual(state.budget_tokens, 300)
 
     def test_local_metering_rejects_implausibly_low_provider_usage(self) -> None:
         state = _tool_state(deadline=time.monotonic() + 10)
         state.messages = [{"role": "user", "content": "x" * 600_000}]
         response = _final_response()
+
+        _record_response(state, response, request_bytes=600_000)
+        with self.assertRaisesRegex(AgentLoopError, "token budget"):
+            _record_response(state, response, request_bytes=600_000)
+
+    def test_missing_usage_still_enforces_byte_budget(self) -> None:
+        state = _tool_state(deadline=time.monotonic() + 10)
+        state.messages = [{"role": "user", "content": "x" * 600_000}]
+        response = _final_response()
+        response.usage = None
 
         _record_response(state, response, request_bytes=600_000)
         with self.assertRaisesRegex(AgentLoopError, "token budget"):

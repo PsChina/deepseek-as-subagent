@@ -295,8 +295,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
     fi
 
     if [ "$INTERACTIVE" = "1" ]; then
-        echo "  需要 DeepSeek API key 才能 work。"
-        echo "  没有？去 https://platform.deepseek.com 注册 + 充值（¥20 起够用很久）"
+        echo "  使用 DeepSeek 官方服务需要 API key；本地 OpenAI-compatible 服务可以跳过。"
+        echo "  DeepSeek key: https://platform.deepseek.com"
         echo "  (沙箱自动跟随 Claude 启动目录，无需配置)"
         echo ""
         # -s 静默：API key 不回显到屏幕 / scrollback
@@ -336,7 +336,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
   "pro_reasoning_effort": "high",
-  "_reasoning_effort_options": ["none", "low", "high", "max"],
+  "_reasoning_effort_options": ["provider-default", "none", "low", "high", "max"],
   "max_turns": 50,
   "max_run_seconds": 18000,
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
@@ -468,13 +468,15 @@ echo "  MCP environment: $GENERATION_DIR"
 echo ""
 
 if [ "${NEED_KEY:-0}" = "1" ]; then
+    echo "没有填写 DeepSeek key。官方 DeepSeek endpoint 需要 key；本地 loopback endpoint 不需要。"
     echo "下一步:"
     if [ "$PLATFORM" = "windows" ]; then
         echo "  1. 设置 DEEPSEEK_API_KEY 环境变量；不要把真实 key 写入 config.json。"
     else
         echo "  1. 编辑 $CONFIG_FILE 把 api_key 改成你的 DeepSeek key"
     fi
-    echo "     (没有的话去 https://platform.deepseek.com 拿)"
+    echo "     本地服务请配置 base_url、flash 和 pro；需要本地认证时设置 OPENAI_API_KEY。"
+    echo "     本地服务还应将 flash_reasoning_effort / pro_reasoning_effort 设为 provider-default。"
     echo "  2. 跑 claude，输入: 请调用 ping 工具"
     echo ""
     # Windows 不打开配置文件，避免误把真实 key 持久化。

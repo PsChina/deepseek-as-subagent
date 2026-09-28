@@ -310,6 +310,11 @@ class ProviderProcessTests(unittest.TestCase):
             provider_child._trust_proxy_environment("https://api.deepseek.com")
         )
 
+    def test_loopback_https_provider_bypasses_inherited_proxy(self) -> None:
+        self.assertFalse(
+            provider_child._trust_proxy_environment("https://localhost:8443/v1")
+        )
+
     def test_parent_rejects_malformed_provider_response(self) -> None:
         raw = json.dumps({"kind": "ok", "response": {"choices": []}}).encode()
 
@@ -323,18 +328,38 @@ class ProviderProcessTests(unittest.TestCase):
             (None, "category=client", False),
         )
 
-    def test_parent_rejects_provider_response_without_usage(self) -> None:
+    def test_parent_accepts_provider_response_without_usage_for_byte_metering(self) -> None:
         raw = json.dumps({
             "kind": "ok",
             "response": {
-                "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "ok"},
+                }]
             },
         }).encode()
 
-        self.assertEqual(
-            provider_process._decode_response(raw),
-            (None, "category=client", False),
-        )
+        response, summary, retryable = provider_process._decode_response(raw)
+        self.assertIsNotNone(response)
+        self.assertIsNone(response.usage)
+        self.assertEqual((summary, retryable), ("", False))
+
+    def test_parent_accepts_partial_usage_for_byte_metering(self) -> None:
+        raw = json.dumps({
+            "kind": "ok",
+            "response": {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "ok"},
+                }],
+                "usage": {"prompt_tokens": 9},
+            },
+        }).encode()
+
+        response, summary, retryable = provider_process._decode_response(raw)
+        self.assertIsNotNone(response)
+        self.assertIsNone(response.usage)
+        self.assertEqual((summary, retryable), ("", False))
 
     def test_parent_rejects_zero_provider_usage(self) -> None:
         raw = json.dumps({

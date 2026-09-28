@@ -59,14 +59,14 @@ def _bounded_timeout(request_timeout: float) -> httpx.Timeout:
 
 
 def _trust_proxy_environment(base_url: str) -> bool:
-    """Never send loopback plaintext traffic through an inherited proxy."""
+    """Never send loopback traffic or its credentials through an inherited proxy."""
     try:
         parsed = urlsplit(base_url)
     except ValueError:
         return True
     hostname = parsed.hostname
     return not (
-        parsed.scheme.lower() == "http"
+        parsed.scheme.lower() in {"http", "https"}
         and hostname is not None
         and hostname.lower() in {"localhost", "127.0.0.1", "::1"}
     )

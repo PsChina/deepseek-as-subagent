@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 MAX_TOTAL_TOKENS_PER_RUN = 1_000_000
 MAX_PROVIDER_HISTORY_BYTES = 12 * 1024 * 1024
 
-SYSTEM_PROMPT_TEMPLATE = """You are DeepSeek working as a sub-agent for a parent coding agent.
+SYSTEM_PROMPT_TEMPLATE = """You are a coding sub-agent working for a parent coding agent.
 
 You're given a focused task to complete autonomously within a workspace.
 You have local tools: {tools}
@@ -181,17 +181,17 @@ def _run_turn(state: _AgentState, turn: int) -> dict | None:
 
 def _record_response(state: _AgentState, response, request_bytes: int = 0):
     usage = response.usage
-    if usage is None:
-        raise AgentLoopError("provider response is missing token usage")
     message = response.choices[0].message
     raw = response.model_dump(exclude_none=True)
     assistant_message = raw["choices"][0]["message"]
     if message.tool_calls and assistant_message.get("content") is None:
         assistant_message["content"] = ""
     response_bytes = _encoded_size(assistant_message)
-    reported = usage.prompt_tokens + usage.completion_tokens
-    state.prompt_tokens += usage.prompt_tokens
-    state.completion_tokens += usage.completion_tokens
+    reported = 0
+    if usage is not None:
+        reported = usage.prompt_tokens + usage.completion_tokens
+        state.prompt_tokens += usage.prompt_tokens
+        state.completion_tokens += usage.completion_tokens
     state.budget_tokens = getattr(state, "budget_tokens", 0) + max(
         reported, request_bytes + response_bytes
     )

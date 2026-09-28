@@ -22,6 +22,7 @@ tool_timeout_sec = 18060
 default_tools_approval_mode = "writes"
 env_vars = [
   "DEEPSEEK_API_KEY",
+  "OPENAI_API_KEY",
   "DEEPSEEK_WORKSPACE",
   "DEEPSEEK_MODE",
   "HTTP_PROXY",
@@ -61,5 +62,5 @@ approval_mode = "approve"
 # - acknowledge_deepseek_mutations(transaction_ids)
 # - ping()
 #
-# DeepSeek API credentials/config live in ~/.deepseek-mcp/config.json rather
+# Provider credentials/config live in ~/.deepseek-mcp/config.json rather
 # than this Codex config file.

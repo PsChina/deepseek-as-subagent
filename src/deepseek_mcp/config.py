@@ -19,7 +19,9 @@ DEFAULT_FLASH_MODEL = "deepseek-v4-flash"
 DEFAULT_PRO_MODEL = "deepseek-v4-pro"
 DEFAULT_REASONING_EFFORT = "high"
 PROVIDER_DEFAULT_REASONING_EFFORT = "provider-default"
-REASONING_EFFORT_OPTIONS = ("none", "low", "high", "max")
+REASONING_EFFORT_OPTIONS = (
+    PROVIDER_DEFAULT_REASONING_EFFORT, "none", "low", "high", "max"
+)
 # Kept as the active-model default for internal/backward-compatible Config construction.
 DEFAULT_MODEL = DEFAULT_FLASH_MODEL
 DEFAULT_MAX_TURNS = 50
@@ -168,25 +170,71 @@ def _validate_credential_storage(data: dict) -> None:
     ):
         raise RuntimeError(
             "Windows config files cannot store API keys safely; remove api_key "
-            "from config.json and set DEEPSEEK_API_KEY in the process environment"
+            "from config.json and set OPENAI_API_KEY or DEEPSEEK_API_KEY "
+            "in the process environment"
         )
 
 
-def _load_api_key(data: dict) -> str:
-    _validate_credential_storage(data)
+def _is_loopback_endpoint(value: object) -> bool:
+    try:
+        _value, parsed, hostname = _parse_base_url(value)
+    except RuntimeError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and hostname
+        and hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+    )
+
+
+def _configured_api_key(data: dict) -> str:
     configured = data.get("api_key", "")
-    value = os.getenv("DEEPSEEK_API_KEY") or configured
-    if not isinstance(value, str):
+    if not isinstance(configured, str):
         raise RuntimeError("DeepSeek API key must be a string")
-    credential = value.strip()
+    configured = configured.strip()
+    return "" if configured == "PASTE_YOUR_DEEPSEEK_KEY_HERE" else configured
+
+
+def _provider_api_key(endpoint: object, configured: str) -> str:
+    openai_key = os.getenv("OPENAI_API_KEY") or ""
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY") or ""
+    if isinstance(endpoint, str) and _is_deepseek_endpoint(endpoint):
+        return deepseek_key or openai_key or configured
+    return openai_key or deepseek_key or configured
+
+
+def _load_api_key(data: dict, base_url: object | None = None) -> str:
+    _validate_credential_storage(data)
+    configured = _configured_api_key(data)
+    endpoint = base_url if base_url is not None else data.get(
+        "base_url", "https://api.deepseek.com"
+    )
+    if _is_loopback_endpoint(endpoint):
+        # Do not accidentally send a DeepSeek credential to a local server just
+        # because an existing DeepSeek config was pointed at localhost.
+        credential = (os.getenv("OPENAI_API_KEY") or "").strip()
+        return credential or "local-no-auth"
+
+    credential = _provider_api_key(endpoint, configured).strip()
     if not credential or credential == "PASTE_YOUR_DEEPSEEK_KEY_HERE":
         raise RuntimeError(
-            f"DeepSeek API key not configured. Set DEEPSEEK_API_KEY "
+            f"Provider API key not configured. Set OPENAI_API_KEY or DEEPSEEK_API_KEY "
             f"or edit {CONFIG_PATH}"
         )
     if not credential.startswith("sk-"):
-        logger.warning("DeepSeek API key does not start with 'sk-'; verify the key")
+        logger.warning("Provider API key does not start with 'sk-'; verify the key")
     return credential
+
+
+def _is_deepseek_endpoint(value: str) -> bool:
+    try:
+        hostname = urlsplit(value).hostname
+    except ValueError:
+        return False
+    return bool(
+        hostname
+        and (hostname.lower() == "deepseek.com" or hostname.lower().endswith(".deepseek.com"))
+    )
 
 
 def _workspace_setting(data: dict) -> tuple[object | None, bool]:
@@ -291,15 +339,13 @@ def _validate_reasoning_effort(value: object, field_name: str) -> str:
 
 
 def _validate_runtime_reasoning_effort(value: object, field_name: str) -> str:
-    if value == PROVIDER_DEFAULT_REASONING_EFFORT:
-        return PROVIDER_DEFAULT_REASONING_EFFORT
     return _validate_reasoning_effort(value, field_name)
 
 
 def _load_reasoning_effort(data: dict, field_name: str) -> str:
     if field_name not in data:
         return PROVIDER_DEFAULT_REASONING_EFFORT
-    return _validate_reasoning_effort(data[field_name], field_name)
+    return _validate_runtime_reasoning_effort(data[field_name], field_name)
 
 
 def _load_reasoning_efforts(data: dict) -> tuple[str, str]:
@@ -360,9 +406,9 @@ class Config:
     flash_model: str = DEFAULT_FLASH_MODEL
     pro_model: str = DEFAULT_PRO_MODEL
     # Active effort plus the user-configured effort attached to each public slot.
-    reasoning_effort: str = DEFAULT_REASONING_EFFORT
-    flash_reasoning_effort: str = DEFAULT_REASONING_EFFORT
-    pro_reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    reasoning_effort: str = PROVIDER_DEFAULT_REASONING_EFFORT
+    flash_reasoning_effort: str = PROVIDER_DEFAULT_REASONING_EFFORT
+    pro_reasoning_effort: str = PROVIDER_DEFAULT_REASONING_EFFORT
 
     def __post_init__(self) -> None:
         if is_unsafe_workspace_root(self.workspace):
@@ -433,4 +479,10 @@ class Config:
     @classmethod
     def load(cls) -> "Config":
         data = _load_data()
-        return cls._from_data(data, _load_api_key(data))
+        base_url = _validate_base_url(
+            data.get("base_url", "https://api.deepseek.com")
+        )
+        return cls._from_data(
+            data,
+            _load_api_key(data, base_url),
+        )

@@ -204,7 +204,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
   "pro_reasoning_effort": "high",
-  "_reasoning_effort_options": ["none", "low", "high", "max"],
+  "_reasoning_effort_options": ["provider-default", "none", "low", "high", "max"],
   "max_turns": 50,
   "max_run_seconds": 18000,
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"]
@@ -295,11 +295,13 @@ echo "  > call the deepseek ping tool"
 echo ""
 if grep -q "PASTE_YOUR_DEEPSEEK_KEY_HERE" "$CONFIG_FILE" 2>/dev/null; then
     if [ "$POSIX_PERMISSIONS" -eq 1 ]; then
-        echo "Before delegating work, edit $CONFIG_FILE and replace the placeholder."
+        echo "For DeepSeek's hosted API, edit $CONFIG_FILE and replace the key placeholder."
     else
-        echo "Before delegating work, set DEEPSEEK_API_KEY in the environment."
+        echo "For DeepSeek's hosted API, set DEEPSEEK_API_KEY in the environment."
         echo "Do not persist a real API key in config.json on Windows."
     fi
+    echo "A local loopback endpoint needs no key; use OPENAI_API_KEY if it requires authentication."
+    echo "For generic local models, set both reasoning effort fields to provider-default."
 else
     echo "DeepSeek config already contains a key. You can start Codex now."
 fi
