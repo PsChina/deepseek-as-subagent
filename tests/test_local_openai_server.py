@@ -86,7 +86,10 @@ class LocalOpenAIEndpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             (workspace / "input.txt").write_text("hello local model", encoding="utf-8")
-            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "sk-private"}, clear=True), patch(
+            # Preserve Windows home discovery variables while isolating provider settings.
+            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "sk-private",
+                                           "OPENAI_API_KEY": "",
+                                           "DEEPSEEK_WORKSPACE": str(workspace)}), patch(
                 "deepseek_mcp.config._load_data", return_value={
                     "workspace": str(workspace), "flash": "qwen3.8-27b-q3",
                     "pro": "qwen3.8-27b-q3", "base_url": base_url,

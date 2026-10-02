@@ -296,10 +296,14 @@ class ConfigTests(unittest.TestCase):
                 _load_api_key({}, "https://api.deepseek.com/v1"), "sk-deepseek"
             )
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(
-                _load_api_key({"api_key": "sk-config"}, "https://api.deepseek.com"),
-                "sk-config",
-            )
+            if os.name == "nt":
+                with self.assertRaisesRegex(RuntimeError, "cannot store API keys safely"):
+                    _load_api_key({"api_key": "sk-config"}, "https://api.deepseek.com")
+            else:
+                self.assertEqual(
+                    _load_api_key({"api_key": "sk-config"}, "https://api.deepseek.com"),
+                    "sk-config",
+                )
 
     def test_local_provider_needs_no_deepseek_key_and_does_not_leak_it(self) -> None:
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-private"}, clear=True):
@@ -319,8 +323,15 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-private"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "Provider API key not configured"):
                 _load_api_key({}, "https://models.example.com/v1")
-            self.assertEqual(_load_api_key({"api_key": "sk-explicit"},
-                                          "https://models.example.com/v1"), "sk-explicit")
+            if os.name == "nt":
+                with self.assertRaisesRegex(RuntimeError, "cannot store API keys safely"):
+                    _load_api_key({"api_key": "sk-explicit"}, "https://models.example.com/v1")
+            else:
+                self.assertEqual(_load_api_key({"api_key": "sk-explicit"},
+                                              "https://models.example.com/v1"), "sk-explicit")
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-private",
+                                    "OPENAI_API_KEY": "sk-custom"}, clear=True):
+            self.assertEqual(_load_api_key({}, "https://models.example.com/v1"), "sk-custom")
 
     def test_custom_provider_model_id_and_provider_default_reasoning_load(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
