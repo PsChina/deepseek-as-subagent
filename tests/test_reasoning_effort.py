@@ -14,7 +14,8 @@ class ReasoningEffortRequestTests(unittest.TestCase):
 
     def _arguments(self, effort: str) -> dict:
         return _request_arguments(
-            {"model": "configured-model", "reasoning_effort": effort},
+            {"model": "configured-model", "reasoning_effort": effort,
+             "base_url": "https://api.deepseek.com"},
             self.messages,
             [],
         )
@@ -78,6 +79,35 @@ class ReasoningEffortRequestTests(unittest.TestCase):
     def test_unknown_effort_is_rejected_before_network_call(self) -> None:
         with self.assertRaisesRegex(ValueError, "reasoning effort"):
             self._arguments("ultra")
+
+    def test_generic_provider_never_receives_deepseek_thinking_extension(self) -> None:
+        for effort in ("none", "low", "high", "max"):
+            with self.subTest(effort=effort):
+                arguments = _request_arguments(
+                    {"model": "local", "base_url": "http://localhost:1234/v1",
+                     "reasoning_effort": effort}, self.messages, [],
+                )
+                self.assertEqual(arguments["reasoning_effort"], effort)
+                self.assertNotIn("extra_body", arguments)
+
+    def test_output_limit_survives_parent_child_boundary(self) -> None:
+        config = SimpleNamespace(api_key="local-no-auth", model="local",
+                                 base_url="http://localhost:1234/v1",
+                                 max_output_tokens=512)
+        settings = json.loads(_encoded_request(config, self.messages, []))["settings"]
+        self.assertEqual(_request_arguments(settings, self.messages, [])["max_tokens"], 512)
+
+    def test_child_rejects_invalid_output_limit_before_network_call(self) -> None:
+        for value in (0, -1, 16385, True, "1024"):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "max_output_tokens"):
+                _request_arguments({"model": "local", "max_output_tokens": value}, self.messages, [])
+
+    def test_deepseek_named_custom_host_does_not_receive_thinking_extension(self) -> None:
+        arguments = _request_arguments(
+            {"model": "local", "base_url": "https://api.deepseek.com.example.org/v1",
+             "reasoning_effort": "high"}, self.messages, [],
+        )
+        self.assertNotIn("extra_body", arguments)
 
 
 if __name__ == "__main__":

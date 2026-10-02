@@ -300,7 +300,10 @@ thinking 并使用对应 effort。`_reasoning_effort_options` 只是配置文件
 {
   "base_url": "http://127.0.0.1:8080/v1",
   "flash": "your-local-model",
-  "pro": "your-local-model"
+  "pro": "your-local-model",
+  "flash_reasoning_effort": "provider-default",
+  "pro_reasoning_effort": "provider-default",
+  "max_output_tokens": 1024
 }
 ```
 
@@ -309,16 +312,42 @@ LM Studio、vLLM、SGLang、Ollama 的兼容端点及其他兼容服务。这些
 没有声称测试过每个服务版本或模型。HTTP 仍仅允许 `localhost`、`127.0.0.1` 和 `[::1]`；
 远程 endpoint 必须使用 HTTPS。
 
+修改安装器生成的配置时，要同时替换上面两个推理强度字段。通用 endpoint 不会收到
+DeepSeek 专用的 `thinking` 扩展；显式设置推理强度时仅发送 `reasoning_effort`，需要服务支持。
+`max_output_tokens` 控制每轮输出上限（1–16384，默认 16384）。本地上下文较小时应降低此值，
+为提示词和累积的工具历史留出空间。
+
 未启用认证的 loopback 服务不需要 key。程序会使用 dummy 凭证，且不会把
 `DEEPSEEK_API_KEY` 发给 loopback 服务。若本地服务需要 key，在启动 Claude Code 或 Codex 前
 设置 `OPENAI_API_KEY`。远程兼容 endpoint 也支持 `OPENAI_API_KEY`；DeepSeek 官方 endpoint
 继续使用 `DEEPSEEK_API_KEY`。Windows 凭证仍只从环境变量读取。
+自定义远程 endpoint 不会自动继承 `DEEPSEEK_API_KEY`；请配置自己的 `OPENAI_API_KEY`，
+或在 POSIX 配置中显式设置 `api_key`。
 
 服务至少要支持 `/v1/chat/completions` 和 OpenAI-compatible tool calling，并提供足够容纳委派
 任务及工具历史的上下文，且能返回格式合理的结构化 tool call。模型发出工具调用后，agent loop
 会继续执行所选的 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit，再把结果发回模型。
 若 endpoint 不返回 usage，运行仍受基于字节的资源预算限制；因为 provider 未报告 token 数，
 返回的 token 计数可能为零。
+
+使用项目已安装的 Python 环境，可以在临时工作区验收真实本地模型：
+
+```bash
+python scripts/smoke_local_model.py --base-url http://127.0.0.1:1234/v1 --model your-local-model
+```
+
+脚本会验证实际的 Read、Edit、Bash 调用、精确文件内容、验证命令的成功标记、
+修改记录核验与确认，以及后续的只读委派；
+不会下载模型或修改持久配置。
+
+要进一步验收宿主侧 MCP stdio 调用和主代理向子代理发送消息的流程：
+
+```bash
+python scripts/smoke_local_mcp.py --base-url http://127.0.0.1:1234/v1 --model your-local-model
+```
+
+脚本使用临时 HOME 和工作区启动当前源码的服务，检查同步编码和只读委派，
+核验并确认修改记录，再向 Pro 档后台任务发送随机口令；模型最终回复必须包含该口令。
 
 为了兼容旧版本，当 `flash` / `pro` 都不存在时，旧的单 `model` 字段仍然可以读取，并会
 同时映射到两个槽位。不要把旧 `model` 和新 `flash` / `pro` 混用。

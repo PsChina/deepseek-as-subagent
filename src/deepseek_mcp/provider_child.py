@@ -11,6 +11,11 @@ from urllib.parse import urlsplit
 
 from .process_hardening import harden_provider_process
 from .parent_liveness import wait_for_parent_loss_or_timeout
+from .provider_settings import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    is_deepseek_endpoint,
+    validate_max_output_tokens,
+)
 
 os.environ.pop("OPENAI_LOG", None)
 
@@ -21,7 +26,7 @@ API_CONNECT_TIMEOUT_SECONDS = 15.0
 API_READ_TIMEOUT_SECONDS = 180.0
 API_WRITE_TIMEOUT_SECONDS = 30.0
 API_POOL_TIMEOUT_SECONDS = 30.0
-MAX_OUTPUT_TOKENS_PER_REQUEST = 16_384
+MAX_OUTPUT_TOKENS_PER_REQUEST = DEFAULT_MAX_OUTPUT_TOKENS
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -83,15 +88,23 @@ def _apply_reasoning_settings(arguments: dict[str, Any], effort: object) -> None
 
 
 def _request_arguments(
-    settings: dict[str, str], messages: list[dict], tools: list[dict]
+    settings: dict[str, Any], messages: list[dict], tools: list[dict]
 ) -> dict[str, Any]:
     arguments: dict[str, Any] = {
         "model": settings["model"],
         "messages": messages,
-        "max_tokens": MAX_OUTPUT_TOKENS_PER_REQUEST,
+        "max_tokens": validate_max_output_tokens(
+            settings.get("max_output_tokens", MAX_OUTPUT_TOKENS_PER_REQUEST)
+        ),
     }
     if "reasoning_effort" in settings:
-        _apply_reasoning_settings(arguments, settings["reasoning_effort"])
+        effort = settings["reasoning_effort"]
+        if is_deepseek_endpoint(settings.get("base_url", "")):
+            _apply_reasoning_settings(arguments, effort)
+        else:
+            if not isinstance(effort, str) or effort not in _REASONING_EFFORTS:
+                raise ValueError("invalid reasoning effort")
+            arguments["reasoning_effort"] = effort
     if tools:
         arguments["tools"] = tools
     return arguments
@@ -117,7 +130,7 @@ def _streaming_completion(client: OpenAI, arguments: dict[str, Any]) -> dict:
 
 
 def execute_request(
-    settings: dict[str, str],
+    settings: dict[str, Any],
     messages: list[dict],
     tools: list[dict],
     request_timeout: float,
@@ -177,7 +190,7 @@ def _request_timeout(argument: str) -> float:
     return timeout
 
 
-def _read_payload() -> tuple[dict[str, str], list[dict], list[dict]]:
+def _read_payload() -> tuple[dict[str, Any], list[dict], list[dict]]:
     raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
     if len(raw) > MAX_REQUEST_BYTES:
         raise ValueError("provider request is too large")

@@ -308,7 +308,10 @@ Set `base_url` and the model IDs in the existing config. The public `flash` and
 {
   "base_url": "http://127.0.0.1:8080/v1",
   "flash": "your-local-model",
-  "pro": "your-local-model"
+  "pro": "your-local-model",
+  "flash_reasoning_effort": "provider-default",
+  "pro_reasoning_effort": "provider-default",
+  "max_output_tokens": 1024
 }
 ```
 
@@ -319,12 +322,20 @@ interface-level examples; this project does not claim to have tested every
 server version or model. HTTP remains limited to `localhost`, `127.0.0.1`, and
 `[::1]`; remote endpoints must use HTTPS.
 
+When updating an installer-generated config, replace both reasoning effort fields
+as shown above. Generic endpoints receive no DeepSeek-specific `thinking` extension;
+explicit efforts send only `reasoning_effort`, which the server must support.
+`max_output_tokens` bounds each response (1–16384; default 16384). Lower it for
+small local context windows, leaving room for the prompt and accumulated tool history.
+
 Unauthenticated loopback servers need no key. The local fallback credential is
 only a dummy value, and `DEEPSEEK_API_KEY` is not sent to a loopback server. If
 your local server requires a key, set `OPENAI_API_KEY` before starting Claude
 Code or Codex. For remote compatible endpoints, `OPENAI_API_KEY` is supported;
 DeepSeek's hosted endpoint continues to use `DEEPSEEK_API_KEY`. Windows secrets
 remain environment-only.
+Custom remote endpoints do not inherit `DEEPSEEK_API_KEY`; configure their own
+`OPENAI_API_KEY` or an explicit `api_key` on POSIX.
 
 The server must support `/v1/chat/completions` with OpenAI-compatible tool
 calling, enough context for the delegated task and tool history, and reasonably
@@ -333,6 +344,28 @@ executes the selected Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
 tool, and sends the result back to the model. If an endpoint omits usage data,
 the run stays bounded by byte-based resource accounting; returned token counts
 can be zero because the provider did not report them.
+
+To validate a real local model against a disposable workspace, run:
+
+```bash
+python scripts/smoke_local_model.py --base-url http://127.0.0.1:1234/v1 --model your-local-model
+```
+
+Use the project's installed Python environment. The check verifies real Read,
+Edit, and Bash calls, exact file contents, the command's success marker, mutation
+recovery acknowledgement, and a subsequent read-only delegation.
+It does not download models or change your persistent configuration.
+
+To also verify the host-facing MCP stdio boundary and parent-to-agent messages:
+
+```bash
+python scripts/smoke_local_mcp.py --base-url http://127.0.0.1:1234/v1 --model your-local-model
+```
+
+This starts the current source server with a disposable HOME and workspace,
+checks synchronous coding and read-only delegation, verifies and acknowledges
+mutation records, and sends a random steering token to a Pro-profile background
+job. The check requires that token in the model's final response.
 
 For upgrade compatibility, a legacy single `model` field is still accepted when
 `flash` and `pro` are absent; its value is used for both slots. Do not combine

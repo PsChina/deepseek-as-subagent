@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Literal
 
 ModelChoice = Literal["flash", "pro"]
-ReasoningEffort = Literal["none", "low", "high", "max"]
+ReasoningEffort = Literal["provider-default", "none", "low", "high", "max"]
 
 
 def resolve_model(choice: str, *, flash_model: str, pro_model: str) -> str:

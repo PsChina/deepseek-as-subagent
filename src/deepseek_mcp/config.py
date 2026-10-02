@@ -13,6 +13,11 @@ from .child_runtime import ChildRuntimeError, runtime_is_within_workspace
 from . import windows_file_io
 from .safety import is_unsafe_workspace_root
 from .workspace_guard import configure_workspace_identity
+from .provider_settings import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    is_deepseek_endpoint as _is_deepseek_endpoint,
+    validate_max_output_tokens as _validate_max_output_tokens,
+)
 CONFIG_PATH = Path.home() / ".deepseek-mcp" / "config.json"
 MAX_CONFIG_BYTES = 1024 * 1024
 DEFAULT_FLASH_MODEL = "deepseek-v4-flash"
@@ -52,6 +57,7 @@ CONFIG_KEYS = frozenset(
         "pro_reasoning_effort",
         "_reasoning_effort_options",  # installer hint only; ignored by runtime
         "max_turns",
+        "max_output_tokens",
         "max_run_seconds",
         "allowed_tools",
         "base_url",
@@ -200,7 +206,7 @@ def _provider_api_key(endpoint: object, configured: str) -> str:
     deepseek_key = os.getenv("DEEPSEEK_API_KEY") or ""
     if isinstance(endpoint, str) and _is_deepseek_endpoint(endpoint):
         return deepseek_key or openai_key or configured
-    return openai_key or deepseek_key or configured
+    return openai_key or configured
 
 
 def _load_api_key(data: dict, base_url: object | None = None) -> str:
@@ -224,17 +230,6 @@ def _load_api_key(data: dict, base_url: object | None = None) -> str:
     if not credential.startswith("sk-"):
         logger.warning("Provider API key does not start with 'sk-'; verify the key")
     return credential
-
-
-def _is_deepseek_endpoint(value: str) -> bool:
-    try:
-        hostname = urlsplit(value).hostname
-    except ValueError:
-        return False
-    return bool(
-        hostname
-        and (hostname.lower() == "deepseek.com" or hostname.lower().endswith(".deepseek.com"))
-    )
 
 
 def _workspace_setting(data: dict) -> tuple[object | None, bool]:
@@ -409,6 +404,7 @@ class Config:
     reasoning_effort: str = PROVIDER_DEFAULT_REASONING_EFFORT
     flash_reasoning_effort: str = PROVIDER_DEFAULT_REASONING_EFFORT
     pro_reasoning_effort: str = PROVIDER_DEFAULT_REASONING_EFFORT
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
 
     def __post_init__(self) -> None:
         if is_unsafe_workspace_root(self.workspace):
@@ -430,6 +426,7 @@ class Config:
         )
         self.base_url = _validate_base_url(self.base_url)
         self.max_turns = _validate_max_turns(self.max_turns)
+        self.max_output_tokens = _validate_max_output_tokens(self.max_output_tokens)
         self.max_run_seconds = _validate_max_run_seconds(self.max_run_seconds)
         if self.delegation_capability not in {"coding", "readonly"}:
             raise RuntimeError("invalid delegation capability")
@@ -457,6 +454,9 @@ class Config:
             workspace=_load_workspace(data),
             model=flash_model,
             max_turns=_load_max_turns(data),
+            max_output_tokens=_validate_max_output_tokens(
+                data.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
+            ),
             max_run_seconds=_validate_max_run_seconds(
                 data.get("max_run_seconds", DEFAULT_MAX_RUN_SECONDS)
             ),
