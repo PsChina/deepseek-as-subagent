@@ -327,8 +327,12 @@ DeepSeek 专用的 `thinking` 扩展；显式设置推理强度时仅发送 `rea
 服务至少要支持 `/v1/chat/completions` 和 OpenAI-compatible tool calling，并提供足够容纳委派
 任务及工具历史的上下文，且能返回格式合理的结构化 tool call。模型发出工具调用后，agent loop
 会继续执行所选的 Read / Write / Edit / Bash / Glob / Grep / NotebookEdit，再把结果发回模型。
-若 endpoint 不返回 usage，运行仍受基于字节的资源预算限制；因为 provider 未报告 token 数，
-返回的 token 计数可能为零。
+每次委派的 token 预算为 1,000,000，累计所有请求的输入和输出，包括每轮重新发送的历史。
+每轮分别对输入和输出取 provider 报告值与本地估算值中的较大者；本地按每 4 个 UTF-8 JSON
+字节估算 1 个 token，计入工具 schema，不计 Unicode 转义带来的膨胀。这个估算用于资源
+预算兜底，并非精确的 tokenizer。对话历史另有独立的 12 MiB 编码后 JSON 大小限制。
+若 endpoint 不返回 usage，这些限制仍然生效；因为 provider 未报告 token 数，返回的 token
+计数可能为零。token/历史预算不足时，同步工具结果和 server 日志会显示具体原因。
 
 使用项目已安装的 Python 环境，可以在临时工作区验收真实本地模型：
 

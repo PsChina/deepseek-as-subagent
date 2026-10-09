@@ -341,9 +341,16 @@ The server must support `/v1/chat/completions` with OpenAI-compatible tool
 calling, enough context for the delegated task and tool history, and reasonably
 well-formed structured tool calls. The agent loop continues after a tool call,
 executes the selected Read / Write / Edit / Bash / Glob / Grep / NotebookEdit
-tool, and sends the result back to the model. If an endpoint omits usage data,
-the run stays bounded by byte-based resource accounting; returned token counts
-can be zero because the provider did not report them.
+tool, and sends the result back to the model. The per-run token budget is
+1,000,000 cumulative input and output tokens across all requests, including
+re-sent history. Each request uses the greater of reported usage and a local
+estimate of one token per four UTF-8 JSON bytes, separately for input and output.
+The estimate includes tool schemas and excludes Unicode escape expansion; it
+is a resource-accounting fallback, not an exact tokenizer. Conversation history
+also has an independent 12 MiB encoded-JSON limit. If an endpoint omits usage,
+these limits still apply, but returned token counts can be zero because the
+provider did not report them. Token/history budget failures include their reason
+in the synchronous tool result and server log.
 
 To validate a real local model against a disposable workspace, run:
 

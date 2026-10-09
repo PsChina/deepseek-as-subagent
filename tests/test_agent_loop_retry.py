@@ -176,6 +176,7 @@ def _tool_response(name: str = "Write", arguments: str = '{}'):
 def _tool_state(*, tool_calls: int = 0, deadline: float = 10_000.0):
     return SimpleNamespace(
         config=_config(),
+        tools=[],
         controls=SimpleNamespace(cancel=None, poll=None),
         messages=[],
         execution_lease_fd=None,
@@ -272,7 +273,7 @@ class RetryPolicyTests(unittest.TestCase):
 
     def test_near_cap_request_is_rejected_before_provider_cost(self) -> None:
         state = _tool_state(deadline=time.monotonic() + 10)
-        state.budget_tokens = 200_000
+        state.budget_tokens = 800_000
         state.messages = [{"role": "user", "content": "x" * 800_000}]
         with (
             patch("deepseek_mcp.agent_loop._call_with_retry") as provider,
@@ -290,16 +291,18 @@ class RetryPolicyTests(unittest.TestCase):
 
         self.assertEqual(state.prompt_tokens, 0)
         self.assertEqual(state.completion_tokens, 0)
-        self.assertGreaterEqual(state.budget_tokens, 300)
+        self.assertGreaterEqual(state.budget_tokens, 75)
+        self.assertLess(state.budget_tokens, 300)
 
     def test_local_metering_rejects_implausibly_low_provider_usage(self) -> None:
         state = _tool_state(deadline=time.monotonic() + 10)
         state.messages = [{"role": "user", "content": "x" * 600_000}]
         response = _final_response()
 
-        _record_response(state, response, request_bytes=600_000)
-        with self.assertRaisesRegex(AgentLoopError, "token budget"):
+        with patch("deepseek_mcp.agent_loop.MAX_TOTAL_TOKENS_PER_RUN", 250_000):
             _record_response(state, response, request_bytes=600_000)
+            with self.assertRaisesRegex(AgentLoopError, "token budget"):
+                _record_response(state, response, request_bytes=600_000)
 
     def test_missing_usage_still_enforces_byte_budget(self) -> None:
         state = _tool_state(deadline=time.monotonic() + 10)
@@ -307,9 +310,10 @@ class RetryPolicyTests(unittest.TestCase):
         response = _final_response()
         response.usage = None
 
-        _record_response(state, response, request_bytes=600_000)
-        with self.assertRaisesRegex(AgentLoopError, "token budget"):
+        with patch("deepseek_mcp.agent_loop.MAX_TOTAL_TOKENS_PER_RUN", 250_000):
             _record_response(state, response, request_bytes=600_000)
+            with self.assertRaisesRegex(AgentLoopError, "token budget"):
+                _record_response(state, response, request_bytes=600_000)
 
     def test_conversation_history_has_an_independent_byte_cap(self) -> None:
         state = _tool_state(deadline=time.monotonic() + 10)
