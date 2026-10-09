@@ -1,0 +1,621 @@
+{
+  "verified_at": "2026-10-10T00:42:45.065291+08:00",
+  "source": {
+    "baseline_revision": "4b8b4c4c042be688fbc5e16957f65f575e1ffdd6",
+    "production_diff_sha256": "3df4e74672fb995100b37e02557c3f5fe95b98e6b0d252a85dc04cca9c745795"
+  },
+  "model": {
+    "identifier": "gemma-4-26b-a4b-it",
+    "quantization": "Q2_K_XL",
+    "context_length": 8192,
+    "parallel": 4
+  },
+  "tools_smoke": {
+    "status": "passed",
+    "model": "gemma-4-26b-a4b-it",
+    "coding_tools": [
+      "Read",
+      "Edit",
+      "Bash"
+    ],
+    "readonly_tools": [
+      "Read"
+    ],
+    "result": {
+      "final_message": "[deepseek-mcp recovery required] Workspace mutations were journaled (14486b899efd4530b5dd369c845e689b). Call get_deepseek_recovery, verify every reported file, then call acknowledge_deepseek_mutations before delegating again.\n\nI have successfully updated `input.txt` and verified its content.\n\n- Updated `input.txt`: replaced `original-value` with `verified-local-value`.\n- Verified the change using the provided bash command.\n\nLOCAL_SMOKE_OK",
+      "turns_used": 4,
+      "tokens": {
+        "prompt": 3315,
+        "completion": 308,
+        "total": 3623
+      },
+      "tool_calls": 3,
+      "duration_seconds": 11.77,
+      "mutations": [
+        {
+          "transaction_id": "14486b899efd4530b5dd369c845e689b",
+          "tool": "Edit",
+          "status": "committed"
+        }
+      ]
+    },
+    "readonly_result": {
+      "final_message": "The exact contents of `input.txt` are:\n```\nverified-local-value\n```",
+      "turns_used": 2,
+      "tokens": {
+        "prompt": 960,
+        "completion": 182,
+        "total": 1142
+      },
+      "tool_calls": 1,
+      "duration_seconds": 6.96,
+      "mutations": []
+    }
+  },
+  "budget_comparison": {
+    "model": "gemma-4-26b-a4b-it",
+    "loaded_context_tokens": 8192,
+    "real_provider_and_tools": true,
+    "per_run_limit": 1000000,
+    "real_host_steering": true,
+    "fixture": {
+      "documents": 13,
+      "padding_bytes_per_file": 11000,
+      "description": "synthetic ASCII whitespace-heavy documents with random tokens"
+    },
+    "fixed": {
+      "label": "fixed",
+      "requests": [
+        {
+          "turn": 1,
+          "request_bytes": 2334,
+          "reported_prompt_tokens": 580,
+          "reported_completion_tokens": 248,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 682,
+          "internal_meter": 832,
+          "cumulative_reported_tokens": 828
+        },
+        {
+          "turn": 2,
+          "request_bytes": 14776,
+          "reported_prompt_tokens": 1325,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 4576,
+          "cumulative_reported_tokens": 2175
+        },
+        {
+          "turn": 3,
+          "request_bytes": 26524,
+          "reported_prompt_tokens": 1838,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 11257,
+          "cumulative_reported_tokens": 4035
+        },
+        {
+          "turn": 4,
+          "request_bytes": 38272,
+          "reported_prompt_tokens": 2351,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 20875,
+          "cumulative_reported_tokens": 6408
+        },
+        {
+          "turn": 5,
+          "request_bytes": 50020,
+          "reported_prompt_tokens": 2865,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 33430,
+          "cumulative_reported_tokens": 9295
+        },
+        {
+          "turn": 6,
+          "request_bytes": 61768,
+          "reported_prompt_tokens": 3379,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 48922,
+          "cumulative_reported_tokens": 12696
+        },
+        {
+          "turn": 7,
+          "request_bytes": 73516,
+          "reported_prompt_tokens": 3893,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 67351,
+          "cumulative_reported_tokens": 16611
+        },
+        {
+          "turn": 8,
+          "request_bytes": 85264,
+          "reported_prompt_tokens": 4405,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 88717,
+          "cumulative_reported_tokens": 21038
+        },
+        {
+          "turn": 9,
+          "request_bytes": 97012,
+          "reported_prompt_tokens": 4919,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 113020,
+          "cumulative_reported_tokens": 25979
+        },
+        {
+          "turn": 10,
+          "request_bytes": 108760,
+          "reported_prompt_tokens": 5433,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 140260,
+          "cumulative_reported_tokens": 31434
+        },
+        {
+          "turn": 11,
+          "request_bytes": 120509,
+          "reported_prompt_tokens": 5947,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 170438,
+          "cumulative_reported_tokens": 37403
+        },
+        {
+          "turn": 12,
+          "request_bytes": 132258,
+          "reported_prompt_tokens": 6463,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 203553,
+          "cumulative_reported_tokens": 43888
+        },
+        {
+          "turn": 13,
+          "request_bytes": 144007,
+          "reported_prompt_tokens": 6978,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 239605,
+          "cumulative_reported_tokens": 50888
+        },
+        {
+          "turn": 14,
+          "request_bytes": 155730,
+          "reported_prompt_tokens": 7484,
+          "reported_completion_tokens": 677,
+          "has_tool_calls": false,
+          "content_chars": 223,
+          "reasoning_chars": 1017,
+          "internal_meter": 279215,
+          "cumulative_reported_tokens": 59049
+        }
+      ],
+      "reads": [
+        "doc-01.txt",
+        "doc-02.txt",
+        "doc-03.txt",
+        "doc-04.txt",
+        "doc-05.txt",
+        "doc-06.txt",
+        "doc-07.txt",
+        "doc-08.txt",
+        "doc-09.txt",
+        "doc-10.txt",
+        "doc-11.txt",
+        "doc-12.txt",
+        "doc-13.txt"
+      ],
+      "status": "passed",
+      "result": {
+        "final_message": "LOCAL_BUDGET_OK\n01/17edd0478941\n02/147ee3486dfa\n03/43ed23ba25f8\n04/bbfd1d16d1b3\n05/8860ae63080d\n06/e3182c91cd0b\n07/6489bfaa0be3\n08/778fb98a1881\n09/c217cbfd68f2\n10/ec55866aeb0f\n11/b977a29d397d\n12/28f79432bf92\n13/2eef61a35b78",
+        "turns_used": 14,
+        "tokens": {
+          "prompt": 57860,
+          "completion": 1189,
+          "total": 59049
+        },
+        "tool_calls": 13,
+        "duration_seconds": 62.17,
+        "mutations": []
+      },
+      "duration_seconds": 62.17
+    },
+    "baseline": {
+      "label": "baseline-4b8b4c4",
+      "requests": [
+        {
+          "turn": 1,
+          "request_bytes": 1923,
+          "reported_prompt_tokens": 580,
+          "reported_completion_tokens": 241,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 648,
+          "internal_meter": 2781,
+          "cumulative_reported_tokens": 821
+        },
+        {
+          "turn": 2,
+          "request_bytes": 14331,
+          "reported_prompt_tokens": 1318,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 17310,
+          "cumulative_reported_tokens": 2161
+        },
+        {
+          "turn": 3,
+          "request_bytes": 26079,
+          "reported_prompt_tokens": 1831,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 43587,
+          "cumulative_reported_tokens": 4014
+        },
+        {
+          "turn": 4,
+          "request_bytes": 37827,
+          "reported_prompt_tokens": 2344,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 81612,
+          "cumulative_reported_tokens": 6380
+        },
+        {
+          "turn": 5,
+          "request_bytes": 49575,
+          "reported_prompt_tokens": 2858,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 131385,
+          "cumulative_reported_tokens": 9260
+        },
+        {
+          "turn": 6,
+          "request_bytes": 61323,
+          "reported_prompt_tokens": 3372,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 192906,
+          "cumulative_reported_tokens": 12654
+        },
+        {
+          "turn": 7,
+          "request_bytes": 73071,
+          "reported_prompt_tokens": 3886,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 266175,
+          "cumulative_reported_tokens": 16562
+        },
+        {
+          "turn": 8,
+          "request_bytes": 84819,
+          "reported_prompt_tokens": 4398,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 351192,
+          "cumulative_reported_tokens": 20982
+        },
+        {
+          "turn": 9,
+          "request_bytes": 96567,
+          "reported_prompt_tokens": 4912,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 447957,
+          "cumulative_reported_tokens": 25916
+        },
+        {
+          "turn": 10,
+          "request_bytes": 108315,
+          "reported_prompt_tokens": 5426,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 556470,
+          "cumulative_reported_tokens": 31364
+        },
+        {
+          "turn": 11,
+          "request_bytes": 120064,
+          "reported_prompt_tokens": 5940,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 676732,
+          "cumulative_reported_tokens": 37326
+        },
+        {
+          "turn": 12,
+          "request_bytes": 131813,
+          "reported_prompt_tokens": 6456,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 808743,
+          "cumulative_reported_tokens": 43804
+        },
+        {
+          "turn": 13,
+          "request_bytes": 143562,
+          "reported_prompt_tokens": 6971,
+          "reported_completion_tokens": 22,
+          "has_tool_calls": true,
+          "content_chars": 0,
+          "reasoning_chars": 0,
+          "internal_meter": 952503,
+          "cumulative_reported_tokens": 50797
+        }
+      ],
+      "reads": [
+        "doc-01.txt",
+        "doc-02.txt",
+        "doc-03.txt",
+        "doc-04.txt",
+        "doc-05.txt",
+        "doc-06.txt",
+        "doc-07.txt",
+        "doc-08.txt",
+        "doc-09.txt",
+        "doc-10.txt",
+        "doc-11.txt",
+        "doc-12.txt",
+        "doc-13.txt"
+      ],
+      "status": "budget_blocked",
+      "error": "run token budget cannot cover another provider request",
+      "duration_seconds": 68.29
+    },
+    "passed": true
+  },
+  "mcp_error_path": {
+    "status": "passed",
+    "model": "gemma-4-26b-a4b-it",
+    "test_only_token_budget": 3000,
+    "real_mcp_and_provider_and_read": true,
+    "real_read_calls": 1,
+    "tool_result": "ERROR: DeepSeek agent loop failed: run token budget cannot cover another provider request",
+    "error_log": "2026-10-10 00:37:23,189 ERROR deepseek_mcp.server DeepSeek delegation failed category=agent reason=run token budget cannot cover another provider request"
+  },
+  "unsteered_first_attempt": {
+    "model": "gemma-4-26b-a4b-it",
+    "loaded_context_tokens": 8192,
+    "real_provider_and_tools": true,
+    "per_run_limit": 1000000,
+    "fixture": {
+      "documents": 13,
+      "padding_bytes_per_file": 11000,
+      "description": "synthetic ASCII whitespace-heavy documents with random tokens"
+    },
+    "fixed": {
+      "label": "fixed",
+      "requests": [
+        {
+          "turn": 1,
+          "request_bytes": 1966,
+          "reported_prompt_tokens": 498,
+          "reported_completion_tokens": 218,
+          "internal_meter": 716,
+          "cumulative_reported_tokens": 716
+        },
+        {
+          "turn": 2,
+          "request_bytes": 14003,
+          "reported_prompt_tokens": 1132,
+          "reported_completion_tokens": 19,
+          "internal_meter": 4267,
+          "cumulative_reported_tokens": 1867
+        },
+        {
+          "turn": 3,
+          "request_bytes": 25383,
+          "reported_prompt_tokens": 1556,
+          "reported_completion_tokens": 19,
+          "internal_meter": 10663,
+          "cumulative_reported_tokens": 3442
+        },
+        {
+          "turn": 4,
+          "request_bytes": 36763,
+          "reported_prompt_tokens": 1983,
+          "reported_completion_tokens": 19,
+          "internal_meter": 19904,
+          "cumulative_reported_tokens": 5444
+        },
+        {
+          "turn": 5,
+          "request_bytes": 48143,
+          "reported_prompt_tokens": 2410,
+          "reported_completion_tokens": 19,
+          "internal_meter": 31990,
+          "cumulative_reported_tokens": 7873
+        },
+        {
+          "turn": 6,
+          "request_bytes": 59523,
+          "reported_prompt_tokens": 2836,
+          "reported_completion_tokens": 131,
+          "internal_meter": 47002,
+          "cumulative_reported_tokens": 10840
+        },
+        {
+          "turn": 7,
+          "request_bytes": 71111,
+          "reported_prompt_tokens": 3381,
+          "reported_completion_tokens": 19,
+          "internal_meter": 64830,
+          "cumulative_reported_tokens": 14240
+        },
+        {
+          "turn": 8,
+          "request_bytes": 82491,
+          "reported_prompt_tokens": 3805,
+          "reported_completion_tokens": 412,
+          "internal_meter": 85865,
+          "cumulative_reported_tokens": 18457
+        }
+      ],
+      "reads": [
+        "doc-01.txt",
+        "doc-02.txt",
+        "doc-03.txt",
+        "doc-04.txt",
+        "doc-05.txt",
+        "doc-06.txt",
+        "doc-07.txt"
+      ],
+      "status": "failed",
+      "result": {
+        "final_message": "(empty response)",
+        "turns_used": 8,
+        "tokens": {
+          "prompt": 17601,
+          "completion": 856,
+          "total": 18457
+        },
+        "tool_calls": 7,
+        "duration_seconds": 34.36,
+        "mutations": []
+      },
+      "error": "AssertionError: ['doc-01.txt', 'doc-02.txt', 'doc-03.txt', 'doc-04.txt', 'doc-05.txt', 'doc-06.txt', 'doc-07.txt']",
+      "duration_seconds": 34.36
+    },
+    "baseline": {
+      "label": "baseline-4b8b4c4",
+      "requests": [
+        {
+          "turn": 1,
+          "request_bytes": 1555,
+          "reported_prompt_tokens": 498,
+          "reported_completion_tokens": 230,
+          "internal_meter": 2430,
+          "cumulative_reported_tokens": 728
+        },
+        {
+          "turn": 2,
+          "request_bytes": 13612,
+          "reported_prompt_tokens": 1144,
+          "reported_completion_tokens": 19,
+          "internal_meter": 16240,
+          "cumulative_reported_tokens": 1891
+        },
+        {
+          "turn": 3,
+          "request_bytes": 24992,
+          "reported_prompt_tokens": 1568,
+          "reported_completion_tokens": 138,
+          "internal_meter": 41680,
+          "cumulative_reported_tokens": 3597
+        },
+        {
+          "turn": 4,
+          "request_bytes": 36622,
+          "reported_prompt_tokens": 2122,
+          "reported_completion_tokens": 19,
+          "internal_meter": 78500,
+          "cumulative_reported_tokens": 5738
+        },
+        {
+          "turn": 5,
+          "request_bytes": 48002,
+          "reported_prompt_tokens": 2547,
+          "reported_completion_tokens": 140,
+          "internal_meter": 126956,
+          "cumulative_reported_tokens": 8425
+        },
+        {
+          "turn": 6,
+          "request_bytes": 59638,
+          "reported_prompt_tokens": 3102,
+          "reported_completion_tokens": 19,
+          "internal_meter": 186792,
+          "cumulative_reported_tokens": 11546
+        },
+        {
+          "turn": 7,
+          "request_bytes": 71018,
+          "reported_prompt_tokens": 3526,
+          "reported_completion_tokens": 291,
+          "internal_meter": 258443,
+          "cumulative_reported_tokens": 15363
+        }
+      ],
+      "reads": [
+        "doc-01.txt",
+        "doc-02.txt",
+        "doc-03.txt",
+        "doc-04.txt",
+        "doc-05.txt",
+        "doc-06.txt"
+      ],
+      "status": "failed",
+      "result": {
+        "final_message": "(empty response)",
+        "turns_used": 7,
+        "tokens": {
+          "prompt": 14507,
+          "completion": 856,
+          "total": 15363
+        },
+        "tool_calls": 6,
+        "duration_seconds": 33.67,
+        "mutations": []
+      },
+      "error": "AssertionError: ['doc-01.txt', 'doc-02.txt', 'doc-03.txt', 'doc-04.txt', 'doc-05.txt', 'doc-06.txt']",
+      "duration_seconds": 33.67
+    },
+    "passed": false
+  },
+  "instrumentation": "Observers called the real provider and tool implementations. No provider responses or tool outputs were fabricated. Baseline source was loaded unchanged from Git revision 4b8b4c4."
+}

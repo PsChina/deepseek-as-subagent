@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from deepseek_mcp import server
 from deepseek_mcp.agent_loop import AgentLoopCancelled, _call_with_retry
-from deepseek_mcp.provider_retry import MutationOutcomeError
+from deepseek_mcp.provider_retry import AgentBudgetExceeded, AgentLoopError, MutationOutcomeError
 from deepseek_mcp.config import Config
 from deepseek_mcp.job_manager import DeepSeekJobManager, JobBusy
 from deepseek_mcp.private_logging import MAX_LOG_BYTES
@@ -285,6 +285,38 @@ logging.getLogger("deepseek_mcp.server").warning("must-not-escape")
             result = asyncio.run(server.delegate_to_deepseek("edit safely"))
 
         self.assertEqual(result, f"ERROR: {message}")
+
+    def test_sync_budget_failure_reason_is_visible_in_result_and_log(self) -> None:
+        config = Config("sk-test", ROOT, allowed_tools=["Read"])
+        for delegate in (server.delegate_to_deepseek, server.delegate_to_deepseek_readonly):
+            for reason in (
+                "run token budget cannot cover another provider request",
+                "run token budget exceeded",
+                "run token budget exhausted",
+                "provider conversation history budget exceeded",
+            ):
+                with (
+                    self.subTest(delegate=delegate.__name__, reason=reason),
+                    patch.object(server, "_prepare_sync_request", return_value=(config, "private-task")),
+                    patch.object(server, "_run_sync_cancellable", side_effect=AgentBudgetExceeded(reason)),
+                    self.assertLogs("deepseek_mcp.server", level="ERROR") as logs,
+                ):
+                    result = asyncio.run(delegate("private-task"))
+                self.assertEqual(result, f"ERROR: DeepSeek agent loop failed: {reason}")
+                self.assertIn(f"category=agent reason={reason}", "\n".join(logs.output))
+                self.assertNotIn("private-task", result + "\n".join(logs.output))
+
+    def test_unclassified_agent_error_remains_redacted(self) -> None:
+        config = Config("sk-test", ROOT, allowed_tools=["Read"])
+        marker = "unclassified-private-exception"
+        with (
+            patch.object(server, "_prepare_sync_request", return_value=(config, "task")),
+            patch.object(server, "_run_sync_cancellable", side_effect=AgentLoopError(marker)),
+            self.assertLogs("deepseek_mcp.server", level="ERROR") as logs,
+        ):
+            result = asyncio.run(server.delegate_to_deepseek("task"))
+        self.assertEqual(result, "ERROR: DeepSeek agent loop failed")
+        self.assertNotIn(marker, result + "\n".join(logs.output))
 
     def test_sync_delegate_keeps_event_loop_live_and_awaits_cancel_cleanup(self) -> None:
         started = threading.Event()

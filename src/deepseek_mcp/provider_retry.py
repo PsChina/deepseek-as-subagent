@@ -24,6 +24,10 @@ class AgentLoopError(Exception):
     """The delegated agent could not finish safely."""
 
 
+class AgentBudgetExceeded(AgentLoopError):
+    """A locally generated budget failure safe to expose in results and logs."""
+
+
 class AgentLoopCancelled(AgentLoopError):
     """The parent cancelled the delegated agent."""
 

@@ -16,6 +16,7 @@ from .mutation_outcome import (
 )
 from .provider_process import MAX_OUTPUT_TOKENS_PER_REQUEST
 from .provider_retry import (
+    AgentBudgetExceeded,
     AgentLoopCancelled,
     AgentLoopError,
     CancellationSignal,
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TOTAL_TOKENS_PER_RUN = 1_000_000
 MAX_PROVIDER_HISTORY_BYTES = 12 * 1024 * 1024
+ESTIMATED_BYTES_PER_TOKEN = 4
 
 SYSTEM_PROMPT_TEMPLATE = """You are a coding sub-agent working for a parent coding agent.
 
@@ -78,6 +80,8 @@ class _AgentState:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     budget_tokens: int = 0
+    last_prompt_tokens: int = 0
+    last_request_bytes: int = 0
     tool_calls: int = 0
     mutation_budget: MutationBudget = field(default_factory=MutationBudget)
     mutations: MutationAccumulator = field(default_factory=MutationAccumulator)
@@ -161,7 +165,10 @@ def _run_turn(state: _AgentState, turn: int) -> dict | None:
     _ensure_token_budget_available(state)
     _check_cancel(state.controls.cancel)
     _append_control_messages(state.messages, state.controls.poll)
-    request_bytes = _enforce_history_budget(state.messages)
+    _enforce_history_budget(state.messages)
+    request_bytes = _encoded_size(
+        {"messages": state.messages, "tools": state.tools}, ensure_ascii=False,
+    )
     _ensure_request_budget(state, request_bytes)
     response = _call_with_retry(
         state.config,
@@ -186,19 +193,23 @@ def _record_response(state: _AgentState, response, request_bytes: int = 0):
     assistant_message = raw["choices"][0]["message"]
     if message.tool_calls and assistant_message.get("content") is None:
         assistant_message["content"] = ""
-    response_bytes = _encoded_size(assistant_message)
-    reported = 0
+    response_bytes = _encoded_size(assistant_message, ensure_ascii=False)
+    prompt = _estimate_tokens(request_bytes)
+    completion = _estimate_tokens(response_bytes)
     if usage is not None:
-        reported = usage.prompt_tokens + usage.completion_tokens
+        prompt = max(prompt, usage.prompt_tokens)
+        completion = max(completion, usage.completion_tokens)
         state.prompt_tokens += usage.prompt_tokens
         state.completion_tokens += usage.completion_tokens
-    state.budget_tokens = getattr(state, "budget_tokens", 0) + max(
-        reported, request_bytes + response_bytes
-    )
+    # Meter every request, including re-sent history. Byte-derived floors are
+    # estimates, not exact token counts, and remain active without provider usage.
+    state.budget_tokens = getattr(state, "budget_tokens", 0) + prompt + completion
+    state.last_prompt_tokens = prompt
+    state.last_request_bytes = request_bytes
     if max(
         state.prompt_tokens + state.completion_tokens, state.budget_tokens
     ) > MAX_TOTAL_TOKENS_PER_RUN:
-        raise AgentLoopError("run token budget exceeded")
+        raise AgentBudgetExceeded("run token budget exceeded")
     state.messages.append(assistant_message)
     _enforce_history_budget(state.messages)
     return message
@@ -210,7 +221,7 @@ def _ensure_token_budget_available(state: _AgentState) -> None:
         getattr(state, "budget_tokens", 0),
     )
     if metered >= MAX_TOTAL_TOKENS_PER_RUN:
-        raise AgentLoopError("run token budget exhausted")
+        raise AgentBudgetExceeded("run token budget exhausted")
 
 
 def _ensure_request_budget(state: _AgentState, request_bytes: int) -> None:
@@ -218,20 +229,33 @@ def _ensure_request_budget(state: _AgentState, request_bytes: int) -> None:
         state.prompt_tokens + state.completion_tokens,
         getattr(state, "budget_tokens", 0),
     )
-    reserved = request_bytes + MAX_OUTPUT_TOKENS_PER_REQUEST
+    growth = max(0, request_bytes - getattr(state, "last_request_bytes", 0))
+    prompt = max(
+        _estimate_tokens(request_bytes),
+        getattr(state, "last_prompt_tokens", 0) + _estimate_tokens(growth),
+    )
+    reserved = prompt + getattr(state.config, "max_output_tokens", MAX_OUTPUT_TOKENS_PER_REQUEST)
     if reserved > MAX_TOTAL_TOKENS_PER_RUN - used:
-        raise AgentLoopError("run token budget cannot cover another provider request")
+        raise AgentBudgetExceeded("run token budget cannot cover another provider request")
 
 
-def _encoded_size(value: object) -> int:
-    encoder = json.JSONEncoder(separators=(",", ":"), ensure_ascii=True)
-    return sum(len(chunk.encode("utf-8")) for chunk in encoder.iterencode(value))
+def _estimate_tokens(byte_count: int) -> int:
+    return (byte_count + ESTIMATED_BYTES_PER_TOKEN - 1) // ESTIMATED_BYTES_PER_TOKEN
+
+
+def _encoded_size(value: object, *, ensure_ascii: bool = True) -> int:
+    encoder = json.JSONEncoder(separators=(",", ":"), ensure_ascii=ensure_ascii)
+    # Provider JSON can contain lone surrogates; count their escaped form.
+    return sum(
+        len(chunk.encode("utf-8", errors="backslashreplace"))
+        for chunk in encoder.iterencode(value)
+    )
 
 
 def _enforce_history_budget(messages: list[dict]) -> int:
     size = _encoded_size(messages)
     if size > MAX_PROVIDER_HISTORY_BYTES:
-        raise AgentLoopError("provider conversation history budget exceeded")
+        raise AgentBudgetExceeded("provider conversation history budget exceeded")
     return size
 
 
