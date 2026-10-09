@@ -350,7 +350,11 @@ logging.getLogger("deepseek_mcp.server").warning("must-not-escape")
                 delegated = asyncio.create_task(
                     server.delegate_to_deepseek("long task")
                 )
-                self.assertTrue(await asyncio.to_thread(started.wait, 1.0))
+                worker_started = await asyncio.to_thread(started.wait, 1.0)
+                self.assertTrue(
+                    worker_started,
+                    delegated.result() if delegated.done() else "worker startup timed out",
+                )
                 await asyncio.wait_for(asyncio.sleep(0), timeout=0.2)
                 self.assertTrue(server.ping().startswith("pong from"))
 
@@ -371,6 +375,7 @@ logging.getLogger("deepseek_mcp.server").warning("must-not-escape")
             with (
                 patch.object(server, "job_manager", manager),
                 patch.object(server.Config, "load", return_value=config),
+                patch("deepseek_mcp.transaction_journal.JOURNAL_DIRECTORY", root / "journal"),
                 patch(
                     "deepseek_mcp.job_manager.run_agent",
                     side_effect=fake_run_agent,
