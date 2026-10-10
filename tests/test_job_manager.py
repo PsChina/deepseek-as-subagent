@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deepseek_mcp.agent_loop import AgentLoopCancelled
+from deepseek_mcp.agent_loop import AgentIncompleteResponse, AgentLoopCancelled
 from deepseek_mcp.config import Config
 from deepseek_mcp.job_manager import (
     MAX_CONTEXT_BYTES,
@@ -119,6 +119,20 @@ class JobManagerTests(unittest.TestCase):
         self.assertIsNotNone(manager.claim_usage_record(job["job_id"]))
         manager.finish_usage_record(job["job_id"], True)
         self.assertIsNone(manager.claim_usage_record(job["job_id"]))
+
+    def test_incomplete_agent_result_marks_background_job_failed(self) -> None:
+        manager = self._manager()
+        with patch(
+            "deepseek_mcp.job_manager.run_agent",
+            side_effect=AgentIncompleteResponse("model returned an empty final response"),
+        ):
+            started = manager.start("test task", "", self._config())
+            status = self._assert_terminal(manager, started["job_id"])
+        self.assertEqual(status["status"], "failed")
+        self.assertIn("empty final response", status["error"])
+        result = manager.result(started["job_id"])
+        self.assertTrue(result["ready"])
+        self.assertIsNone(result["result"])
 
     def test_cancel_is_cooperative_and_reaches_cancelled(self) -> None:
         manager = self._manager()
