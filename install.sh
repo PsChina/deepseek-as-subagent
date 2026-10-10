@@ -332,7 +332,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
     $PYTHON_CMD "$PATH_GUARD" write-exclusive "$CONFIG_FILE" <<EOF
 {
   "api_key": "$escaped_value",
-  "flash": "deepseek-v4-flash",
+  "flash": "deepseek-flash",
   "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
   "pro_reasoning_effort": "high",

@@ -274,7 +274,7 @@ receive.
 ```json
 {
   "api_key": "sk-...",
-  "flash": "deepseek-v4-flash",
+  "flash": "deepseek-flash",
   "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
   "pro_reasoning_effort": "high",
@@ -285,11 +285,8 @@ receive.
 }
 ```
 
-`flash` and `pro` are the provider model IDs behind the two stable MCP routing
-profiles. You can change these strings when DeepSeek publishes a new model
-revision, or when a compatible endpoint uses different model names, without
-changing how Claude/Codex calls the MCP tools. The public tool argument remains
-only `model="flash"` or `model="pro"`.
+`flash` and `pro` configure the provider model IDs for the two MCP profiles.
+Claude/Codex still passes only `model="flash"` or `model="pro"`.
 
 `flash_reasoning_effort` and `pro_reasoning_effort` accept `provider-default`,
 `none`, `low`, `high`, or `max`. `provider-default` (also the default when the
@@ -374,9 +371,7 @@ checks synchronous coding and read-only delegation, verifies and acknowledges
 mutation records, and sends a random steering token to a Pro-profile background
 job. The check requires that token in the model's final response.
 
-For upgrade compatibility, a legacy single `model` field is still accepted when
-`flash` and `pro` are absent; its value is used for both slots. Do not combine
-legacy `model` with the new `flash` / `pro` fields.
+A single `model` field also maps to both slots; do not combine it with `flash` or `pro`.
 
 `allowed_tools` is retained for configuration compatibility and validation. It
 does not select capabilities for a delegation: each MCP API applies its own

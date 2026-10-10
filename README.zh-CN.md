@@ -269,7 +269,7 @@ max_retries=0
 ```json
 {
   "api_key": "sk-...",
-  "flash": "deepseek-v4-flash",
+  "flash": "deepseek-flash",
   "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
   "pro_reasoning_effort": "high",
@@ -280,9 +280,8 @@ max_retries=0
 }
 ```
 
-`flash` 和 `pro` 是两个稳定 MCP 路由槽位背后的真实 provider 模型名。DeepSeek 后续升级
-到新版本，或者兼容 API 端点使用不同模型名时，用户只需要修改这里的字符串，不需要改变
-Claude/Codex 的 MCP 调用方式；公共参数始终只传 `model="flash"` 或 `model="pro"`。
+`flash` 和 `pro` 配置两个 MCP 档位对应的实际模型名。Claude/Codex 仍然只传
+`model="flash"` 或 `model="pro"`。
 
 `flash_reasoning_effort` 和 `pro_reasoning_effort` 可配置为 `provider-default`、`none`、
 `low`、`high` 或 `max`。字段缺失或设为 `provider-default` 时，不发送 reasoning 参数，
@@ -353,8 +352,7 @@ python scripts/smoke_local_mcp.py --base-url http://127.0.0.1:1234/v1 --model yo
 脚本使用临时 HOME 和工作区启动当前源码的服务，检查同步编码和只读委派，
 核验并确认修改记录，再向 Pro 档后台任务发送随机口令；模型最终回复必须包含该口令。
 
-为了兼容旧版本，当 `flash` / `pro` 都不存在时，旧的单 `model` 字段仍然可以读取，并会
-同时映射到两个槽位。不要把旧 `model` 和新 `flash` / `pro` 混用。
+单独使用 `model` 字段会同时配置两个槽位；不要与 `flash` 或 `pro` 混用。
 
 `allowed_tools` 为兼容已有配置和校验而保留；它不用于为某次委派选择能力。
 MCP API 会在加载配置后应用各自固定的 profile。
