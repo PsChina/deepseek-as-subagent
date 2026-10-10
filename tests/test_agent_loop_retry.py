@@ -556,8 +556,8 @@ class RetryPolicyTests(unittest.TestCase):
                   ]),
             patch("deepseek_mcp.agent_loop.execute_in_subprocess",
                   side_effect=[
-                      "[exit 1]\\n--- stdout ---\\n",
-                      "[exit 0]\\n--- stdout ---\\npassed",
+                      "[exit 1]\n--- stdout ---\n",
+                      "[exit 0]\n--- stdout ---\npassed",
                   ]),
         ):
             result = run_agent("test", config)
