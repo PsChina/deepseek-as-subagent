@@ -22,6 +22,8 @@ from .provider_child import (
 )
 from .parent_liveness import ParentLiveness, close_parent_liveness
 from .provider_response import (
+    ProviderContentFiltered,
+    ProviderOutputTruncated,
     ProviderResponse,
     ProviderResponseError,
     ProviderRetryableResponseError,
@@ -150,9 +152,16 @@ def _decode_response(raw: bytes) -> tuple[ProviderResponse | None, str, bool]:
             raise ProviderResponseError("provider error envelope is invalid")
     except ProviderRetryableResponseError:
         return None, "category=api", True
+    except ProviderOutputTruncated:
+        return None, "category=output_truncated", False
+    except ProviderContentFiltered:
+        return None, "category=content_filtered", False
     except (KeyError, TypeError, ValueError, ProviderResponseError, json.JSONDecodeError):
         return None, "category=client", False
-    allowed = {"category=client", "category=connection", "category=rate_limit", "category=api"}
+    allowed = {
+        "category=client", "category=connection", "category=rate_limit",
+        "category=api", "category=output_truncated", "category=content_filtered",
+    }
     base = summary.split(" status=", 1)[0]
     if base not in allowed:
         return None, "category=client", False
