@@ -39,6 +39,7 @@ from .host_instructions import HOST_INSTRUCTIONS as _HOST_INSTRUCTIONS
 from .job_manager import DeepSeekJobManager, JobBusy, JobError, validate_delegation_input
 from .model_selection import ModelChoice, resolve_profile
 from .private_logging import PrivateBoundedLogStream
+from .result_format import format_sync_result as _format_sync_result
 from .process_hardening import disable_core_dumps
 from .transaction_recovery import (
     TransactionRecoveryError, acknowledge_with_lease,
@@ -244,25 +245,6 @@ def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice 
         raise
     except Exception as e:
         raise JobError(f"deepseek-mcp not configured: {e}") from e
-
-
-def _format_sync_result(result: dict) -> str:
-    bash = result.get("bash", {})
-    summary = (
-        f"{result['final_message']}\n\n"
-        f"---\n"
-        f"[deepseek-mcp] {result['turns_used']} turns, "
-        f"{result['tool_calls']} tool calls, "
-        f"{result['tokens']['total']} tokens, "
-        f"{result['duration_seconds']}s"
-    )
-    if bash.get("calls"):
-        summary += (
-            f", bash_calls={bash['calls']}, "
-            f"bash_failures={bash['failure_count']}, "
-            f"last_bash_status={bash['last_status']}"
-        )
-    return summary
 
 
 def _build_full_task(task: str, context: str) -> str:
