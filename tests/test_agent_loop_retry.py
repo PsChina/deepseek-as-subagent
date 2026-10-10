@@ -493,9 +493,9 @@ class RetryPolicyTests(unittest.TestCase):
         self.assertEqual(result["turns_used"], 2)
         self.assertEqual(provider.call_count, 2)
         history = provider.call_args.args[1]
-        self.assertEqual(history[-2]["role"], "assistant")
-        self.assertEqual(history[-2]["content"], "")
-        self.assertIn("last final response was empty", history[-1]["content"])
+        self.assertEqual(history[-3]["role"], "assistant")
+        self.assertEqual(history[-3]["content"], "")
+        self.assertIn("last final response was empty", history[-2]["content"])
 
     def test_repeated_empty_or_whitespace_response_is_not_success(self) -> None:
         for first, second in ((None, ""), ("  \t", "\n")):
