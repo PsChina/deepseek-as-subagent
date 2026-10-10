@@ -14,6 +14,7 @@ import httpx
 from openai import APIConnectionError, APIError
 
 from deepseek_mcp.agent_loop import (
+    AgentIncompleteResponse,
     AgentLoopCancelled,
     AgentLoopError,
     MAX_OUTPUT_TOKENS_PER_REQUEST,
@@ -28,10 +29,11 @@ from deepseek_mcp.agent_loop import (
 )
 from deepseek_mcp.config import Config
 from deepseek_mcp.provider_child import MAX_API_RESPONSE_BYTES, execute_request
+from deepseek_mcp.provider_response import ProviderResponse
 from deepseek_mcp.provider_process import ProviderRequestDeadline
 from deepseek_mcp.provider_process import _decode_response
 from deepseek_mcp.mutation_outcome import mutation_record
-from deepseek_mcp.provider_retry import MutationOutcomeCancelled, MutationOutcomeError
+from deepseek_mcp.provider_retry import MutationOutcomeCancelled, MutationOutcomeError, ProviderOutputError
 from deepseek_mcp.resource_budget import (
     MAX_TOOL_CALLS_PER_RUN,
     MAX_TOOL_CALLS_PER_TURN,
@@ -150,6 +152,16 @@ def _final_response():
             "choices": [{"message": {"role": "assistant", "content": "done"}}]
         },
     )
+
+
+def _terminal_response(content: str | None) -> ProviderResponse:
+    return ProviderResponse.from_payload({
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": content},
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    })
 
 
 def _tool_call(name: str = "Read", arguments: str = '{}'):
@@ -469,6 +481,119 @@ class RetryPolicyTests(unittest.TestCase):
         self.assertEqual(result["final_message"], "done")
         self.assertIs(provider.call_args.args[0], config)
         self.assertEqual(provider.call_args.args[1][1]["content"], "test")
+
+    def test_empty_terminal_response_continues_once_and_succeeds(self) -> None:
+        with patch(
+            "deepseek_mcp.agent_loop._call_with_retry",
+            side_effect=[_terminal_response(None), _terminal_response("done")],
+        ) as provider:
+            result = run_agent("test", _config())
+
+        self.assertEqual(result["final_message"], "done")
+        self.assertEqual(result["turns_used"], 2)
+        self.assertEqual(provider.call_count, 2)
+        history = provider.call_args.args[1]
+        self.assertEqual(history[-2]["role"], "assistant")
+        self.assertEqual(history[-2]["content"], "")
+        self.assertIn("last final response was empty", history[-1]["content"])
+
+    def test_repeated_empty_or_whitespace_response_is_not_success(self) -> None:
+        for first, second in ((None, ""), ("  \t", "\n")):
+            with (
+                self.subTest(first=first, second=second),
+                patch(
+                    "deepseek_mcp.agent_loop._call_with_retry",
+                    side_effect=[_terminal_response(first), _terminal_response(second)],
+                ) as provider,
+                self.assertRaises(AgentIncompleteResponse) as raised,
+            ):
+                run_agent("test", _config())
+            self.assertIn("empty final response", str(raised.exception))
+            self.assertEqual(provider.call_count, 2)
+
+    def test_empty_reply_at_turn_limit_fails_without_extra_request(self) -> None:
+        config = _config()
+        config.max_turns = 1
+        with (
+            patch("deepseek_mcp.agent_loop._call_with_retry",
+                  return_value=_terminal_response(None)) as provider,
+            self.assertRaises(AgentIncompleteResponse),
+        ):
+            run_agent("test", config)
+        provider.assert_called_once()
+
+    def test_empty_after_committed_write_keeps_recovery_and_does_not_repeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config("sk-test", Path(tmpdir), allowed_tools=["Write"])
+            def execute(*args, **kwargs):
+                (kwargs.get("outcome_reporter") or args[8])(
+                    mutation_record("f" * 32, "Write", "committed")
+                )
+                return "OK: wrote"
+            with (
+                patch("deepseek_mcp.agent_loop._call_with_retry",
+                      side_effect=[
+                          _tool_response(), _terminal_response(None),
+                          _terminal_response("   "),
+                      ]),
+                patch("deepseek_mcp.agent_loop.execute_in_subprocess",
+                      side_effect=execute) as tool,
+                self.assertRaises(MutationOutcomeError) as raised,
+            ):
+                run_agent("test", config)
+        self.assertEqual(tool.call_count, 1)
+        self.assertIn("f" * 32, str(raised.exception))
+        self.assertIn("DO NOT RETRY", str(raised.exception))
+        self.assertIn("empty final response", str(raised.exception))
+
+    def test_bash_failure_history_keeps_later_success_distinct(self) -> None:
+        config = Config("sk-test", Path.cwd(), allowed_tools=["Bash"])
+        with (
+            patch("deepseek_mcp.agent_loop._call_with_retry",
+                  side_effect=[
+                      _tool_response("Bash"), _tool_response("Bash"),
+                      _terminal_response("fixed and verified"),
+                  ]),
+            patch("deepseek_mcp.agent_loop.execute_in_subprocess",
+                  side_effect=[
+                      "[exit 1]\\n--- stdout ---\\n",
+                      "[exit 0]\\n--- stdout ---\\npassed",
+                  ]),
+        ):
+            result = run_agent("test", config)
+        self.assertEqual(result["final_message"], "fixed and verified")
+        self.assertEqual(result["bash"], {
+            "calls": 2,
+            "failure_count": 1,
+            "last_status": "success",
+            "failures": [{"turn": 1, "status": "nonzero_exit", "exit_code": 1}],
+        })
+
+    def test_bash_tool_error_is_structured_without_exposing_output(self) -> None:
+        config = Config("sk-test", Path.cwd(), allowed_tools=["Bash"])
+        with (
+            patch("deepseek_mcp.agent_loop._call_with_retry",
+                  side_effect=[_tool_response("Bash"), _terminal_response("failed")]),
+            patch("deepseek_mcp.agent_loop.execute_in_subprocess",
+                  return_value="ERROR: secret-command-was-blocked"),
+        ):
+            result = run_agent("test", config)
+        self.assertEqual(result["bash"]["failures"], [
+            {"turn": 1, "status": "tool_error", "exit_code": None}
+        ])
+        self.assertNotIn("secret-command-was-blocked", str(result["bash"]))
+
+    def test_provider_completion_categories_are_safe_and_nonretryable(self) -> None:
+        for category in ("category=output_truncated", "category=content_filtered"):
+            with (
+                self.subTest(category=category),
+                patch("deepseek_mcp.provider_retry.request_in_subprocess",
+                      return_value=(None, category, False)) as request,
+                self.assertRaises(ProviderOutputError) as raised,
+            ):
+                _call_with_retry(_config(), [], [], 0)
+            self.assertIn(category, str(raised.exception))
+            request.assert_called_once()
 
     def test_run_agent_propagates_provider_failure_without_a_parent_client(self) -> None:
         with (
