@@ -13,6 +13,14 @@ class ProviderRetryableResponseError(ProviderResponseError):
     pass
 
 
+class ProviderOutputTruncated(ProviderResponseError):
+    pass
+
+
+class ProviderContentFiltered(ProviderResponseError):
+    pass
+
+
 @dataclass(frozen=True)
 class ProviderUsage:
     prompt_tokens: int
@@ -103,6 +111,10 @@ def _finish_reason(value: object, message: ProviderMessage) -> str:
     }
     if not isinstance(value, str) or value not in allowed:
         raise ProviderResponseError("provider finish reason is missing or invalid")
+    if value == "length":
+        raise ProviderOutputTruncated("provider output was truncated")
+    if value == "content_filter":
+        raise ProviderContentFiltered("provider output was filtered")
     expected = "tool_calls" if message.tool_calls else "stop"
     if value != expected:
         raise ProviderResponseError(f"provider response ended with {value}")

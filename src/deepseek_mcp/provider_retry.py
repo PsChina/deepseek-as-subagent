@@ -28,6 +28,10 @@ class AgentBudgetExceeded(AgentLoopError):
     """A locally generated budget failure safe to expose in results and logs."""
 
 
+class ProviderOutputError(AgentLoopError):
+    """A provider response ended prematurely or was filtered."""
+
+
 class AgentLoopCancelled(AgentLoopError):
     """The parent cancelled the delegated agent."""
 
@@ -72,6 +76,10 @@ def call_with_retry(
         if response is not None:
             return response
         if not retryable:
+            if summary in {"category=output_truncated", "category=content_filtered"}:
+                raise ProviderOutputError(
+                    f"DeepSeek model response incomplete: {summary}"
+                ) from None
             kind = "client" if summary == "category=client" else "API"
             raise AgentLoopError(
                 f"DeepSeek {kind} error on turn {turn}: {summary}"

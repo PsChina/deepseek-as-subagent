@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .bash_outcome import record_bash_result
 from .config import Config
 from .hard_deadline import Deadline, HardDeadline
 from .mutation_outcome import (
@@ -36,6 +37,11 @@ from .tools import build_tool_schemas, execute_tool
 from .tool_process import execute_in_subprocess
 
 logger = logging.getLogger(__name__)
+
+
+class AgentIncompleteResponse(AgentLoopError):
+    """A model stopped without producing a usable final answer."""
+
 
 MAX_TOTAL_TOKENS_PER_RUN = 1_000_000
 MAX_PROVIDER_HISTORY_BYTES = 12 * 1024 * 1024
@@ -83,6 +89,10 @@ class _AgentState:
     last_prompt_tokens: int = 0
     last_request_bytes: int = 0
     tool_calls: int = 0
+    empty_final_attempts: int = 0
+    bash_calls: int = 0
+    last_bash_status: str | None = None
+    bash_failures: list[dict] = field(default_factory=list)
     mutation_budget: MutationBudget = field(default_factory=MutationBudget)
     mutations: MutationAccumulator = field(default_factory=MutationAccumulator)
 
@@ -191,7 +201,7 @@ def _record_response(state: _AgentState, response, request_bytes: int = 0):
     message = response.choices[0].message
     raw = response.model_dump(exclude_none=True)
     assistant_message = raw["choices"][0]["message"]
-    if message.tool_calls and assistant_message.get("content") is None:
+    if assistant_message.get("content") is None:
         assistant_message["content"] = ""
     response_bytes = _encoded_size(assistant_message, ensure_ascii=False)
     prompt = _estimate_tokens(request_bytes)
@@ -260,6 +270,24 @@ def _enforce_history_budget(messages: list[dict]) -> int:
 
 
 def _finalize_or_steer(state: _AgentState, message, turn: int) -> dict | None:
+    if not message.content or not message.content.strip():
+        # An empty reply is not final: keep background steering available.
+        if state.empty_final_attempts or turn + 1 >= state.config.max_turns:
+            raise AgentIncompleteResponse(
+                "model returned an empty final response; delegation is incomplete"
+            )
+        state.empty_final_attempts += 1
+        state.messages.append({
+            "role": "user",
+            "content": (
+                "Your last final response was empty. Continue the original task "
+                "and provide a non-empty final result, or explain what remains "
+                "unfinished. Do not repeat already executed file mutations or "
+                "other side-effectful tool calls without checking their effects."
+            ),
+        })
+        _enforce_history_budget(state.messages)
+        return None
     updates = _poll_control_messages(state.controls.finalize or state.controls.poll)
     if updates:
         _append_steering_update(state.messages, updates)
@@ -269,8 +297,10 @@ def _finalize_or_steer(state: _AgentState, message, turn: int) -> dict | None:
 
 
 def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
+    if not content or not content.strip():
+        raise AgentIncompleteResponse("model returned an empty final response")
     total_tokens = state.prompt_tokens + state.completion_tokens
-    final_message = content or "(empty response)"
+    final_message = content
     notices = filter(
         None,
         (state.mutations.recovery_notice(), state.mutations.warning_notice()),
@@ -285,6 +315,12 @@ def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
             "total": total_tokens,
         },
         "tool_calls": state.tool_calls,
+        "bash": {
+            "calls": state.bash_calls,
+            "failure_count": len(state.bash_failures),
+            "last_status": state.last_bash_status,
+            "failures": list(state.bash_failures),
+        },
         "duration_seconds": round(max(0.0, time.time() - state.started), 2),
         "mutations": state.mutations.payload(),
     }
@@ -326,6 +362,8 @@ def _execute_and_record_tool(state: _AgentState, tool_call, turn: int) -> None:
         deadline=state.deadline,
         outcome_reporter=state.mutations.add,
     )
+    if tool_call.function.name == "Bash":
+        record_bash_result(state, result, turn)
     state.messages.append(
         {"role": "tool", "tool_call_id": tool_call.id, "content": result}
     )

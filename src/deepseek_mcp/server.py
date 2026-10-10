@@ -28,8 +28,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from . import __version__
-from .agent_loop import AgentLoopCancelled, AgentLoopError
-from .provider_retry import AgentBudgetExceeded, MutationOutcomeError, MutationOutcomeCancelled
+from .agent_loop import AgentIncompleteResponse, AgentLoopCancelled, AgentLoopError
+from .provider_retry import AgentBudgetExceeded, MutationOutcomeError, MutationOutcomeCancelled, ProviderOutputError
 from .mutation_outcome import mutation_failure_message, records_from_result
 from .config import Config
 from .execution_profile import (
@@ -39,6 +39,7 @@ from .host_instructions import HOST_INSTRUCTIONS as _HOST_INSTRUCTIONS
 from .job_manager import DeepSeekJobManager, JobBusy, JobError, validate_delegation_input
 from .model_selection import ModelChoice, resolve_profile
 from .private_logging import PrivateBoundedLogStream
+from .result_format import format_sync_result as _format_sync_result
 from .process_hardening import disable_core_dumps
 from .transaction_recovery import (
     TransactionRecoveryError, acknowledge_with_lease,
@@ -246,17 +247,6 @@ def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice 
         raise JobError(f"deepseek-mcp not configured: {e}") from e
 
 
-def _format_sync_result(result: dict) -> str:
-    return (
-        f"{result['final_message']}\n\n"
-        f"---\n"
-        f"[deepseek-mcp] {result['turns_used']} turns, "
-        f"{result['tool_calls']} tool calls, "
-        f"{result['tokens']['total']} tokens, "
-        f"{result['duration_seconds']}s"
-    )
-
-
 def _build_full_task(task: str, context: str) -> str:
     validate_delegation_input(task, context)
     return f"{task}\n\n# Additional context\n{context}" if context else task
@@ -318,6 +308,9 @@ async def _delegate(task: str, context: str, profile: ExecutionProfile, model: M
     except AgentBudgetExceeded as e:
         logger.error("DeepSeek delegation failed category=agent reason=%s", e)
         return f"ERROR: DeepSeek agent loop failed: {e}"
+    except (AgentIncompleteResponse, ProviderOutputError) as e:
+        logger.error("DeepSeek delegation failed category=incomplete")
+        return f"ERROR: DeepSeek delegation incomplete: {e}"
     except AgentLoopError:
         logger.error("DeepSeek delegation failed category=agent")
         return "ERROR: DeepSeek agent loop failed"

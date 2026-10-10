@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from deepseek_mcp import server
-from deepseek_mcp.agent_loop import AgentLoopCancelled, _call_with_retry
-from deepseek_mcp.provider_retry import AgentBudgetExceeded, AgentLoopError, MutationOutcomeError
+from deepseek_mcp.agent_loop import AgentIncompleteResponse, AgentLoopCancelled, _call_with_retry
+from deepseek_mcp.provider_retry import AgentBudgetExceeded, AgentLoopError, MutationOutcomeError, ProviderOutputError
 from deepseek_mcp.config import Config
 from deepseek_mcp.job_manager import DeepSeekJobManager, JobBusy
 from deepseek_mcp.private_logging import MAX_LOG_BYTES
@@ -305,6 +305,45 @@ logging.getLogger("deepseek_mcp.server").warning("must-not-escape")
                 self.assertEqual(result, f"ERROR: DeepSeek agent loop failed: {reason}")
                 self.assertIn(f"category=agent reason={reason}", "\n".join(logs.output))
                 self.assertNotIn("private-task", result + "\n".join(logs.output))
+
+    def test_sync_delegate_exposes_only_safe_completion_failure(self) -> None:
+        config = Config("sk-test", ROOT, allowed_tools=["Read"])
+        for failure in (
+            AgentIncompleteResponse("model returned an empty final response"),
+            ProviderOutputError("DeepSeek model response incomplete: category=output_truncated"),
+        ):
+            with (
+                self.subTest(failure=type(failure).__name__),
+                patch.object(server, "_prepare_sync_request", return_value=(config, "task")),
+                patch.object(server, "_run_sync_cancellable", side_effect=failure),
+                self.assertLogs("deepseek_mcp.server", level="ERROR") as logs,
+            ):
+                result = asyncio.run(server.delegate_to_deepseek("task"))
+            self.assertTrue(result.startswith("ERROR: DeepSeek delegation incomplete:"))
+            self.assertIn(str(failure), result)
+            self.assertIn("category=incomplete", "\n".join(logs.output))
+            self.assertNotIn("task", result)
+
+    def test_sync_result_summarizes_bash_failures_and_later_success(self) -> None:
+        result = {
+            "final_message": "done",
+            "turns_used": 3,
+            "tool_calls": 2,
+            "tokens": {"total": 50},
+            "duration_seconds": 1.0,
+            "bash": {
+                "calls": 2,
+                "failure_count": 1,
+                "last_status": "success",
+                "failures": [{"turn": 1, "status": "nonzero_exit", "exit_code": 1}],
+            },
+        }
+        formatted = server._format_sync_result(result)
+        self.assertIn("[deepseek-mcp bash] ", formatted)
+        bash = json.loads(formatted.split("[deepseek-mcp bash] ", 1)[1])
+        self.assertEqual(bash, result["bash"])
+        self.assertEqual(bash["failures"][0]["exit_code"], 1)
+        self.assertEqual(bash["last_status"], "success")
 
     def test_unclassified_agent_error_remains_redacted(self) -> None:
         config = Config("sk-test", ROOT, allowed_tools=["Read"])
