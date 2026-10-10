@@ -28,8 +28,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from . import __version__
-from .agent_loop import AgentLoopCancelled, AgentLoopError
-from .provider_retry import AgentBudgetExceeded, MutationOutcomeError, MutationOutcomeCancelled
+from .agent_loop import AgentIncompleteResponse, AgentLoopCancelled, AgentLoopError
+from .provider_retry import AgentBudgetExceeded, MutationOutcomeError, MutationOutcomeCancelled, ProviderOutputError
 from .mutation_outcome import mutation_failure_message, records_from_result
 from .config import Config
 from .execution_profile import (
@@ -247,7 +247,8 @@ def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice 
 
 
 def _format_sync_result(result: dict) -> str:
-    return (
+    bash = result.get("bash", {})
+    summary = (
         f"{result['final_message']}\n\n"
         f"---\n"
         f"[deepseek-mcp] {result['turns_used']} turns, "
@@ -255,6 +256,13 @@ def _format_sync_result(result: dict) -> str:
         f"{result['tokens']['total']} tokens, "
         f"{result['duration_seconds']}s"
     )
+    if bash.get("calls"):
+        summary += (
+            f", bash_calls={bash['calls']}, "
+            f"bash_failures={bash['failure_count']}, "
+            f"last_bash_status={bash['last_status']}"
+        )
+    return summary
 
 
 def _build_full_task(task: str, context: str) -> str:
@@ -318,6 +326,9 @@ async def _delegate(task: str, context: str, profile: ExecutionProfile, model: M
     except AgentBudgetExceeded as e:
         logger.error("DeepSeek delegation failed category=agent reason=%s", e)
         return f"ERROR: DeepSeek agent loop failed: {e}"
+    except (AgentIncompleteResponse, ProviderOutputError) as e:
+        logger.error("DeepSeek delegation failed category=incomplete")
+        return f"ERROR: DeepSeek delegation incomplete: {e}"
     except AgentLoopError:
         logger.error("DeepSeek delegation failed category=agent")
         return "ERROR: DeepSeek agent loop failed"
