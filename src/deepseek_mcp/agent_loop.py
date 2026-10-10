@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .bash_outcome import record_bash_result
 from .config import Config
 from .hard_deadline import Deadline, HardDeadline
 from .mutation_outcome import (
@@ -361,31 +361,12 @@ def _execute_and_record_tool(state: _AgentState, tool_call, turn: int) -> None:
         outcome_reporter=state.mutations.add,
     )
     if tool_call.function.name == "Bash":
-        _record_bash_result(state, result, turn)
+        record_bash_result(state, result, turn)
     state.messages.append(
         {"role": "tool", "tool_call_id": tool_call.id, "content": result}
     )
     _enforce_history_budget(state.messages)
     _check_cancel(state.controls.cancel)
-
-
-def _record_bash_result(state: _AgentState, output: str, turn: int) -> None:
-    """Summarize Bash results without persisting commands or output text."""
-    state.bash_calls += 1
-    match = re.fullmatch(r"\[exit (-?\d+)\]", output.partition("\n")[0])
-    if match is not None:
-        exit_code = int(match.group(1))
-        status = "success" if exit_code == 0 else "nonzero_exit"
-    else:
-        exit_code = None
-        status = "tool_error" if output.startswith("ERROR:") else "unknown"
-    state.last_bash_status = status
-    if status != "success":
-        state.bash_failures.append({
-            "turn": turn + 1,
-            "status": status,
-            "exit_code": exit_code,
-        })
 
 
 def _execute_one_tool(
