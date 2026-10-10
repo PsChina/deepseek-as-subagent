@@ -339,9 +339,11 @@ logging.getLogger("deepseek_mcp.server").warning("must-not-escape")
             },
         }
         formatted = server._format_sync_result(result)
-        self.assertIn("bash_calls=2", formatted)
-        self.assertIn("bash_failures=1", formatted)
-        self.assertIn("last_bash_status=success", formatted)
+        self.assertIn("[deepseek-mcp bash] ", formatted)
+        bash = json.loads(formatted.split("[deepseek-mcp bash] ", 1)[1])
+        self.assertEqual(bash, result["bash"])
+        self.assertEqual(bash["failures"][0]["exit_code"], 1)
+        self.assertEqual(bash["last_status"], "success")
 
     def test_unclassified_agent_error_remains_redacted(self) -> None:
         config = Config("sk-test", ROOT, allowed_tools=["Read"])
