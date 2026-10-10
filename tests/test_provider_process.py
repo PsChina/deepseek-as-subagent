@@ -191,7 +191,23 @@ class ProviderProcessTests(unittest.TestCase):
 
         self.assertEqual(
             provider_process._decode_response(json.dumps(payload).encode()),
-            (None, "category=client", False),
+            (None, "category=output_truncated", False),
+        )
+
+    def test_parent_classifies_content_filter_as_safe_nonretryable(self) -> None:
+        payload = {
+            "kind": "ok",
+            "response": {
+                "choices": [{
+                    "finish_reason": "content_filter",
+                    "message": {"role": "assistant", "content": "partial"},
+                }],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        }
+        self.assertEqual(
+            provider_process._decode_response(json.dumps(payload).encode()),
+            (None, "category=content_filtered", False),
         )
 
     def test_parent_retries_insufficient_inference_resources(self) -> None:
