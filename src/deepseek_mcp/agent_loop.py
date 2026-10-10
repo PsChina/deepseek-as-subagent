@@ -297,8 +297,10 @@ def _finalize_or_steer(state: _AgentState, message, turn: int) -> dict | None:
 
 
 def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
+    if not content or not content.strip():
+        raise AgentIncompleteResponse("model returned an empty final response")
     total_tokens = state.prompt_tokens + state.completion_tokens
-    final_message = content or "(empty response)"
+    final_message = content
     notices = filter(
         None,
         (state.mutations.recovery_notice(), state.mutations.warning_notice()),
