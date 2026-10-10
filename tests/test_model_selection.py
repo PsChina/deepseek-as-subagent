@@ -27,7 +27,7 @@ class ModelSelectionTests(unittest.TestCase):
 
     def test_config_and_public_tools_default_to_flash(self) -> None:
         self.assertEqual(DEFAULT_MODEL, DEFAULT_FLASH_MODEL)
-        self.assertEqual(DEFAULT_FLASH_MODEL, "deepseek-v4-flash")
+        self.assertEqual(DEFAULT_FLASH_MODEL, "deepseek-flash")
         self.assertEqual(DEFAULT_PRO_MODEL, "deepseek-v4-pro")
         for tool in (
             server.delegate_to_deepseek,

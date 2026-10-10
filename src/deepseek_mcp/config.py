@@ -20,7 +20,7 @@ from .provider_settings import (
 )
 CONFIG_PATH = Path.home() / ".deepseek-mcp" / "config.json"
 MAX_CONFIG_BYTES = 1024 * 1024
-DEFAULT_FLASH_MODEL = "deepseek-v4-flash"
+DEFAULT_FLASH_MODEL = "deepseek-flash"
 DEFAULT_PRO_MODEL = "deepseek-v4-pro"
 DEFAULT_REASONING_EFFORT = "high"
 PROVIDER_DEFAULT_REASONING_EFFORT = "provider-default"
