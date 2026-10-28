@@ -241,6 +241,61 @@ class ToolProcessTests(unittest.TestCase):
 
             self.assertEqual(artifact.read_text(encoding="utf-8"), "new-root-data")
 
+    def test_cleanup_skips_paths_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            workspace = root / "workspace"
+            outside = root / "outside"
+            workspace.mkdir()
+            outside.mkdir()
+            transaction_id = "b" * 32
+            artifact = outside / f".deepseek-mcp-{transaction_id}.tmp"
+            artifact.write_text("foreign-data", encoding="utf-8")
+
+            cleanup_tool_artifacts(
+                self._config(workspace),
+                "Write",
+                {"path": str(outside / "script.py")},
+                transaction_id,
+            )
+
+            self.assertEqual(artifact.read_text(encoding="utf-8"), "foreign-data")
+
+    def test_real_mutation_outside_workspace_returns_tool_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            workspace = root / "workspace"
+            workspace.mkdir()
+            target = root / "outside.py"
+            target.write_text("original", encoding="utf-8")
+            config = Config(
+                "credential", workspace, allowed_tools=["Read", "Write", "Edit"]
+            )
+            cases = {
+                "Write": {"path": str(target), "content": "replaced"},
+                "Edit": {
+                    "path": str(target),
+                    "old_string": "original",
+                    "new_string": "replaced",
+                },
+            }
+            for name, arguments in cases.items():
+                with self.subTest(tool=name):
+                    result = execute_in_subprocess(
+                        config,
+                        name,
+                        arguments,
+                        MutationBudget(limit=100),
+                        10,
+                        None,
+                        None,
+                        time.monotonic() + 5,
+                    )
+
+                    self.assertTrue(result.startswith("ERROR:"), result)
+                    self.assertIn("outside workspace", result)
+                    self.assertEqual(target.read_text(encoding="utf-8"), "original")
+
     def test_unicode_and_control_output_round_trips_from_real_child(self) -> None:
         cases = {
             "cjk.txt": "汉" * 22_000,

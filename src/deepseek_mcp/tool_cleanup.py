@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import file_io
 from .file_identity import ToolInputError, WorkspaceFileNotFound
+from .safety import SandboxViolation
 from .workspace_guard import bind_workspace_identity
 
 _MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
@@ -16,8 +17,20 @@ def _temp_name(transaction_id: str) -> str:
     return f".deepseek-mcp-{transaction_id}.tmp"
 
 
+def _temp_location(workspace: Path, label: str) -> tuple[Path, Path] | None:
+    try:
+        return file_io._location(workspace, label)
+    except SandboxViolation:
+        # The tool child rejects the same path before writing, so a path that
+        # violates the sandbox can never own a managed temporary file.
+        return None
+
+
 def _cleanup_posix_temp(workspace: Path, label: str, transaction_id: str) -> None:
-    root, relative = file_io._location(workspace, label)
+    location = _temp_location(workspace, label)
+    if location is None:
+        return
+    root, relative = location
     try:
         parent = file_io._open_posix_parent(root, relative, create=False)
     except (FileNotFoundError, WorkspaceFileNotFound):
@@ -41,7 +54,10 @@ def _cleanup_posix_temp(workspace: Path, label: str, transaction_id: str) -> Non
 
 
 def _cleanup_windows_temp(workspace: Path, label: str, transaction_id: str) -> None:
-    root, relative = file_io._location(workspace, label)
+    location = _temp_location(workspace, label)
+    if location is None:
+        return
+    root, relative = location
     try:
         parent = file_io._win_open_parent(root, relative, create=False)
     except (FileNotFoundError, WorkspaceFileNotFound):
