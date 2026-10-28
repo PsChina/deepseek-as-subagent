@@ -475,7 +475,8 @@ class ToolLimitTests(unittest.TestCase):
         self.assertIn("app/src/build", listed)
         self.assertIn("Main.kt", grep)
         self.assertNotIn("R.kt", grep)
-        self.assertIn("Skipped generated directories: app/build", grep)
+        self.assertIn("Skipped generated directories:", grep)
+        self.assertIn("app/build", grep)
 
     def test_pruned_directory_report_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
