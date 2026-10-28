@@ -42,6 +42,11 @@ jobs:
             requirements-audit.lock
             requirements-ci-bootstrap.lock
 
+      - name: Create isolated test environment
+        run: |
+          python -m venv .ci-venv
+          python -c "import os, pathlib; p = pathlib.Path('.ci-venv') / ('Scripts' if os.name == 'nt' else 'bin'); open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8').write(str(p.resolve()) + '\n')"
+
       - name: Install hash-locked dependencies
         run: >-
           python -m pip install --only-binary=:all: --require-hashes -r requirements.lock
@@ -59,19 +64,35 @@ jobs:
         run: >-
           python -m pip install --only-binary=:all: --require-hashes -r requirements-ci-bootstrap.lock
 
-      - name: Install hash-locked vulnerability scanner
-        run: >-
-          python -m pip install --only-binary=:all: --require-hashes -r requirements-audit.lock
-
-      - name: Audit the installed environment
-        run: python -m pip_audit --local --progress-spinner off
-
       - name: Compile package and adapter helpers
         run: >-
           python -m compileall -q
           src/deepseek_mcp
           adapters/codex
           scripts
+
+      - name: Record test environment for audit
+        id: target
+        run: python -c "import os, sysconfig; open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8').write('site=' + sysconfig.get_paths()['purelib'] + '\n')"
+
+      - name: Set up Python 3.11 for audit tools
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Create isolated audit environment
+        run: python -m venv .audit-venv
+
+      - name: Install and run vulnerability scanner
+        shell: bash
+        env:
+          TARGET_SITE: ${{ steps.target.outputs.site }}
+        run: |
+          AUDIT_PY=".audit-venv/bin/python"
+          if [ "$RUNNER_OS" = "Windows" ]; then AUDIT_PY=".audit-venv/Scripts/python.exe"; fi
+          "$AUDIT_PY" -m pip install --only-binary=:all: --require-hashes -r requirements-audit.lock -r requirements-ci-bootstrap.lock
+          "$AUDIT_PY" -m pip_audit --local --progress-spinner off
+          "$AUDIT_PY" -m pip_audit --path "$TARGET_SITE" --progress-spinner off
 
       - name: Validate shell installers
         shell: bash

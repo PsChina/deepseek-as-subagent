@@ -882,7 +882,8 @@ class InstallerSupplyChainTests(unittest.TestCase):
             "--only-binary=:all: --require-hashes -r requirements-audit.lock",
             workflow,
         )
-        self.assertIn("python -m pip_audit --local", workflow)
+        self.assertIn('"$AUDIT_PY" -m pip_audit --local', workflow)
+        self.assertIn('"$AUDIT_PY" -m pip_audit --path "$TARGET_SITE"', workflow)
 
     def test_container_build_pins_base_and_runtime_dependencies(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
