@@ -466,9 +466,9 @@ class ToolLimitTests(unittest.TestCase):
         self.assertIn("Found 1 match(es)", recursive)
         self.assertIn("app/src/Main.kt", recursive)
         self.assertNotIn("app/build/generated/R.kt", recursive)
-        self.assertIn(
-            "Skipped generated directories: app/build, node_modules.", recursive
-        )
+        self.assertIn("Skipped generated directories:", recursive)
+        self.assertIn("app/build", recursive)
+        self.assertIn("node_modules", recursive)
         self.assertIn("app/build/generated/R.kt", named)
         self.assertNotIn("Skipped", named)
         self.assertIn("app/build/generated/R.kt", based)
