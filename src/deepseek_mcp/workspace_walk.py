@@ -52,13 +52,13 @@ class _GlobPattern:
     def initial_states(self) -> frozenset[int]:
         return self._closure(frozenset({0}))
 
-    def advance(self, states: frozenset[int], name: str) -> frozenset[int]:
+    def advance(self, states: frozenset[int], name: str, prune: bool = False) -> frozenset[int]:
         advanced: set[int] = set()
         for index in states:
             if index >= len(self.parts):
                 continue
             part = self.parts[index]
-            if part == "**" and not name.startswith("."):
+            if part == "**" and not name.startswith(".") and not prune:
                 advanced.add(index)
             elif part != "**" and _segment_matches(name, part):
                 advanced.add(index + 1)
@@ -108,6 +108,7 @@ class WorkspaceWalk:
         self, base: str, workspace: Path, raw_pattern: str, *, open_files: bool = False
     ) -> None:
         self.root, self.base, relative = _resolve_base(base, workspace)
+        self.pruned = walk_support.PrunedDirectories(self.root)
         self.pattern = _GlobPattern.parse(raw_pattern)
         self.truncated = False
         self._deadline = time.monotonic() + MAX_WALK_SECONDS
@@ -169,14 +170,14 @@ class WorkspaceWalk:
         info = _entry_stat(parent, entry.name)
         if info is None or stat.S_ISLNK(info.st_mode):
             return None, None
-        states = self.pattern.advance(parent.states, entry.name)
+        is_file, is_dir = stat.S_ISREG(info.st_mode), stat.S_ISDIR(info.st_mode)
+        states = self.pruned.advance(self.pattern, parent, entry.name, is_dir)
         if not states:
             return None, None
         parts = (*parent.relative_parts, entry.name)
         path = parent.display_path / entry.name
         if is_protected_host_path(path):
             return None, None
-        is_file, is_dir = stat.S_ISREG(info.st_mode), stat.S_ISDIR(info.st_mode)
         matched = self._matched_entry(path, parts, states, is_file, is_dir, info, parent)
         child = self._child_frame(path, parts, states, info, parent) if is_dir else None
         return matched, child

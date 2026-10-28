@@ -4,16 +4,53 @@ from __future__ import annotations
 import errno
 import os
 import stat
+from pathlib import Path
 from typing import Iterator, Any
 
 from .file_io import ToolInputError
 from . import windows_walk
 
 _RACE_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ELOOP})
+MAX_REPORTED_PRUNED_DIRECTORIES = 5
+# Generated and dependency trees that `**` does not descend into, like hidden
+# directories. Naming one in the pattern or passing it as the base path still
+# searches inside it.
+PRUNED_DIRECTORY_NAMES = frozenset({"build", "node_modules", "__pycache__"})
 
 
 class WorkspaceEntryTooLarge(ToolInputError):
     pass
+
+
+class PrunedDirectories:
+    """Pattern advance that keeps `**` out of generated directories."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.paths: list[Path] = []
+        self.count = 0
+
+    def advance(self, pattern: Any, parent: Any, name: str, is_dir: bool) -> frozenset[int]:
+        states = pattern.advance(parent.states, name)
+        if not is_dir or name not in PRUNED_DIRECTORY_NAMES:
+            return states
+        pruned = pattern.advance(parent.states, name, prune=True)
+        if pruned != states:
+            self.count += 1
+            if len(self.paths) < MAX_REPORTED_PRUNED_DIRECTORIES:
+                self.paths.append((parent.display_path / name).relative_to(self.root))
+        return pruned
+
+    def note(self) -> str:
+        if not self.count:
+            return ""
+        shown = ", ".join(path.as_posix() for path in self.paths)
+        if self.count > len(self.paths):
+            shown += f" and {self.count - len(self.paths)} more"
+        return (
+            f"\nSkipped generated directories: {shown}. "
+            "Pass one as 'path' to search inside it."
+        )
 
 
 def skip_race_or_raise(error: OSError):

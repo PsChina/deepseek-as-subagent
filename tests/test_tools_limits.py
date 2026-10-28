@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import deepseek_mcp.tools as tools_module
+import deepseek_mcp.walk_support as walk_support
 import deepseek_mcp.workspace_walk as walk_module
 from deepseek_mcp.config import Config
 from deepseek_mcp.tools import (
@@ -442,6 +443,49 @@ class ToolLimitTests(unittest.TestCase):
         self.assertIn("root.py", python_matches)
         self.assertIn("src/nested/deep.py", python_matches)
         self.assertIn("src/test1.c", zero_segment)
+
+    def test_recursive_glob_prunes_generated_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            source = workspace / "app" / "src"
+            generated = workspace / "app" / "build" / "generated"
+            source.mkdir(parents=True)
+            generated.mkdir(parents=True)
+            (workspace / "node_modules" / "pkg").mkdir(parents=True)
+            (source / "Main.kt").write_text("fun main() {}", encoding="utf-8")
+            (generated / "R.kt").write_text("fun main() {}", encoding="utf-8")
+            (workspace / "node_modules" / "pkg" / "x.kt").write_text("x", encoding="utf-8")
+            (source / "build").write_text("script", encoding="utf-8")
+
+            recursive = _execute_glob({"pattern": "**/*.kt"}, workspace)
+            named = _execute_glob({"pattern": "app/build/**/*.kt"}, workspace)
+            based = _execute_glob({"pattern": "**/*.kt", "path": "app/build"}, workspace)
+            listed = _execute_glob({"pattern": "app/src/*"}, workspace)
+            grep = _execute_grep({"pattern": "main"}, workspace)
+
+        self.assertIn("Found 1 match(es)", recursive)
+        self.assertIn("app/src/Main.kt", recursive)
+        self.assertNotIn("app/build/generated/R.kt", recursive)
+        self.assertIn(
+            "Skipped generated directories: app/build, node_modules.", recursive
+        )
+        self.assertIn("app/build/generated/R.kt", named)
+        self.assertNotIn("Skipped", named)
+        self.assertIn("app/build/generated/R.kt", based)
+        self.assertIn("app/src/build", listed)
+        self.assertIn("Main.kt", grep)
+        self.assertNotIn("R.kt", grep)
+        self.assertIn("Skipped generated directories: app/build", grep)
+
+    def test_pruned_directory_report_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            for index in range(walk_support.MAX_REPORTED_PRUNED_DIRECTORIES + 2):
+                (workspace / f"m{index}" / "build").mkdir(parents=True)
+
+            result = _execute_glob({"pattern": "**/*.kt"}, workspace)
+
+        self.assertIn("and 2 more.", result)
 
     @unittest.skipIf(os.name == "nt", "symlink creation is not generally available")
     def test_recursive_tools_never_scan_or_read_external_symlinks(self) -> None:

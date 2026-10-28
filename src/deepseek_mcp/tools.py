@@ -221,7 +221,7 @@ def _execute_glob(args: dict, workspace: Path) -> str:
         return f"ERROR: {exc}"
     return _format_glob_result(
         matches, result_limit, traversal_limit, workspace.resolve()
-    )
+    ) + walk.pruned.note()
 
 
 def _new_notebook() -> dict:
@@ -458,7 +458,7 @@ def _execute_grep(args: dict, workspace: Path) -> str:
         return f"ERROR: {exc}"
     return _format_grep_result(
         results, regex.pattern, match_limit or traversal_limit
-    )
+    ) + walk.pruned.note()
 TOOL_REGISTRY = {
     "Read": _execute_read,
     "Write": _execute_write,

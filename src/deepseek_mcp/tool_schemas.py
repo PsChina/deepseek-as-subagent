@@ -68,7 +68,10 @@ TOOL_SCHEMAS = {
     },
     "Glob": {
         "name": "Glob",
-        "description": "Find bounded workspace matches; external symlinks are hidden.",
+        "description": (
+            "Find bounded workspace matches; external symlinks are hidden. "
+            "'**' skips hidden, build, node_modules and __pycache__ directories."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -80,7 +83,10 @@ TOOL_SCHEMAS = {
     },
     "Grep": {
         "name": "Grep",
-        "description": "Search bounded workspace text files with a safe RE2 expression.",
+        "description": (
+            "Search bounded workspace text files with a safe RE2 expression. "
+            "'**' skips hidden, build, node_modules and __pycache__ directories."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
