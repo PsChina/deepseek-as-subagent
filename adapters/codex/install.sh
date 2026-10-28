@@ -177,9 +177,9 @@ else
     VENV_BIN="$GENERATION_DIR/bin"
 fi
 PYBIN="$VENV_BIN/python"
-[ ! -x "$PYBIN" ] && [ -x "$PYBIN.exe" ] && PYBIN="$PYBIN.exe"
+[ -x "$PYBIN.exe" ] && PYBIN="$PYBIN.exe"
 CLI="$VENV_BIN/deepseek-mcp"
-[ ! -x "$CLI" ] && [ -x "$CLI.exe" ] && CLI="$CLI.exe"
+[ -x "$CLI.exe" ] && CLI="$CLI.exe"
 "${PYTHON_CMD[@]}" "$PATH_GUARD" validate-venv "$GENERATION_DIR" "$PYBIN"
 
 echo "[2/5] Installing deepseek-as-subagent..."

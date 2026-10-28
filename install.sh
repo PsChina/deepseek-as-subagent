@@ -243,12 +243,12 @@ else
     exit 1
 fi
 CLI="$VENV_BIN/deepseek-mcp"
-[ ! -x "$CLI" ] && [ -x "$CLI.exe" ] && CLI="$CLI.exe"
+[ -x "$CLI.exe" ] && CLI="$CLI.exe"
 
 # ===== Step 2: 装包 =====
 echo "[2/7] 装 deepseek-mcp..."
 PYBIN="$VENV_BIN/python"
-[ ! -x "$PYBIN" ] && [ -x "$PYBIN.exe" ] && PYBIN="$PYBIN.exe"
+[ -x "$PYBIN.exe" ] && PYBIN="$PYBIN.exe"
 $PYTHON_CMD "$PATH_GUARD" validate-venv "$GENERATION_DIR" "$PYBIN"
 
 if ! supported_python "$PYBIN"; then
@@ -260,7 +260,7 @@ fi
 "$PYBIN" -m pip install --quiet --no-deps --no-build-isolation "$PROJECT_ROOT"
 "$PYBIN" -m pip check
 
-[ ! -x "$CLI" ] && [ -x "$CLI.exe" ] && CLI="$CLI.exe"
+[ -x "$CLI.exe" ] && CLI="$CLI.exe"
 if [ ! -e "$CLI" ]; then
     echo "✗ deepseek-mcp entrypoint was not created at $CLI"
     exit 1
