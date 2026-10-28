@@ -5,6 +5,7 @@ import os
 import re
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import tomlkit
 
@@ -38,13 +39,16 @@ FORWARDED_ENV_VARS = [
     "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
 ]
 GENERATION_NAME = re.compile(r"generation\.[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 SAFE_SERVER_KEYS = {
-    "command", "enabled", "enabled_tools", "disabled_tools",
-    "startup_timeout_sec", "tool_timeout_sec", "default_tools_approval_mode",
-    "env_vars", "tools",
+    "command", "url", "bearer_token_env_var", "enabled", "enabled_tools",
+    "disabled_tools", "startup_timeout_sec", "tool_timeout_sec",
+    "default_tools_approval_mode", "env_vars", "tools",
 }
 DEFAULT_TOOL_TIMEOUT_SECONDS = 18_060
 LEGACY_TOOL_TIMEOUT_SECONDS = 18_000
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+HTTP_TRANSPORT_TYPES = frozenset({"streamable_http", "streamable-http", "http"})
 
 
 class ConfigTransactionError(RuntimeError):
@@ -209,8 +213,82 @@ def _validate_recovery_visibility(server: MutableMapping[str, object]) -> None:
         )
 
 
-def configure_install(document, command: Path, force_replace: bool = False) -> list[str]:
+def _plain_url_string(value: object) -> str:
+    if not isinstance(value, str) or not value or any(
+        char.isspace() or ord(char) < 32 for char in value
+    ):
+        raise ConfigTransactionError(
+            "url must be a single HTTP(S) URL without whitespace"
+        )
+    return value
+
+
+def _validate_http_url(value: object) -> str:
+    value = _plain_url_string(value)
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+    except ValueError as exc:
+        raise ConfigTransactionError(
+            f"mcp_servers.deepseek url is invalid: {exc}"
+        ) from exc
+    hostname = parsed.hostname
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        raise ConfigTransactionError(
+            "mcp_servers.deepseek url must be an http(s) URL with a host"
+        )
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigTransactionError(
+            "mcp_servers.deepseek url must not embed credentials, query, or fragment"
+        )
+    if parsed.scheme == "http" and hostname.lower() not in LOOPBACK_HOSTS:
+        raise ConfigTransactionError(
+            "plain-HTTP mcp_servers.deepseek url is loopback-only; "
+            "use https or a TLS-terminating proxy"
+        )
+    return value
+
+
+def _validate_environment_name(value: object) -> str:
+    if not isinstance(value, str) or ENVIRONMENT_NAME.fullmatch(value) is None:
+        raise ConfigTransactionError(
+            "bearer_token_env_var must be an environment variable name"
+        )
+    return value
+
+
+def _resolve_transport_mode(
+    command: Path | None, url: str | None, bearer_token_env: str | None
+) -> tuple[str | None, str | None]:
+    """Validate the stdio-versus-HTTP selection; return (http_url, bearer_env)."""
+    if (command is None) == (url is None):
+        raise ConfigTransactionError(
+            "configure_install requires exactly one of command (stdio) or url (HTTP)"
+        )
+    if url is not None:
+        http_url = _validate_http_url(url)
+        if bearer_token_env is not None:
+            bearer_token_env = _validate_environment_name(bearer_token_env)
+        return http_url, bearer_token_env
+    assert command is not None
+    if bearer_token_env is not None:
+        raise ConfigTransactionError(
+            "bearer_token_env_var is only valid for HTTP url registrations"
+        )
     _managed_root_from_target(command)
+    return None, None
+
+
+def configure_install(
+    document, command: Path | None, force_replace: bool = False,
+    url: str | None = None, bearer_token_env: str | None = None,
+) -> list[str]:
+    http_url, bearer_env = _resolve_transport_mode(command, url, bearer_token_env)
     servers = _servers_table(document)
     server = servers.get(SERVER_NAME)
     warnings: list[str] = []
@@ -228,7 +306,7 @@ def configure_install(document, command: Path, force_replace: bool = False) -> l
                 "deepseek-as-subagent; refusing to replace it without --force-replace"
             )
         _validate_owned_launch_policy(server)
-    _apply_defaults(server, command)
+    _apply_defaults(server, command, http_url, bearer_env)
     _validate_recovery_visibility(server)
     approval = server.get("default_tools_approval_mode")
     if approval not in {"writes", "prompt"}:
@@ -249,9 +327,27 @@ def configure_install(document, command: Path, force_replace: bool = False) -> l
     return warnings
 
 
-def _apply_defaults(server: MutableMapping[str, object], command: Path) -> None:
+def _apply_defaults(
+    server: MutableMapping[str, object], command: Path | None,
+    url: str | None = None, bearer_token_env: str | None = None,
+) -> None:
     _mark_owned(server)
-    server["command"] = str(command)
+    if url is not None:
+        server["url"] = url
+        for stale_key in ("command", "env_vars"):
+            if stale_key in server:
+                del server[stale_key]
+        if bearer_token_env is not None:
+            server["bearer_token_env_var"] = bearer_token_env
+        elif "bearer_token_env_var" in server:
+            del server["bearer_token_env_var"]
+    else:
+        assert command is not None
+        server["command"] = str(command)
+        for stale_key in ("url", "bearer_token_env_var"):
+            if stale_key in server:
+                del server[stale_key]
+        _forwarded_environment(server)
     server["enabled"] = True
     enabled_tools = server.get("enabled_tools")
     if enabled_tools is None:
@@ -265,17 +361,24 @@ def _apply_defaults(server: MutableMapping[str, object], command: Path) -> None:
         server["tool_timeout_sec"] = DEFAULT_TOOL_TIMEOUT_SECONDS
     server.setdefault("tool_timeout_sec", DEFAULT_TOOL_TIMEOUT_SECONDS)
     server.setdefault("default_tools_approval_mode", "writes")
-    _forwarded_environment(server)
     _tool_policy(server)
 
 
-def _registration_transport(payload: object) -> Mapping[str, object]:
+def _registration_transport(payload: object, url_mode: bool) -> Mapping[str, object]:
     if not isinstance(payload, Mapping) or payload.get("name") != SERVER_NAME:
         raise ConfigTransactionError("Codex returned the wrong MCP registration")
     if payload.get("enabled") is not True:
         raise ConfigTransactionError("Codex reports the DeepSeek MCP registration disabled")
     transport = payload.get("transport")
-    if not isinstance(transport, Mapping) or transport.get("type") != "stdio":
+    if not isinstance(transport, Mapping):
+        raise ConfigTransactionError("Codex did not expose the MCP transport")
+    if url_mode:
+        if (
+            transport.get("type") not in HTTP_TRANSPORT_TYPES
+            and "url" not in transport
+        ):
+            raise ConfigTransactionError("Codex did not register an HTTP MCP transport")
+    elif transport.get("type") != "stdio":
         raise ConfigTransactionError("Codex did not register a stdio MCP transport")
     return transport
 
@@ -308,10 +411,22 @@ def _validate_registration_environment(transport: Mapping[str, object]) -> None:
         raise ConfigTransactionError("Codex registration forwards unexpected environment variables")
 
 
-def validate_registration_payload(
-    payload: object, expected_command: Path, venv_root: Path
+def _validate_registration_transport_url(
+    transport: Mapping[str, object], expected_url: str
 ) -> None:
-    transport = _registration_transport(payload)
+    actual = transport.get("url")
+    if not isinstance(actual, str) or actual.rstrip("/") != expected_url.rstrip("/"):
+        raise ConfigTransactionError("Codex registered an unexpected MCP url")
+
+
+def validate_registration_payload(
+    payload: object, expected_command: Path, venv_root: Path,
+    expected_url: str | None = None,
+) -> None:
+    transport = _registration_transport(payload, expected_url is not None)
+    if expected_url is not None:
+        _validate_registration_transport_url(transport, expected_url)
+        return
     _validate_registration_command(transport, expected_command, venv_root)
     _validate_registration_environment(transport)
 

@@ -79,6 +79,42 @@ Then ask Codex to call the DeepSeek `ping` tool. `ping` validates registration
 and configuration loading; it does not spend DeepSeek API tokens or prove API
 credentials can complete a model request.
 
+### HTTP mode (streamable-HTTP)
+
+```bash
+bash adapters/codex/install.sh --http [--host 127.0.0.1] [--port 8765] \
+    [--bearer-token-env DEEPSEEK_MCP_AUTH_TOKEN]
+```
+
+The installer writes `[mcp_servers.deepseek] url = "http://HOST:PORT/mcp"`
+instead of `command = ...`, dropping stdio-only fields. It still installs the
+isolated generation — the binary inside it is the daemon you run:
+
+```bash
+~/.deepseek-mcp/codex-venvs/generation.<id>/bin/deepseek-mcp \
+    --transport streamable-http --host 127.0.0.1 --port 8765
+```
+
+Codex does not spawn the daemon; keep it running yourself (the installer never
+registers a system service). The daemon's launch directory is its workspace
+sandbox unless config.json pins `"workspace"` or you export
+`DEEPSEEK_WORKSPACE` before starting it; `--http` installs pin the current
+directory for a freshly created config and warn when an existing config pins
+nothing.
+
+The installer registers loopback URLs only. `--bearer-token-env NAME` writes
+`bearer_token_env_var = "NAME"` so Codex sends `Authorization: Bearer $NAME`;
+start the daemon with the same value in `DEEPSEEK_MCP_AUTH_TOKEN` to enforce
+it. See [../../SECURITY.md](../../SECURITY.md) for the HTTP security policy.
+Switching modes (stdio ↔ `--http`) rewrites one managed table cleanly and
+replaces foreign url entries only under `--force-replace`.
+
+Verify a running daemon before starting Codex:
+
+```bash
+python adapters/codex/mcp_smoke.py --url http://127.0.0.1:8765/mcp --wait 15
+```
+
 ## Delegation policy
 
 The MCP server publishes host instructions during initialization. Their first

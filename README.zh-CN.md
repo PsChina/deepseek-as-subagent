@@ -145,6 +145,67 @@ Claude 和 Codex 安装器都会新建隔离运行时，验证配置与 MCP 协�
 两个安装器都会串行化 install/uninstall 事务；若进程被强杀，会故意留下
 fail-closed 空锁。只有确认没有安装/卸载进程后才应人工删除该锁。
 
+### HTTP 传输（streamable-HTTP）
+
+同一个 server 也可以走 HTTP，让一个常驻 daemon 被多个客户端共享：
+
+```bash
+# 默认仍是 stdio；用参数或环境变量开启：
+deepseek-mcp --transport streamable-http --host 127.0.0.1 --port 8765
+# MCP 端点: http://127.0.0.1:8765/mcp
+```
+
+| 配置项 | 命令行参数 | 环境变量 | 默认值 |
+|---|---|---|---|
+| 传输 | `--transport stdio\|streamable-http` | `DEEPSEEK_MCP_TRANSPORT` | `stdio` |
+| 监听地址 | `--host` | `DEEPSEEK_MCP_HOST` | `127.0.0.1` |
+| 端口 | `--port` | `DEEPSEEK_MCP_PORT` | `8765` |
+| 每请求新建会话 | `--stateless` | `DEEPSEEK_MCP_STATELESS=1` | 关闭 |
+| Bearer Token | — | `DEEPSEEK_MCP_AUTH_TOKEN` | 不鉴权 |
+
+安全策略（HTTP 暴露的是同一套会读写真实工作区、可执行 Bash 的工具）：
+
+- 两个安装器只注册 loopback URL（127.0.0.1 / localhost / ::1）。绑定其它网卡
+  必须设置 `DEEPSEEK_MCP_AUTH_TOKEN`，所有请求都要带
+  `Authorization: Bearer <token>`（至少 16 字符），且此类绑定会关闭 SDK 的
+  DNS-rebinding 头防护——远程暴露请前置 TLS 反向代理。
+- loopback 默认不需要 token；若不希望本机其它用户/进程访问，就设置一个。
+- daemon 是普通进程：安装器不会注册系统服务，Claude/Codex 也不会拉起它，
+  需要自己保持运行。
+- daemon 的沙箱根目录默认是其启动目录；请在 config.json 里设置 `"workspace"`
+  或启动前导出 `DEEPSEEK_WORKSPACE`。`--http` 安装对新配置会自动固定安装
+  时所在目录。
+
+Claude Code：
+
+```bash
+./install.sh --http --port 8765
+# 实际注册: claude mcp add --transport http deepseek -s user http://127.0.0.1:8765/mcp
+# 重跑安装/卸载同样安全：安装器可识别并恢复 url 类型注册
+```
+
+Codex CLI：
+
+```bash
+bash adapters/codex/install.sh --http --port 8765
+    # 可选: --bearer-token-env DEEPSEEK_MCP_AUTH_TOKEN
+# 写入 [mcp_servers.deepseek] url = "http://127.0.0.1:8765/mcp"
+```
+
+其它 MCP 客户端直接填 URL，例如：
+
+```json
+{ "mcpServers": { "deepseek": { "type": "http", "url": "http://127.0.0.1:8765/mcp" } } }
+```
+
+对运行中的 daemon 做端到端验证（initialize、list_tools、schema 兼容检查、ping）：
+
+```bash
+python adapters/codex/mcp_smoke.py --url http://127.0.0.1:8765/mcp
+# 鉴权:  --header "Authorization: Bearer <token>"
+# 启动宽限:  --wait 15
+```
+
 ### Cursor / Cline / Claude Desktop / 其它 MCP 客户端
 
 MCP server 本身与客户端无关。先用 `pip --require-hashes` 安装

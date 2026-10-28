@@ -96,7 +96,7 @@ and gets a result back. Token savings are end-to-end.
 
 ## What's in the box
 
-- **MCP server** (Python, stdio transport)
+- **MCP server** (Python; stdio transport by default, optional streamable-HTTP)
 - **Coding and read-only delegation**: `delegate_to_deepseek` / `delegate_to_deepseek_readonly`
 - **Steerable background jobs**: `start_deepseek` / `start_deepseek_readonly` plus shared controls
 - **Flash / Pro model routing**: host chooses a stable profile; users control the actual provider model IDs in config
@@ -151,6 +151,70 @@ are enabled; unsafe layouts are rejected at startup.
 Both installers serialize install/uninstall transactions. A hard-killed
 installer intentionally leaves an empty fail-closed lock that must be removed
 only after confirming no installer is running.
+
+### HTTP transport (streamable-HTTP)
+
+The same server can also serve MCP over HTTP, so one long-running daemon can
+be shared by several clients:
+
+```bash
+# stdio remains the default; opt in with flags or environment variables:
+deepseek-mcp --transport streamable-http --host 127.0.0.1 --port 8765
+# MCP endpoint: http://127.0.0.1:8765/mcp
+```
+
+| Setting | CLI flag | Environment variable | Default |
+|---|---|---|---|
+| Transport | `--transport stdio\|streamable-http` | `DEEPSEEK_MCP_TRANSPORT` | `stdio` |
+| Bind address | `--host` | `DEEPSEEK_MCP_HOST` | `127.0.0.1` |
+| Port | `--port` | `DEEPSEEK_MCP_PORT` | `8765` |
+| Transport per request | `--stateless` | `DEEPSEEK_MCP_STATELESS=1` | off |
+| Bearer token | — | `DEEPSEEK_MCP_AUTH_TOKEN` | no auth |
+
+Security policy (HTTP exposes the same tools that read/mutate a real workspace):
+
+- Both installers register loopback URLs only (127.0.0.1 / localhost / ::1).
+  Binding any other interface requires `DEEPSEEK_MCP_AUTH_TOKEN`, enforced with
+  `Authorization: Bearer <token>` (at least 16 characters) on every request,
+  and SDK DNS-rebinding header protection is disabled for such binds — run a
+  TLS-terminating proxy in front for remote exposure.
+- Loopback binds need no token by default; set one if other local users or
+  processes must not reach the daemon.
+- The daemon is an ordinary process; installers never register a system
+  service and Claude/Codex will not spawn it. Keep it running yourself.
+- The daemon's workspace sandbox is its launch directory unless config.json
+  sets `"workspace"` or `DEEPSEEK_WORKSPACE` is exported before startup. The
+  `--http` installers pin the install directory for freshly created configs.
+
+Claude Code:
+
+```bash
+./install.sh --http --port 8765
+# registers: claude mcp add --transport http deepseek -s user http://127.0.0.1:8765/mcp
+# uninstall/re-run still works: installers recognize and restore url registrations
+```
+
+Codex CLI:
+
+```bash
+bash adapters/codex/install.sh --http --port 8765 \
+    # optional: --bearer-token-env DEEPSEEK_MCP_AUTH_TOKEN
+# writes [mcp_servers.deepseek] url = "http://127.0.0.1:8765/mcp"
+```
+
+Other MCP clients point at the URL directly, e.g.:
+
+```json
+{ "mcpServers": { "deepseek": { "type": "http", "url": "http://127.0.0.1:8765/mcp" } } }
+```
+
+Verify a running daemon end to end (initialize, list_tools, schema checks, ping):
+
+```bash
+python adapters/codex/mcp_smoke.py --url http://127.0.0.1:8765/mcp
+# with auth:  --header "Authorization: Bearer <token>"
+# start-up grace:  --wait 15
+```
 
 ### Cursor / Cline / Claude Desktop / other MCP clients
 

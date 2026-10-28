@@ -7,6 +7,9 @@ Environment variables:
   - DEEPSEEK_MODE=off: disable delegation for this process
   - DEEPSEEK_API_KEY: override api_key from config.json
   - DEEPSEEK_WORKSPACE: override workspace from config.json
+  - DEEPSEEK_MCP_TRANSPORT=streamable-http: serve over HTTP (see http_transport.py)
+  - DEEPSEEK_MCP_HOST/DEEPSEEK_MCP_PORT: bind address/port; DEEPSEEK_MCP_AUTH_TOKEN
+    optionally requires "Authorization: Bearer <token>" on every HTTP request
 """
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ from .execution_profile import (
     CODING_PROFILE, READONLY_PROFILE, ExecutionProfile, configure_delegation,
 )
 from .host_instructions import HOST_INSTRUCTIONS as _HOST_INSTRUCTIONS
+from .http_transport import parse_server_args, run_streamable_http
 from .job_manager import DeepSeekJobManager, JobBusy, JobError, validate_delegation_input
 from .model_selection import ModelChoice, resolve_profile
 from .private_logging import PrivateBoundedLogStream
@@ -475,14 +479,14 @@ def main() -> None:
         mode = _deepseek_mode()
     except (RuntimeError, JobError):
         raise SystemExit(1) from None
+    options = parse_server_args()
     _ensure_runtime_logging()
-    logger.info(
-        "deepseek-mcp v%s starting (mode=%s)",
-        __version__,
-        mode,
-    )
+    logger.info("deepseek-mcp v%s starting (mode=%s transport=%s)", __version__, mode, options.transport)
     try:
-        mcp.run()
+        if options.transport == "stdio":
+            mcp.run()
+        else:
+            run_streamable_http(mcp, options)
     except Exception as e:
         logger.error("MCP server crashed type=%s", type(e).__name__)
         sys.exit(1)

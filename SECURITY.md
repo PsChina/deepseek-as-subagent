@@ -80,6 +80,27 @@ Each delegated run is wall-clock bounded to 18,000 seconds by default and
 and are capped at 180 seconds. Cancellation wakes retry backoff and terminates
 in-flight provider or local-tool subprocesses.
 
+## Streamable-HTTP transport (optional)
+
+The same FastMCP application can be served over TCP with
+`--transport streamable-http` (or `DEEPSEEK_MCP_TRANSPORT`). The exposed tools
+still read/mutate a real workspace and can run trusted-host Bash, so an HTTP
+endpoint is a capability boundary, not a decoration:
+
+- Loopback binds (`127.0.0.1`, `localhost`, `::1`) keep the SDK's DNS-rebinding
+  header protection and may run without authentication for single-user machines.
+- Any other bind fails closed unless `DEEPSEEK_MCP_AUTH_TOKEN` is set. The
+  token (minimum 16 characters) is required as `Authorization: Bearer <token>`
+  on every request and compared in constant time; SDK DNS-rebinding header
+  protection is disabled for such binds because arbitrary Host values are
+  unknowable in advance. TLS must be provided by a proxy in front.
+- The bearer token is a credential equivalent to workspace read/write plus
+  Bash: keep it out of logs and shell history, and prefer a loopback bind with
+  a token on shared machines.
+- Both installers only register loopback URLs and never start, supervise, or
+  auto-start the daemon; the workspace for a daemon must be pinned through
+  `workspace`/`DEEPSEEK_WORKSPACE` rather than an interactive launch cwd.
+
 ## Installation supply chain
 
 Install from a reviewed tag or commit. Supported installers and CI use the same

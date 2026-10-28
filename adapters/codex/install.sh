@@ -17,20 +17,51 @@ CODEX_BIN="${DEEPSEEK_CODEX_BIN:-codex}"
 ADAPTER_LOCK="$CONFIG_DIR/codex-adapter.lock"
 FORCE_REPLACE=0
 
+HTTP_MODE=0
+HTTP_HOST=127.0.0.1
+HTTP_PORT=8765
+BEARER_TOKEN_ENV=""
+
 usage() {
-    echo "Usage: bash adapters/codex/install.sh [--force-replace]"
+    echo "Usage: bash adapters/codex/install.sh [--force-replace]" \
+        "[--http [--host HOST] [--port PORT] [--bearer-token-env NAME]]"
+    echo "  --http registers a streamable-HTTP url; you keep the daemon running" \
+        "with:"
+    echo "    <generation bin>/deepseek-mcp --transport streamable-http --host H --port P"
 }
 
-if [ "${1:-}" = "--force-replace" ]; then
-    FORCE_REPLACE=1
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --force-replace) FORCE_REPLACE=1 ;;
+        --http) HTTP_MODE=1 ;;
+        --host) HTTP_HOST="${2:?--host requires a value}"; shift ;;
+        --port) HTTP_PORT="${2:?--port requires a value}"; shift ;;
+        --bearer-token-env) BEARER_TOKEN_ENV="${2:?--bearer-token-env requires a value}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
     shift
-elif [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-    usage
-    exit 0
-fi
-if [ "$#" -ne 0 ]; then
-    usage >&2
-    exit 2
+done
+
+MCP_URL_ARG=""
+if [ "$HTTP_MODE" -eq 1 ]; then
+    case "$HTTP_HOST" in
+        127.0.0.1|localhost) MCP_URL="http://$HTTP_HOST:$HTTP_PORT/mcp" ;;
+        ::1) MCP_URL="http://[::1]:$HTTP_PORT/mcp" ;;
+        *)
+            echo "✗ the installer binds --http on loopback hosts only (127.0.0.1, localhost, ::1)." >&2
+            echo "  For remote exposure, run the daemon yourself with a TLS proxy and" >&2
+            echo "  DEEPSEEK_MCP_AUTH_TOKEN, then edit ~/.codex/config.toml manually." >&2
+            exit 2 ;;
+    esac
+    case "$HTTP_PORT" in
+        ''|*[!0-9]*) echo "✗ --port must be a number between 1 and 65535." >&2; exit 2 ;;
+    esac
+    if [ "$HTTP_PORT" -lt 1 ] || [ "$HTTP_PORT" -gt 65535 ]; then
+        echo "✗ --port must be a number between 1 and 65535." >&2
+        exit 2
+    fi
+    MCP_URL_ARG="$MCP_URL"
 fi
 
 echo "▶ deepseek-as-subagent — Codex installer"
@@ -233,20 +264,24 @@ fi
 
 echo "[5/5] Updating Codex MCP configuration atomically..."
 CONFIG_MUTATED=1
-if [ "$FORCE_REPLACE" -eq 1 ]; then
-    "$PYBIN" "$CONFIG_HELPER" install \
-        --config "$CODEX_CONFIG_FILE" \
-        --backup "$BACKUP_FILE" \
-        --manifest "$MANIFEST_FILE" \
-        --command "$CLI" \
-        --force-replace
+CONFIG_INSTALL_ARGS=(
+    install
+    --config "$CODEX_CONFIG_FILE"
+    --backup "$BACKUP_FILE"
+    --manifest "$MANIFEST_FILE"
+)
+if [ "$HTTP_MODE" -eq 1 ]; then
+    CONFIG_INSTALL_ARGS+=(--url "$MCP_URL")
+    if [ -n "$BEARER_TOKEN_ENV" ]; then
+        CONFIG_INSTALL_ARGS+=(--bearer-token-env "$BEARER_TOKEN_ENV")
+    fi
 else
-    "$PYBIN" "$CONFIG_HELPER" install \
-        --config "$CODEX_CONFIG_FILE" \
-        --backup "$BACKUP_FILE" \
-        --manifest "$MANIFEST_FILE" \
-        --command "$CLI"
+    CONFIG_INSTALL_ARGS+=(--command "$CLI")
 fi
+if [ "$FORCE_REPLACE" -eq 1 ]; then
+    CONFIG_INSTALL_ARGS+=(--force-replace)
+fi
+"$PYBIN" "$CONFIG_HELPER" "${CONFIG_INSTALL_ARGS[@]}"
 
 verify_registration() {
     "$CODEX_BIN" mcp get deepseek --json | \
@@ -265,11 +300,14 @@ try:
     raw = sys.stdin.buffer.read(1024 * 1024 + 1)
     if len(raw) > 1024 * 1024:
         raise ConfigTransactionError("Codex registration response is too large")
-    validate_registration_payload(json.loads(raw), Path(sys.argv[2]), Path(sys.argv[3]))
+    expected_url = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
+    validate_registration_payload(
+        json.loads(raw), Path(sys.argv[2]), Path(sys.argv[3]), expected_url
+    )
 except (ConfigTransactionError, ValueError) as error:
     print(f"error: {error}", file=sys.stderr)
     raise SystemExit(1)
-' "$PROJECT_ROOT" "$CLI" "$VENV_ROOT"
+' "$PROJECT_ROOT" "$CLI" "$VENV_ROOT" "$MCP_URL_ARG"
 }
 
 if ! verify_registration; then
@@ -288,11 +326,32 @@ echo "  MCP environment: $GENERATION_DIR"
 echo "  Approval policy: writes (unless an existing custom policy was preserved)"
 echo "  Tool timeout: 18060s (5h run + 60s cleanup grace; custom values are preserved)"
 echo ""
-echo "Verify:"
-echo "  codex mcp list"
-echo "  codex"
-echo "  > call the deepseek ping tool"
-echo ""
+if [ "$HTTP_MODE" -eq 1 ]; then
+    echo "  HTTP transport: $MCP_URL"
+    echo "  Codex will not spawn anything; keep this daemon running (services are" >&2
+    echo "  not installed by this script):"
+    echo "    \"$CLI\" --transport streamable-http --host $HTTP_HOST --port $HTTP_PORT"
+    echo "  The daemon's launch directory is its workspace sandbox unless config.json"
+    echo "  sets \"workspace\" or DEEPSEEK_WORKSPACE is exported before starting it."
+    if [ -n "$BEARER_TOKEN_ENV" ]; then
+        echo "  Codex sends the bearer token from \$$BEARER_TOKEN_ENV; export the same"
+        echo "  value as DEEPSEEK_MCP_AUTH_TOKEN before starting the daemon to require it."
+    else
+        echo "  No auth token configured; keep the bind loopback-only."
+    fi
+    echo ""
+    echo "Verify:"
+    echo "  codex mcp list   # deepseek: $MCP_URL"
+    echo "  (start the daemon first) codex"
+    echo "  > call the deepseek ping tool"
+    echo ""
+else
+    echo "Verify:"
+    echo "  codex mcp list"
+    echo "  codex"
+    echo "  > call the deepseek ping tool"
+    echo ""
+fi
 if grep -q "PASTE_YOUR_DEEPSEEK_KEY_HERE" "$CONFIG_FILE" 2>/dev/null; then
     if [ "$POSIX_PERMISSIONS" -eq 1 ]; then
         echo "For DeepSeek's hosted API, edit $CONFIG_FILE and replace the key placeholder."

@@ -1,5 +1,15 @@
 # Codex MCP registration for deepseek-as-subagent.
 # Prefer `bash adapters/codex/install.sh` for automatic registration.
+# For the opt-in streamable-HTTP mode use
+# `bash adapters/codex/install.sh --http --port 8765` and keep the daemon
+# running yourself; the HTTP variant of this table looks like:
+#
+# [mcp_servers.deepseek] # managed-by: deepseek-as-subagent
+# url = "http://127.0.0.1:8765/mcp"
+# enabled = true
+# enabled_tools = [ ...same list as below... ]
+# # optional, when the daemon sets DEEPSEEK_MCP_AUTH_TOKEN:
+# bearer_token_env_var = "DEEPSEEK_MCP_AUTH_TOKEN"
 
 [mcp_servers.deepseek] # managed-by: deepseek-as-subagent
 command = "/absolute/path/to/.deepseek-mcp/codex-venvs/generation.XXXXXX/bin/deepseek-mcp"

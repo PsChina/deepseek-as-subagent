@@ -83,8 +83,13 @@ if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "get" ]; then
         printf '%s' "$FAKE_SWAP_COMMAND" > "$FAKE_CLAUDE_STATE"
     fi
     [ -f "$FAKE_CLAUDE_STATE" ] || exit 1
-    command_path="$(cat "$FAKE_CLAUDE_STATE")"
-    printf 'deepseek:\n  Scope: User config\n  Type: stdio\n  Command: %s\n  Args:\n  Environment:\n' "$command_path"
+    state="$(cat "$FAKE_CLAUDE_STATE")"
+    case "$state" in
+        url:*)
+            printf 'deepseek:\n  Scope: User config\n  Type: http\n  URL: %s\n' "${state#url:}" ;;
+        *)
+            printf 'deepseek:\n  Scope: User config\n  Type: stdio\n  Command: %s\n  Args:\n  Environment:\n' "$state" ;;
+    esac
     exit 0
 fi
 if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "list" ]; then
@@ -103,6 +108,19 @@ if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "remove" ]; then
     if [ -n "${FAKE_SIGNAL_AFTER_REMOVE:-}" ]; then
         kill -s "$FAKE_SIGNAL_AFTER_REMOVE" "$PPID"
     fi
+    exit 0
+fi
+if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ] && [ "${3:-}" = "--transport" ]; then
+    [ "${4:-}" = "http" ] || exit 2
+    http_url=""
+    for arg in "$@"; do
+        case "$arg" in http://*) http_url="$arg" ;; esac
+    done
+    [ -n "$http_url" ] || exit 2
+    if [ "${FAKE_FAIL_NEW_ADD:-0}" = "1" ]; then
+        exit 1
+    fi
+    printf 'url:%s' "$http_url" > "$FAKE_CLAUDE_STATE"
     exit 0
 fi
 if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ]; then
@@ -331,7 +349,7 @@ class InstallerSupplyChainTests(unittest.TestCase):
         install = script.index('"$PYBIN" -m pip install')
         config_validation = script.index("Config.validate_runtime_settings", install)
         smoke = script.index("mcp_smoke.py", config_validation)
-        registration = script.index('switch_registration "$REGISTERED_COMMAND"', smoke)
+        registration = script.index('switch_registration "$REGISTERED_REGISTRATION"', smoke)
         success = script.index("INSTALL_SUCCEEDED=1", registration)
         helpers = script.index("deploy_claude_helpers", registration)
         pruning = script.index("prune-generations", success)
@@ -345,6 +363,76 @@ class InstallerSupplyChainTests(unittest.TestCase):
         self.assertLess(helpers, pruning)
         self.assertLess(success, pruning)
         self.assertIn("delete-generation", script)
+
+    def _run_http_installer(
+        self, project: Path, home: Path, fake_bin: Path, old_command: Path,
+        *args: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(project / "install.sh"), *args],
+            cwd=project,
+            env=_installer_environment(project, home, fake_bin, old_command),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+
+    @unittest.skipIf(os.name == "nt", "Git Bash paths differ from native Python paths")
+    def test_http_installer_registers_url_and_switches_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project, home, fake_bin, old_command = _installer_fixture(Path(tmpdir))
+            state_path = home / "claude.state"
+
+            installed = self._run_http_installer(
+                project, home, fake_bin, old_command,
+                "--http", "--port", "8765",
+            )
+            self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+            self.assertEqual(
+                state_path.read_text(encoding="utf-8"),
+                "url:http://127.0.0.1:8765/mcp",
+            )
+            config = json.loads(
+                (home / ".deepseek-mcp" / "config.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("workspace", config)
+
+            removed = _run_uninstaller(project, home, fake_bin, old_command)
+            self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+            self.assertFalse(state_path.exists())
+
+            rerun = self._run_http_installer(
+                project, home, fake_bin, old_command,
+                "--http", "--port", "8765",
+            )
+            self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+            self.assertEqual(
+                state_path.read_text(encoding="utf-8"),
+                "url:http://127.0.0.1:8765/mcp",
+            )
+
+            switched = self._run_http_installer(
+                project, home, fake_bin, old_command,
+            )
+            self.assertEqual(switched.returncode, 0, switched.stdout + switched.stderr)
+            state = state_path.read_text(encoding="utf-8")
+            self.assertFalse(state.startswith("url:"))
+            self.assertIn("claude-venvs", state)
+            self.assertIn("bin/deepseek-mcp", state)
+
+    @unittest.skipIf(os.name == "nt", "Git Bash paths differ from native Python paths")
+    def test_http_installer_rejects_nonloopback_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project, home, fake_bin, old_command = _installer_fixture(Path(tmpdir))
+            rejected = self._run_http_installer(
+                project, home, fake_bin, old_command,
+                "--http", "--host", "0.0.0.0",
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("loopback", rejected.stderr)
+            self.assertFalse((home / ".deepseek-mcp" / "claude-install.lock").exists())
 
     @unittest.skipIf(os.name == "nt", "Git Bash paths differ from native Python paths")
     def test_legacy_bash_config_upgrades_with_trusted_host_default(self) -> None:

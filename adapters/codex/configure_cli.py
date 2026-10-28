@@ -16,7 +16,12 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument("--backup", type=Path, required=True)
         sub.add_argument("--manifest", type=Path, required=True)
     install = subparsers.choices["install"]
-    install.add_argument("--command", type=Path, required=True)
+    install.add_argument("--command", type=Path)
+    install.add_argument("--url", help="register a streamable-HTTP MCP url instead")
+    install.add_argument(
+        "--bearer-token-env",
+        help="env var name Codex reads the bearer token from (HTTP url only)",
+    )
     install.add_argument("--force-replace", action="store_true")
     uninstall = subparsers.choices["uninstall"]
     uninstall.add_argument("--force", action="store_true")
@@ -28,8 +33,14 @@ def _parser() -> argparse.ArgumentParser:
 
 def _mutation(backend, args):
     if args.action == "install":
+        if (args.command is None) == (args.url is None):
+            raise backend.ConfigTransactionError(
+                "install requires exactly one of --command (stdio) or --url (HTTP)"
+            )
+        command = args.command.resolve() if args.command is not None else None
         return lambda document: backend.configure_install(
-            document, args.command.resolve(), args.force_replace
+            document, command, args.force_replace, url=args.url,
+            bearer_token_env=args.bearer_token_env,
         )
     return lambda document: (
         backend.configure_uninstall(document, args.force),

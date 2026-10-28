@@ -18,6 +18,47 @@ CLAUDE_SKILLS="$HOME/.claude/skills"
 CLAUDE_COMMANDS="$HOME/.claude/commands"
 CLAUDE_BIN="${DEEPSEEK_CLAUDE_BIN:-claude}"
 
+HTTP_MODE=0
+HTTP_HOST=127.0.0.1
+HTTP_PORT=8765
+
+usage() {
+    echo "用法: ./install.sh [--http [--host HOST] [--port PORT]]"
+    echo "  默认 stdio 注册；--http 注册 streamable-HTTP URL。Claude 不会拉起进程，"
+    echo "  需要自己保持 deepseek-mcp HTTP daemon 运行。"
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --http) HTTP_MODE=1 ;;
+        --host) HTTP_HOST="${2:?--host 需要参数}"; shift ;;
+        --port) HTTP_PORT="${2:?--port 需要参数}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+MCP_URL=""
+if [ "$HTTP_MODE" -eq 1 ]; then
+    case "$HTTP_HOST" in
+        127.0.0.1|localhost) MCP_URL="http://$HTTP_HOST:$HTTP_PORT/mcp" ;;
+        ::1) MCP_URL="http://[::1]:$HTTP_PORT/mcp" ;;
+        *)
+            echo "✗ install.sh --http 仅支持 loopback 绑定 (127.0.0.1 / localhost / ::1)。" >&2
+            echo "  需要远程暴露时：手动启动 daemon（设置 DEEPSEEK_MCP_AUTH_TOKEN + TLS 反代），" >&2
+            echo "  再自行执行 claude mcp add --transport http。" >&2
+            exit 2 ;;
+    esac
+    case "$HTTP_PORT" in
+        ''|*[!0-9]*) echo "✗ --port 必须是 1-65535 的数字。" >&2; exit 2 ;;
+    esac
+    if [ "$HTTP_PORT" -lt 1 ] || [ "$HTTP_PORT" -gt 65535 ]; then
+        echo "✗ --port 必须是 1-65535 的数字。" >&2
+        exit 2
+    fi
+fi
+
 echo "▶ deepseek-mcp installer"
 echo "  project: $PROJECT_ROOT"
 echo ""
@@ -119,18 +160,40 @@ is_managed_registration() {
     case "$first" in [A-Za-z0-9]) return 0 ;; *) return 1 ;; esac
 }
 
+is_managed_registration_url() {
+    local url="$1"
+    case "$url" in
+        http://127.0.0.1:[0-9]*/mcp|http://localhost:[0-9]*/mcp|http://\[::1\]:[0-9]*/mcp)
+            return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Snapshot kinds: "absent", "cmd:<stdio command>", or "url:<http(s) url>".
+# Anything unparseable or foreign makes the installer fail closed.
 registration_snapshot() {
-    local details="" command="" custom="" listing=""
+    local details="" command="" custom="" url="" headers="" listing=""
     if details="$("$CLAUDE_BIN" mcp get deepseek 2>/dev/null)"; then
+        printf '%s\n' "$details" | grep -q '^  Scope: User' || return 1
         command="$(printf '%s\n' "$details" | sed -n 's/^  Command: //p' | tr -d '\r')"
-        custom="$(printf '%s\n' "$details" | sed -n -e 's/^  Args: //p' \
-            -e '/^  Environment:$/,/^$/ { /^    /p; }')"
-        [ -n "$command" ] && [ -z "$custom" ] \
-            && printf '%s\n' "$details" | grep -q '^  Scope: User' \
-            && printf '%s\n' "$details" | grep -q '^  Type: stdio$' \
-            && is_managed_registration "$command" || return 1
-        printf 'present:%s' "$command"
-        return 0
+        url="$(printf '%s\n' "$details" | sed -n 's/^  URL: //p' | tr -d '\r')"
+        headers="$(printf '%s\n' "$details" \
+            | sed -n '/^  Headers:$/,/^$/ { /^    /p; }' | tr -d '\r')"
+        if printf '%s\n' "$details" | grep -q '^  Type: stdio$'; then
+            custom="$(printf '%s\n' "$details" | sed -n -e 's/^  Args: //p' \
+                -e '/^  Environment:$/,/^$/ { /^    /p; }')"
+            [ -n "$command" ] && [ -z "$custom" ] \
+                && is_managed_registration "$command" || return 1
+            printf 'cmd:%s' "$command"
+            return 0
+        fi
+        if printf '%s\n' "$details" | grep -Eq '^  Type: (http|sse)$' \
+            && [ -z "$command" ] && [ -n "$url" ] && [ -z "$headers" ] \
+            && is_managed_registration_url "$url"; then
+            printf 'url:%s' "$url"
+            return 0
+        fi
+        return 1
     fi
     listing="$("$CLAUDE_BIN" mcp list 2>/dev/null)" || return 1
     printf '%s\n' "$listing" | grep -q '^deepseek:' && return 1
@@ -138,20 +201,40 @@ registration_snapshot() {
 }
 
 registration_matches_expected() {
-    local expected="$1" snapshot="" current=""
+    local expected="$1" snapshot=""
     snapshot="$(registration_snapshot)" || return 1
     if [ -z "$expected" ]; then
         [ "$snapshot" = "absent" ] || return 1
         return 0
     fi
-    case "$snapshot" in present:*) current="${snapshot#present:}" ;; *) return 1 ;; esac
-    same_command_path "$current" "$expected"
+    case "$expected" in
+        cmd:*)
+            case "$snapshot" in cmd:*) ;; *) return 1 ;; esac
+            same_command_path "${snapshot#cmd:}" "${expected#cmd:}" ;;
+        url:*)
+            case "$snapshot" in url:*) ;; *) return 1 ;; esac
+            [ "${snapshot#url:}" = "${expected#url:}" ] ;;
+        *) return 1 ;;
+    esac
+}
+
+add_registration() {
+    local registration="$1"
+    case "$registration" in
+        cmd:*)
+            "$CLAUDE_BIN" mcp add deepseek -s user -- "${registration#cmd:}" \
+                >/dev/null 2>&1 ;;
+        url:*)
+            "$CLAUDE_BIN" mcp add --transport http deepseek -s user \
+                "${registration#url:}" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
 }
 
 $PYTHON_CMD "$PATH_GUARD" prepare-dirs "$CONFIG_DIR" "$VENV_ROOT"
 $PYTHON_CMD "$PATH_GUARD" secure-files "$CONFIG_FILE"
 
-GENERATION_DIR="" INSTALL_SUCCEEDED=0 REGISTRATION_TRANSACTION=0 PRESERVE_GENERATION=0 LOCK_HELD=0 CLAUDE_AVAILABLE=0 REGISTERED_COMMAND=""
+GENERATION_DIR="" INSTALL_SUCCEEDED=0 REGISTRATION_TRANSACTION=0 PRESERVE_GENERATION=0 LOCK_HELD=0 CLAUDE_AVAILABLE=0 REGISTERED_REGISTRATION="" EXPECTED_REGISTRATION="" SMOKE_DAEMON_PID=""
 
 cleanup_generation() {
     [ -n "$GENERATION_DIR" ] || return 0
@@ -170,8 +253,17 @@ release_install_lock() {
     fi
 }
 
+stop_smoke_daemon() {
+    if [ -n "$SMOKE_DAEMON_PID" ]; then
+        kill "$SMOKE_DAEMON_PID" 2>/dev/null || true
+        wait "$SMOKE_DAEMON_PID" 2>/dev/null || true
+        SMOKE_DAEMON_PID=""
+    fi
+}
+
 on_exit() {
     local exit_code=$?
+    stop_smoke_daemon
     if [ "$HELPER_TRANSACTION" -eq 1 ]; then
         trap '' INT TERM HUP
         rollback_helper_transaction \
@@ -181,9 +273,10 @@ on_exit() {
         REGISTRATION_TRANSACTION=0
         trap '' INT TERM HUP
         echo "  正在恢复 Claude MCP 注册..." >&2
-        if ! restore_registration "$REGISTERED_COMMAND"; then
+        if ! restore_registration "$REGISTERED_REGISTRATION"; then
             PRESERVE_GENERATION=1
             echo "✗ 注册恢复失败；保留候选运行时: $GENERATION_DIR" >&2
+        echo "  未变更的注册快照: ${REGISTERED_REGISTRATION#*:}" >&2
         fi
     fi
     if [ "$INSTALL_SUCCEEDED" -ne 1 ] && [ "$PRESERVE_GENERATION" -ne 1 ]; then
@@ -217,8 +310,8 @@ if command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
         exit 1
     }
     case "$REGISTERED_SNAPSHOT" in
-        present:*) REGISTERED_COMMAND="${REGISTERED_SNAPSHOT#present:}" ;;
-        absent) REGISTERED_COMMAND="" ;;
+        cmd:*|url:*) REGISTERED_REGISTRATION="$REGISTERED_SNAPSHOT" ;;
+        absent) REGISTERED_REGISTRATION="" ;;
         *) echo "✗ 无法读取 deepseek MCP 注册。" >&2; exit 1 ;;
     esac
 fi
@@ -264,6 +357,12 @@ fi
 if [ ! -e "$CLI" ]; then
     echo "✗ deepseek-mcp entrypoint was not created at $CLI"
     exit 1
+fi
+
+if [ "$HTTP_MODE" -eq 1 ]; then
+    EXPECTED_REGISTRATION="url:$MCP_URL"
+else
+    EXPECTED_REGISTRATION="cmd:$CLI"
 fi
 
 # ===== Step 3: 配置文件 + 交互式问 API key =====
@@ -329,10 +428,17 @@ if [ ! -f "$CONFIG_FILE" ]; then
     #
     # umask 077 在子 shell 内生效，确保 config 文件创建时就是 600（避免
     # "先 644 后 chmod" 的 race window，本地多用户机器上有意义）
+    WORKSPACE_LINE=""
+    if [ "$HTTP_MODE" -eq 1 ]; then
+        escaped_ws="${PWD//\\/\\\\}"
+        escaped_ws="${escaped_ws//\"/\\\"}"
+        WORKSPACE_LINE="  \"workspace\": \"$escaped_ws\",
+"
+    fi
     $PYTHON_CMD "$PATH_GUARD" write-exclusive "$CONFIG_FILE" <<EOF
 {
   "api_key": "$escaped_value",
-  "flash": "deepseek-flash",
+${WORKSPACE_LINE}  "flash": "deepseek-flash",
   "flash_reasoning_effort": "high",
   "pro": "deepseek-v4-pro",
   "pro_reasoning_effort": "high",
@@ -379,26 +485,53 @@ except RuntimeError as error:
     echo "  请检查配置字段格式；删除旧的 bash_backend/bash_runtime/bash_image 配置后重试。" >&2
     exit 1
 fi
+if [ "$HTTP_MODE" -eq 1 ] && ! grep -q '"workspace"' "$CONFIG_FILE" \
+    && [ -z "${DEEPSEEK_WORKSPACE:-}" ]; then
+    echo "  ⚠ HTTP daemon 未固定 workspace：将以 daemon 的启动目录作为沙箱根。"
+    echo "    建议在 $CONFIG_FILE 添加 \"workspace\": \"/abs/project/path\"。"
+fi
 
 # ===== Step 4: 在切换注册前验证新 generation =====
 echo "[4/7] 验证 MCP initialize/list_tools/ping..."
 "$PYBIN" "$PROJECT_ROOT/adapters/codex/mcp_smoke.py" "$CLI"
+if [ "$HTTP_MODE" -eq 1 ]; then
+    echo "       streamable-HTTP smoke: $MCP_URL"
+    "$CLI" --transport streamable-http --host "$HTTP_HOST" --port "$HTTP_PORT" \
+        >/dev/null 2>&1 &
+    SMOKE_DAEMON_PID=$!
+    if ! "$PYBIN" "$PROJECT_ROOT/adapters/codex/mcp_smoke.py" \
+        --url "$MCP_URL" --wait 15; then
+        echo "✗ streamable-HTTP smoke 失败；注册未变更。" >&2
+        echo "  确认端口 $HTTP_PORT 空闲（或先停掉旧 daemon）后重跑。" >&2
+        stop_smoke_daemon
+        exit 1
+    fi
+    stop_smoke_daemon
+fi
 
 # ===== Steps 5-6: optional helpers deploy only after core registration =====
 
 restore_registration() {
     local previous="$1" snapshot="" current=""
     snapshot="$(registration_snapshot)" || return 1
-    case "$snapshot" in present:*) current="${snapshot#present:}" ;; absent) ;; *) return 1 ;; esac
+    case "$snapshot" in
+        cmd:*|url:*) current="$snapshot" ;;
+        absent) current="" ;;
+        *) return 1 ;;
+    esac
     if [ -n "$previous" ] && [ -n "$current" ] \
-        && same_command_path "$current" "$previous"; then
+        && registration_matches_expected "$previous"; then
         return 0
     fi
     if [ -z "$previous" ] && [ -z "$current" ]; then
         return 0
     fi
     if [ -n "$current" ]; then
-        same_command_path "$current" "$CLI" || return 1
+        case "$current" in
+            cmd:*) same_command_path "${current#cmd:}" "$CLI" || return 1 ;;
+            url:*) [ "$current" = "$EXPECTED_REGISTRATION" ] || return 1 ;;
+            *) return 1 ;;
+        esac
         registration_matches_expected "$current" || return 1
         "$CLAUDE_BIN" mcp remove deepseek -s user >/dev/null 2>&1 || return 1
         registration_matches_expected "" || return 1
@@ -406,8 +539,7 @@ restore_registration() {
         registration_matches_expected "" || return 1
     fi
     if [ -n "$previous" ]; then
-        "$CLAUDE_BIN" mcp add deepseek -s user -- "$previous" >/dev/null 2>&1 \
-            || return 1
+        add_registration "$previous" || return 1
     fi
     registration_matches_expected "$previous"
 }
@@ -420,8 +552,8 @@ switch_registration() {
         "$CLAUDE_BIN" mcp remove deepseek -s user >/dev/null 2>&1 || return 1
         registration_matches_expected "" || return 1
     fi
-    "$CLAUDE_BIN" mcp add deepseek -s user -- "$CLI" >/dev/null 2>&1 || return 1
-    registration_matches_expected "$CLI" || return 1
+    add_registration "$EXPECTED_REGISTRATION" || return 1
+    registration_matches_expected "$EXPECTED_REGISTRATION" || return 1
     INSTALL_SUCCEEDED=1 REGISTRATION_TRANSACTION=0
     return 0
 }
@@ -432,14 +564,14 @@ echo "[7/7] 注册 MCP server 到 Claude Code (user scope)..."
 if [ "$CLAUDE_AVAILABLE" -eq 0 ]; then
     echo "       ⚠ claude CLI 不在 PATH，跳过注册"
     echo "       (装完 Claude Code 后重跑 install.sh)"
-elif ! switch_registration "$REGISTERED_COMMAND"; then
+elif ! switch_registration "$REGISTERED_REGISTRATION"; then
     echo "✗ Claude MCP 注册切换失败；退出事务时将恢复旧注册。" >&2
-    if [ -n "$REGISTERED_COMMAND" ]; then
-        echo "  旧运行时仍保留在: $REGISTERED_COMMAND" >&2
+    if [ -n "$REGISTERED_REGISTRATION" ]; then
+        echo "  旧注册仍保留: ${REGISTERED_REGISTRATION#*:}" >&2
     fi
     exit 1
 else
-    echo "       ✓ 注册已切换到 $CLI"
+    echo "       ✓ 注册已切换到 ${EXPECTED_REGISTRATION#*:}"
     INSTALL_SUCCEEDED=1
 fi
 
@@ -463,6 +595,11 @@ fi
 echo ""
 echo "✅ 安装完成"
 echo "  MCP environment: $GENERATION_DIR"
+if [ "$HTTP_MODE" -eq 1 ]; then
+    echo "  MCP URL: $MCP_URL"
+    echo "  HTTP daemon 不会被 Claude 拉起；请自己保持它运行（安装器不装系统服务）:"
+    echo "    \"$CLI\" --transport streamable-http --host $HTTP_HOST --port $HTTP_PORT"
+fi
 [ "$HELPER_WARNINGS" -eq 0 ] \
     || echo "  ⚠ 核心 MCP 已安装，但部分可选 helper 未部署；请查看上方 warning。"
 echo ""
@@ -488,10 +625,18 @@ if [ "${NEED_KEY:-0}" = "1" ]; then
         fi
     fi
 else
-    echo "立即试用:"
-    echo "  cd <你的项目目录> && claude     # 已在运行的 claude 需要重启才能加载新 MCP"
-    echo "  > /ds 检查当前项目并总结代码结构            # 强制派 DeepSeek 干活"
-    echo "  > 请调用 ping 工具                       # 验证 MCP 连接 + 看沙箱根"
+    if [ "$HTTP_MODE" -eq 1 ]; then
+        echo "立即试用:"
+        echo "  1. 启动 HTTP daemon（前台或自行托管，保持运行）:"
+        echo "     \"$CLI\" --transport streamable-http --host $HTTP_HOST --port $HTTP_PORT"
+        echo "  2. cd <你的项目目录> && claude  # 已在运行的 claude 需要重启才能加载新 MCP"
+        echo "  > 请调用 ping 工具               # 验证 HTTP MCP 连接 + 看沙箱根"
+    else
+        echo "立即试用:"
+        echo "  cd <你的项目目录> && claude     # 已在运行的 claude 需要重启才能加载新 MCP"
+        echo "  > /ds 检查当前项目并总结代码结构            # 强制派 DeepSeek 干活"
+        echo "  > 请调用 ping 工具                       # 验证 MCP 连接 + 看沙箱根"
+    fi
     echo ""
     echo "自动派工: 主对话里说\"批量提取 i18n 到 JSON\"之类的任务，Claude 会自己派给 DeepSeek"
     echo "关闭派工: 运行 DEEPSEEK_MODE=off claude（仅当前 Claude 会话）"

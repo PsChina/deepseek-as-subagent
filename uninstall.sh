@@ -97,18 +97,39 @@ is_managed_registration() {
     case "$first" in [A-Za-z0-9]) return 0 ;; *) return 1 ;; esac
 }
 
+is_managed_registration_url() {
+    local url="$1"
+    case "$url" in
+        http://127.0.0.1:[0-9]*/mcp|http://localhost:[0-9]*/mcp|http://\[::1\]:[0-9]*/mcp)
+            return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Snapshot kinds: "absent", "cmd:<stdio command>", or "url:<http(s) url>".
 registration_snapshot() {
-    local details="" command="" custom="" listing=""
+    local details="" command="" custom="" url="" headers="" listing=""
     if details="$("$CLAUDE_BIN" mcp get deepseek 2>/dev/null)"; then
+        printf '%s\n' "$details" | grep -q '^  Scope: User' || return 1
         command="$(printf '%s\n' "$details" | sed -n 's/^  Command: //p' | tr -d '\r')"
-        custom="$(printf '%s\n' "$details" | sed -n -e 's/^  Args: //p' \
-            -e '/^  Environment:$/,/^$/ { /^    /p; }')"
-        [ -n "$command" ] && [ -z "$custom" ] \
-            && printf '%s\n' "$details" | grep -q '^  Scope: User' \
-            && printf '%s\n' "$details" | grep -q '^  Type: stdio$' \
-            && is_managed_registration "$command" || return 1
-        printf 'present:%s' "$command"
-        return 0
+        url="$(printf '%s\n' "$details" | sed -n 's/^  URL: //p' | tr -d '\r')"
+        headers="$(printf '%s\n' "$details" \
+            | sed -n '/^  Headers:$/,/^$/ { /^    /p; }' | tr -d '\r')"
+        if printf '%s\n' "$details" | grep -q '^  Type: stdio$'; then
+            custom="$(printf '%s\n' "$details" | sed -n -e 's/^  Args: //p' \
+                -e '/^  Environment:$/,/^$/ { /^    /p; }')"
+            [ -n "$command" ] && [ -z "$custom" ] \
+                && is_managed_registration "$command" || return 1
+            printf 'cmd:%s' "$command"
+            return 0
+        fi
+        if printf '%s\n' "$details" | grep -Eq '^  Type: (http|sse)$' \
+            && [ -z "$command" ] && [ -n "$url" ] && [ -z "$headers" ] \
+            && is_managed_registration_url "$url"; then
+            printf 'url:%s' "$url"
+            return 0
+        fi
+        return 1
     fi
     listing="$("$CLAUDE_BIN" mcp list 2>/dev/null)" || return 1
     printf '%s\n' "$listing" | grep -q '^deepseek:' && return 1
@@ -116,14 +137,34 @@ registration_snapshot() {
 }
 
 registration_matches_expected() {
-    local expected="$1" snapshot="" current=""
+    local expected="$1" snapshot=""
     snapshot="$(registration_snapshot)" || return 1
     if [ -z "$expected" ]; then
         [ "$snapshot" = "absent" ]
         return
     fi
-    case "$snapshot" in present:*) current="${snapshot#present:}" ;; *) return 1 ;; esac
-    same_command_path "$current" "$expected"
+    case "$expected" in
+        cmd:*)
+            case "$snapshot" in cmd:*) ;; *) return 1 ;; esac
+            same_command_path "${snapshot#cmd:}" "${expected#cmd:}" ;;
+        url:*)
+            case "$snapshot" in url:*) ;; *) return 1 ;; esac
+            [ "${snapshot#url:}" = "${expected#url:}" ] ;;
+        *) return 1 ;;
+    esac
+}
+
+add_registration() {
+    local registration="$1"
+    case "$registration" in
+        cmd:*)
+            "$CLAUDE_BIN" mcp add deepseek -s user -- "${registration#cmd:}" \
+                >/dev/null 2>&1 ;;
+        url:*)
+            "$CLAUDE_BIN" mcp add --transport http deepseek -s user \
+                "${registration#url:}" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
 }
 
 is_managed_helper_target() {
@@ -273,19 +314,19 @@ release_install_lock() {
 }
 restore_uninstall_registration() {
     local snapshot="" current=""
-    [ -n "$REGISTERED_COMMAND" ] || return 0
+    [ -n "$REGISTERED_REGISTRATION" ] || return 0
     snapshot="$(registration_snapshot)" || return 1
     case "$snapshot" in
-        present:*)
-            current="${snapshot#present:}"
-            same_command_path "$current" "$REGISTERED_COMMAND"
-            return ;;
-        absent) ;;
+        cmd:*|url:*) current="$snapshot" ;;
+        absent) current="" ;;
         *) return 1 ;;
     esac
-    "$CLAUDE_BIN" mcp add deepseek -s user -- "$REGISTERED_COMMAND" \
-        >/dev/null 2>&1 || return 1
-    registration_matches_expected "$REGISTERED_COMMAND"
+    if [ -n "$current" ]; then
+        registration_matches_expected "$REGISTERED_REGISTRATION"
+        return
+    fi
+    add_registration "$REGISTERED_REGISTRATION" || return 1
+    registration_matches_expected "$REGISTERED_REGISTRATION"
 }
 
 on_exit() {
@@ -314,7 +355,7 @@ if ! mkdir "$INSTALL_LOCK" 2>/dev/null; then
 fi
 LOCK_HELD=1
 
-REGISTERED_COMMAND=""
+REGISTERED_REGISTRATION=""
 if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
     echo "✗ claude CLI 不在 PATH，无法核验注册；未做任何删除。" >&2
     echo "  修复 PATH 或设置 DEEPSEEK_CLAUDE_BIN 后重试。" >&2
@@ -325,8 +366,8 @@ REGISTERED_SNAPSHOT="$(registration_snapshot)" || {
     exit 1
 }
 case "$REGISTERED_SNAPSHOT" in
-    present:*) REGISTERED_COMMAND="${REGISTERED_SNAPSHOT#present:}" ;;
-    absent) REGISTERED_COMMAND="" ;;
+    cmd:*|url:*) REGISTERED_REGISTRATION="$REGISTERED_SNAPSHOT" ;;
+    absent) REGISTERED_REGISTRATION="" ;;
     *) echo "✗ 无法读取 deepseek MCP 注册。" >&2; exit 1 ;;
 esac
 
@@ -346,10 +387,10 @@ stage_owned_asset_removal command "$COMMAND_SRC" "$COMMAND_DST" "$COMMAND_STATE"
 echo "       已删除所有权匹配的资产"
 
 echo "[2/4] 从 Claude Code 移除 mcp..."
-if ! registration_matches_expected "$REGISTERED_COMMAND"; then
+if ! registration_matches_expected "$REGISTERED_REGISTRATION"; then
     echo "✗ deepseek MCP 注册在卸载期间发生变化；未移除该注册。" >&2
     exit 1
-elif [ -z "$REGISTERED_COMMAND" ]; then
+elif [ -z "$REGISTERED_REGISTRATION" ]; then
     echo "       未注册，跳过"
 else
     REGISTRATION_TRANSACTION=1

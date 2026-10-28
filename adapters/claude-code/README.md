@@ -39,6 +39,27 @@ From repo root:
 
 Idempotent — safe to re-run after pulling repo updates.
 
+### HTTP transport mode
+
+```bash
+./install.sh --http --port 8765
+```
+
+Registers the streamable-HTTP URL (`http://127.0.0.1:8765/mcp`, loopback only)
+instead of the stdio command. Claude Code does not spawn the HTTP server; keep
+the daemon running yourself after install:
+
+```bash
+~/.deepseek-mcp/claude-venvs/generation.<id>/bin/deepseek-mcp \
+    --transport streamable-http --host 127.0.0.1 --port 8765
+```
+
+Fresh `--http` configs pin the install directory as `"workspace"`; the daemon's
+launch directory is otherwise its sandbox root. See the root README's HTTP
+transport section and [../../SECURITY.md](../../SECURITY.md) for bearer-token
+policy. Re-running `./install.sh` without `--http` switches the registration
+back to stdio; uninstall handles both kinds.
+
 ## Uninstall
 
 ```bash
