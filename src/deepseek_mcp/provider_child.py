@@ -66,16 +66,14 @@ def _bounded_timeout(request_timeout: float) -> httpx.Timeout:
 
 def _is_local_network_host(hostname: str) -> bool:
     normalized = hostname.lower().rstrip(".")
-    if (
-        normalized == "localhost"
-        or normalized.endswith((".localhost", ".local", ".lan"))
-        or "." not in normalized
-    ):
-        return True
     try:
         address = ipaddress.ip_address(normalized.split("%", 1)[0])
     except ValueError:
-        return False
+        return (
+            normalized == "localhost"
+            or normalized.endswith((".localhost", ".local", ".lan"))
+            or "." not in normalized
+        )
     return address.is_loopback or address.is_private or address.is_link_local
 
 
