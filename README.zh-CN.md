@@ -308,20 +308,20 @@ thinking 并使用对应 effort。`_reasoning_effort_options` 只是配置文件
 
 支持实现 OpenAI-compatible `/v1/chat/completions` 接口的服务，例如 llama.cpp server、
 LM Studio、vLLM、SGLang、Ollama 的兼容端点及其他兼容服务。这些是接口层面的例子；本项目
-没有声称测试过每个服务版本或模型。HTTP 仍仅允许 `localhost`、`127.0.0.1` 和 `[::1]`；
-远程 endpoint 必须使用 HTTPS。
+没有声称测试过每个服务版本或模型。模型服务的 `base_url` 接受合法的 `http://` 和 `https://` 地址，
+也支持部署在局域网另一台机器上的服务。普通 HTTP 不加密，只应在本机或可信局域网使用；
+不可信网络请优先使用 HTTPS。
 
 修改安装器生成的配置时，要同时替换上面两个推理强度字段。通用 endpoint 不会收到
 DeepSeek 专用的 `thinking` 扩展；显式设置推理强度时仅发送 `reasoning_effort`，需要服务支持。
 `max_output_tokens` 控制每轮输出上限（1–16384，默认 16384）。本地上下文较小时应降低此值，
 为提示词和累积的工具历史留出空间。
 
-未启用认证的 loopback 服务不需要 key。程序会使用 dummy 凭证，且不会把
-`DEEPSEEK_API_KEY` 发给 loopback 服务。若本地服务需要 key，在启动 Claude Code 或 Codex 前
-设置 `OPENAI_API_KEY`。远程兼容 endpoint 也支持 `OPENAI_API_KEY`；DeepSeek 官方 endpoint
-继续使用 `DEEPSEEK_API_KEY`。Windows 凭证仍只从环境变量读取。
-自定义远程 endpoint 不会自动继承 `DEEPSEEK_API_KEY`；请配置自己的 `OPENAI_API_KEY`，
-或在 POSIX 配置中显式设置 `api_key`。
+HTTP provider 默认使用 dummy 凭证，不会自动继承 `DEEPSEEK_API_KEY` 或配置文件里的 `api_key`，
+避免把 DeepSeek 密钥通过明文 HTTP 发给本地或局域网服务。若 HTTP 服务需要认证，请在启动
+Claude Code 或 Codex 前显式设置 `OPENAI_API_KEY`。HTTPS 自定义 endpoint 可以使用
+`OPENAI_API_KEY`，也可在 POSIX 配置中设置 `api_key`；DeepSeek 官方 endpoint 继续使用
+`DEEPSEEK_API_KEY`。Windows 凭证仍只从环境变量读取。
 
 服务至少要支持 `/v1/chat/completions` 和 OpenAI-compatible tool calling，并提供足够容纳委派
 任务及工具历史的上下文，且能返回格式合理的结构化 tool call。模型发出工具调用后，agent loop

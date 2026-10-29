@@ -187,10 +187,18 @@ def _is_loopback_endpoint(value: object) -> bool:
     except RuntimeError:
         return False
     return bool(
-        parsed.scheme in {"http", "https"}
+        parsed.scheme.lower() in {"http", "https"}
         and hostname
         and hostname.lower() in {"localhost", "127.0.0.1", "::1"}
     )
+
+
+def _is_http_endpoint(value: object) -> bool:
+    try:
+        _value, parsed, _hostname = _parse_base_url(value)
+    except RuntimeError:
+        return False
+    return parsed.scheme.lower() == "http"
 
 
 def _configured_api_key(data: dict) -> str:
@@ -215,9 +223,10 @@ def _load_api_key(data: dict, base_url: object | None = None) -> str:
     endpoint = base_url if base_url is not None else data.get(
         "base_url", "https://api.deepseek.com"
     )
-    if _is_loopback_endpoint(endpoint):
-        # Do not accidentally send a DeepSeek credential to a local server just
-        # because an existing DeepSeek config was pointed at localhost.
+    if _is_http_endpoint(endpoint) or _is_loopback_endpoint(endpoint):
+        # Plain HTTP may point to a LAN-hosted local model. Never forward a
+        # stored DeepSeek key or config api_key over an unencrypted connection;
+        # OPENAI_API_KEY is the explicit opt-in for endpoints that require auth.
         credential = (os.getenv("OPENAI_API_KEY") or "").strip()
         return credential or "local-no-auth"
 
@@ -376,13 +385,9 @@ def _validate_url_authority(parsed, hostname: str | None) -> None:
 def _validate_base_url(value: object) -> str:
     value, parsed, hostname = _parse_base_url(value)
     _validate_url_authority(parsed, hostname)
-    assert hostname is not None
-    if parsed.scheme == "https":
+    if parsed.scheme.lower() in {"http", "https"}:
         return value
-    loopback_hosts = {"localhost", "127.0.0.1", "::1"}
-    if parsed.scheme == "http" and hostname.lower() in loopback_hosts:
-        return value
-    raise RuntimeError("base_url must use HTTPS; HTTP is allowed only for loopback")
+    raise RuntimeError("base_url must use HTTP or HTTPS")
 
 
 @dataclass(repr=False)

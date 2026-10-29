@@ -468,7 +468,7 @@ echo "  MCP environment: $GENERATION_DIR"
 echo ""
 
 if [ "${NEED_KEY:-0}" = "1" ]; then
-    echo "没有填写 DeepSeek key。官方 DeepSeek endpoint 需要 key；本地 loopback endpoint 不需要。"
+    echo "没有填写 DeepSeek key。官方 DeepSeek endpoint 需要 key；HTTP 兼容 endpoint 默认不需要。"
     echo "下一步:"
     if [ "$PLATFORM" = "windows" ]; then
         echo "  1. 设置 DEEPSEEK_API_KEY 环境变量；不要把真实 key 写入 config.json。"
