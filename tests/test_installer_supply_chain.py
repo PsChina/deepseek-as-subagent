@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -345,6 +346,23 @@ class InstallerSupplyChainTests(unittest.TestCase):
         self.assertLess(helpers, pruning)
         self.assertLess(success, pruning)
         self.assertIn("delete-generation", script)
+
+    @unittest.skipIf(os.name == "nt", "Windows checkouts do not carry the exec bit")
+    def test_posix_installer_scripts_are_directly_executable(self) -> None:
+        for name in (
+            "install.sh",
+            "uninstall.sh",
+            "curl-install.sh",
+            "adapters/codex/install.sh",
+            "adapters/codex/uninstall.sh",
+        ):
+            mode = stat.S_IMODE((ROOT / name).stat().st_mode)
+            with self.subTest(script=name):
+                self.assertEqual(
+                    mode & 0o111,
+                    0o111,
+                    f"{name} lost its executable bit; README runs ./install.sh",
+                )
 
     @unittest.skipIf(os.name == "nt", "Git Bash paths differ from native Python paths")
     def test_legacy_bash_config_upgrades_with_trusted_host_default(self) -> None:
