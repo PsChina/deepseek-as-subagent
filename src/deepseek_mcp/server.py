@@ -185,7 +185,8 @@ def ping() -> str:
         ws_short = _shorten_path(cfg.workspace)
         tools = ",".join(cfg.allowed_tools)
         config_status = (
-            f"workspace={ws_short} (workspace-scoped file tools; Bash runs on host), flash={cfg.flash_model}/{cfg.flash_reasoning_effort}, "
+            f"workspace={ws_short} (workspace-scoped file tools; Bash runs on host), "
+            f"flash={cfg.flash_model}/{cfg.flash_reasoning_effort}, "
             f"pro={cfg.pro_model}/{cfg.pro_reasoning_effort}, tools={tools}"
         )
     except Exception as e:
