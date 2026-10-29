@@ -326,11 +326,12 @@ explicit efforts send only `reasoning_effort`, which the server must support.
 `max_output_tokens` bounds each response (1–16384; default 16384). Lower it for
 small local context windows, leaving room for the prompt and accumulated tool history.
 
-HTTP provider endpoints use a dummy credential by default and never inherit
-`DEEPSEEK_API_KEY` or the stored `api_key`; this prevents accidentally sending a
-DeepSeek secret to a local/LAN server over plaintext HTTP. If an HTTP endpoint
-requires authentication, explicitly set `OPENAI_API_KEY` before starting Claude
-Code or Codex. HTTPS custom endpoints support `OPENAI_API_KEY` or `api_key` in the
+HTTP provider endpoints and loopback HTTPS endpoints use a dummy credential by
+default and never inherit `DEEPSEEK_API_KEY` or the stored `api_key`; this
+prevents accidentally sending a DeepSeek secret to a local or LAN server — over
+plaintext HTTP in cleartext. If one of those endpoints requires authentication,
+explicitly set `OPENAI_API_KEY` before starting Claude Code or Codex.
+Non-loopback HTTPS custom endpoints support `OPENAI_API_KEY` or `api_key` in the
 POSIX config, while DeepSeek's hosted endpoint continues to use
 `DEEPSEEK_API_KEY`. Windows secrets remain environment-only.
 

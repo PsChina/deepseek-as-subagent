@@ -317,9 +317,10 @@ DeepSeek 专用的 `thinking` 扩展；显式设置推理强度时仅发送 `rea
 `max_output_tokens` 控制每轮输出上限（1–16384，默认 16384）。本地上下文较小时应降低此值，
 为提示词和累积的工具历史留出空间。
 
-HTTP provider 默认使用 dummy 凭证，不会自动继承 `DEEPSEEK_API_KEY` 或配置文件里的 `api_key`，
-避免把 DeepSeek 密钥通过明文 HTTP 发给本地或局域网服务。若 HTTP 服务需要认证，请在启动
-Claude Code 或 Codex 前显式设置 `OPENAI_API_KEY`。HTTPS 自定义 endpoint 可以使用
+HTTP provider 和 loopback HTTPS endpoint 默认使用 dummy 凭证，不会自动继承
+`DEEPSEEK_API_KEY` 或配置文件里的 `api_key`，避免把 DeepSeek 密钥误发给本地或局域网
+服务（明文 HTTP 下还是明文）。这类服务需要认证时，请在启动 Claude Code 或 Codex 前
+显式设置 `OPENAI_API_KEY`。非 loopback 的 HTTPS 自定义 endpoint 可以使用
 `OPENAI_API_KEY`，也可在 POSIX 配置中设置 `api_key`；DeepSeek 官方 endpoint 继续使用
 `DEEPSEEK_API_KEY`。Windows 凭证仍只从环境变量读取。
 
