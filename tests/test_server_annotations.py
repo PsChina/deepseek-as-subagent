@@ -123,6 +123,16 @@ class ServerAnnotationTests(unittest.TestCase):
         self.assertIn("mode=invalid", health)
         self.assertIn("DEEPSEEK_MODE", delegated)
 
+    def test_ping_describes_workspace_scope_without_claiming_sandbox(self) -> None:
+        config = Config("", ROOT, allowed_tools=["Read", "Bash"])
+        with patch.object(server.Config, "load", return_value=config):
+            health = server.ping()
+
+        self.assertIn(
+            "(workspace-scoped file tools; Bash runs on host)", health
+        )
+        self.assertNotIn("(sandbox)", health)
+
     def test_server_fails_closed_when_core_dumps_cannot_be_disabled(self) -> None:
         with (
             patch.object(server, "disable_core_dumps", side_effect=RuntimeError),
