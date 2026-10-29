@@ -316,8 +316,9 @@ This supports servers that implement the OpenAI-compatible
 `/v1/chat/completions` interface, such as llama.cpp server, LM Studio, vLLM,
 SGLang, Ollama's compatible endpoint, and other compatible servers. These are
 interface-level examples; this project does not claim to have tested every
-server version or model. HTTP remains limited to `localhost`, `127.0.0.1`, and
-`[::1]`; remote endpoints must use HTTPS.
+server version or model. Any valid `http://` or `https://` provider URL is accepted,
+including a model server on another machine in your LAN. Plain HTTP is unencrypted;
+use it only on loopback or a trusted network, and prefer HTTPS on untrusted networks.
 
 When updating an installer-generated config, replace both reasoning effort fields
 as shown above. Generic endpoints receive no DeepSeek-specific `thinking` extension;
@@ -325,14 +326,13 @@ explicit efforts send only `reasoning_effort`, which the server must support.
 `max_output_tokens` bounds each response (1–16384; default 16384). Lower it for
 small local context windows, leaving room for the prompt and accumulated tool history.
 
-Unauthenticated loopback servers need no key. The local fallback credential is
-only a dummy value, and `DEEPSEEK_API_KEY` is not sent to a loopback server. If
-your local server requires a key, set `OPENAI_API_KEY` before starting Claude
-Code or Codex. For remote compatible endpoints, `OPENAI_API_KEY` is supported;
-DeepSeek's hosted endpoint continues to use `DEEPSEEK_API_KEY`. Windows secrets
-remain environment-only.
-Custom remote endpoints do not inherit `DEEPSEEK_API_KEY`; configure their own
-`OPENAI_API_KEY` or an explicit `api_key` on POSIX.
+HTTP provider endpoints use a dummy credential by default and never inherit
+`DEEPSEEK_API_KEY` or the stored `api_key`; this prevents accidentally sending a
+DeepSeek secret to a local/LAN server over plaintext HTTP. If an HTTP endpoint
+requires authentication, explicitly set `OPENAI_API_KEY` before starting Claude
+Code or Codex. HTTPS custom endpoints support `OPENAI_API_KEY` or `api_key` in the
+POSIX config, while DeepSeek's hosted endpoint continues to use
+`DEEPSEEK_API_KEY`. Windows secrets remain environment-only.
 
 The server must support `/v1/chat/completions` with OpenAI-compatible tool
 calling, enough context for the delegated task and tool history, and reasonably

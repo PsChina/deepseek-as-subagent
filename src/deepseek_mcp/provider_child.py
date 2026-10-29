@@ -1,6 +1,7 @@
 """Private stdio child that performs exactly one DeepSeek API request."""
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -63,18 +64,36 @@ def _bounded_timeout(request_timeout: float) -> httpx.Timeout:
     )
 
 
+def _is_local_network_host(hostname: str) -> bool:
+    normalized = hostname.lower().rstrip(".")
+    if (
+        normalized == "localhost"
+        or normalized.endswith((".localhost", ".local", ".lan"))
+        or "." not in normalized
+    ):
+        return True
+    try:
+        address = ipaddress.ip_address(normalized.split("%", 1)[0])
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
+
+
 def _trust_proxy_environment(base_url: str) -> bool:
-    """Never send loopback traffic or its credentials through an inherited proxy."""
+    """Bypass inherited proxies for loopback and local/LAN HTTP model endpoints."""
     try:
         parsed = urlsplit(base_url)
     except ValueError:
         return True
     hostname = parsed.hostname
-    return not (
-        parsed.scheme.lower() in {"http", "https"}
-        and hostname is not None
-        and hostname.lower() in {"localhost", "127.0.0.1", "::1"}
-    )
+    if hostname is None:
+        return True
+    scheme = parsed.scheme.lower()
+    if scheme in {"http", "https"} and hostname.lower() in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    if scheme == "http" and _is_local_network_host(hostname):
+        return False
+    return True
 
 
 def _apply_reasoning_settings(arguments: dict[str, Any], effort: object) -> None:

@@ -326,6 +326,20 @@ class ProviderProcessTests(unittest.TestCase):
             provider_child._trust_proxy_environment("https://api.deepseek.com")
         )
 
+    def test_remote_http_provider_keeps_explicit_proxy_support(self) -> None:
+        self.assertTrue(
+            provider_child._trust_proxy_environment("http://models.example.com/v1")
+        )
+
+    def test_private_lan_http_provider_bypasses_inherited_proxy(self) -> None:
+        for endpoint in (
+            "http://192.168.1.20:1234/v1",
+            "http://llm-host.local:1234/v1",
+            "http://llm-host:1234/v1",
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertFalse(provider_child._trust_proxy_environment(endpoint))
+
     def test_loopback_https_provider_bypasses_inherited_proxy(self) -> None:
         self.assertFalse(
             provider_child._trust_proxy_environment("https://localhost:8443/v1")

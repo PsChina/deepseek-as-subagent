@@ -300,7 +300,8 @@ if grep -q "PASTE_YOUR_DEEPSEEK_KEY_HERE" "$CONFIG_FILE" 2>/dev/null; then
         echo "For DeepSeek's hosted API, set DEEPSEEK_API_KEY in the environment."
         echo "Do not persist a real API key in config.json on Windows."
     fi
-    echo "A local loopback endpoint needs no key; use OPENAI_API_KEY if it requires authentication."
+    echo "An HTTP-compatible endpoint defaults to no key; set OPENAI_API_KEY if it requires authentication."
+    echo "Plain HTTP is unencrypted; use non-loopback HTTP only on a trusted network."
     echo "For generic local models, set both reasoning effort fields to provider-default."
 else
     echo "DeepSeek config already contains a key. You can start Codex now."

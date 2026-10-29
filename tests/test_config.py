@@ -310,6 +310,9 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(
                 _load_api_key({}, "http://127.0.0.1:8080/v1"), "local-no-auth"
             )
+            self.assertEqual(
+                _load_api_key({}, "http://192.168.1.20:1234/v1"), "local-no-auth"
+            )
         with patch.dict(
             os.environ,
             {"DEEPSEEK_API_KEY": "sk-private", "OPENAI_API_KEY": "local-auth"},
@@ -317,6 +320,18 @@ class ConfigTests(unittest.TestCase):
         ):
             self.assertEqual(
                 _load_api_key({}, "http://localhost:8080/v1"), "local-auth"
+            )
+            self.assertEqual(
+                _load_api_key({}, "http://192.168.1.20:1234/v1"), "local-auth"
+            )
+
+    @unittest.skipIf(os.name == "nt", "Windows forbids persistent API keys")
+    def test_http_provider_ignores_stored_api_key(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _load_api_key({"api_key": "sk-stored-deepseek"},
+                              "http://192.168.1.20:1234/v1"),
+                "local-no-auth",
             )
 
     def test_custom_remote_endpoint_does_not_inherit_deepseek_environment_key(self) -> None:
@@ -369,21 +384,25 @@ class ConfigTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "model"):
                         Config("credential", Path(tmpdir), model=value)  # type: ignore[arg-type]
 
-    def test_base_url_requires_https_for_remote_hosts(self) -> None:
+    def test_base_url_rejects_non_http_schemes_and_non_string_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            for value in (42, "http://api.deepseek.com", "ftp://api.deepseek.com"):
+            for value in (42, "ftp://api.deepseek.com", "file:///tmp/model"):
                 with self.subTest(value=value):
                     with self.assertRaisesRegex(RuntimeError, "base_url"):
                         Config("credential", workspace, base_url=value)  # type: ignore[arg-type]
 
-    def test_base_url_accepts_https_and_exact_loopback_http(self) -> None:
+    def test_base_url_accepts_http_and_https_provider_endpoints(self) -> None:
         urls = (
             "https://api.deepseek.com",
             "https://example.invalid/v1",
             "http://localhost:8000/v1",
             "http://127.0.0.1:8000",
             "http://[::1]:8000/v1",
+            "http://192.168.1.20:1234/v1",
+            "http://10.0.0.5:8000/v1",
+            "http://llm-host.local:1234/v1",
+            "http://models.example.invalid/v1",
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             for url in urls:
@@ -391,12 +410,12 @@ class ConfigTests(unittest.TestCase):
                     config = Config("credential", Path(tmpdir), base_url=url)
                     self.assertEqual(config.base_url, url)
 
-    def test_base_url_rejects_lookalike_loopback_and_credentials(self) -> None:
+    def test_base_url_rejects_credentials_query_and_fragment(self) -> None:
         urls = (
-            "http://localhost.example.com",
-            "http://127.0.0.2",
+            "http://user:password@192.168.1.20:1234/v1",
             "https://user@example.invalid",
             "https://example.invalid/v1?token=value",
+            "http://192.168.1.20/v1#fragment",
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             for url in urls:
