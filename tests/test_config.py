@@ -334,6 +334,23 @@ class ConfigTests(unittest.TestCase):
                 "local-no-auth",
             )
 
+    @unittest.skipIf(os.name == "nt", "Windows forbids persistent API keys")
+    def test_loopback_https_ignores_stored_api_key(self) -> None:
+        for url in (
+            "https://localhost:8443/v1",
+            "https://127.0.0.1:8443/v1",
+            "https://[::1]:8443/v1",
+        ):
+            with self.subTest(url=url), patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    _load_api_key({"api_key": "sk-stored-deepseek"}, url),
+                    "local-no-auth",
+                )
+            with self.subTest(url=url, opt_in=True), patch.dict(
+                os.environ, {"OPENAI_API_KEY": "local-auth"}, clear=True
+            ):
+                self.assertEqual(_load_api_key({}, url), "local-auth")
+
     def test_custom_remote_endpoint_does_not_inherit_deepseek_environment_key(self) -> None:
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-private"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "Provider API key not configured"):

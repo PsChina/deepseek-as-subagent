@@ -189,6 +189,18 @@ def _is_http_endpoint(value: object) -> bool:
     return parsed.scheme.lower() == "http"
 
 
+def _is_loopback_endpoint(value: object) -> bool:
+    try:
+        _value, parsed, hostname = _parse_base_url(value)
+    except RuntimeError:
+        return False
+    return bool(
+        parsed.scheme.lower() in {"http", "https"}
+        and hostname
+        and hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+    )
+
+
 def _configured_api_key(data: dict) -> str:
     configured = data.get("api_key", "")
     if not isinstance(configured, str):
@@ -211,10 +223,12 @@ def _load_api_key(data: dict, base_url: object | None = None) -> str:
     endpoint = base_url if base_url is not None else data.get(
         "base_url", "https://api.deepseek.com"
     )
-    if _is_http_endpoint(endpoint):
-        # Plain HTTP may point to a LAN-hosted local model. Never forward a
-        # stored DeepSeek key or config api_key over an unencrypted connection;
-        # OPENAI_API_KEY is the explicit opt-in for endpoints that require auth.
+    if _is_http_endpoint(endpoint) or _is_loopback_endpoint(endpoint):
+        # Plain HTTP may point to a LAN-hosted local model, and loopback HTTPS
+        # is often a local gateway. Never forward a stored DeepSeek key or the
+        # config api_key to a local/LAN endpoint just because the config holds
+        # one; OPENAI_API_KEY is the explicit opt-in for authenticated local
+        # servers.
         credential = (os.getenv("OPENAI_API_KEY") or "").strip()
         return credential or "local-no-auth"
 

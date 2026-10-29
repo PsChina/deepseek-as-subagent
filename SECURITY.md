@@ -12,8 +12,9 @@ by DeepSeek are sent to the configured OpenAI-compatible endpoint. Do not
 delegate secrets or data that endpoint is not permitted to receive. The default
 endpoint is `https://api.deepseek.com`. Provider `base_url` accepts HTTP or HTTPS;
 plain HTTP is unencrypted and should only be used on loopback or trusted networks.
-For every HTTP provider URL, the stored `api_key` and `DEEPSEEK_API_KEY` are never
-forwarded; only an explicitly configured `OPENAI_API_KEY` is used for authentication.
+For every HTTP provider URL and every loopback endpoint (HTTP or HTTPS), the
+stored `api_key` and `DEEPSEEK_API_KEY` are never forwarded; only an explicitly
+configured `OPENAI_API_KEY` is used for authentication.
 
 Trusted-host Bash receives no provider credential, proxy variable, or host
 `HOME`; its `HOME` is the workspace. It runs with the local user's permissions,
