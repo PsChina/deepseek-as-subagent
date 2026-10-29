@@ -181,18 +181,6 @@ def _validate_credential_storage(data: dict) -> None:
         )
 
 
-def _is_loopback_endpoint(value: object) -> bool:
-    try:
-        _value, parsed, hostname = _parse_base_url(value)
-    except RuntimeError:
-        return False
-    return bool(
-        parsed.scheme.lower() in {"http", "https"}
-        and hostname
-        and hostname.lower() in {"localhost", "127.0.0.1", "::1"}
-    )
-
-
 def _is_http_endpoint(value: object) -> bool:
     try:
         _value, parsed, _hostname = _parse_base_url(value)
@@ -223,7 +211,7 @@ def _load_api_key(data: dict, base_url: object | None = None) -> str:
     endpoint = base_url if base_url is not None else data.get(
         "base_url", "https://api.deepseek.com"
     )
-    if _is_http_endpoint(endpoint) or _is_loopback_endpoint(endpoint):
+    if _is_http_endpoint(endpoint):
         # Plain HTTP may point to a LAN-hosted local model. Never forward a
         # stored DeepSeek key or config api_key over an unencrypted connection;
         # OPENAI_API_KEY is the explicit opt-in for endpoints that require auth.
