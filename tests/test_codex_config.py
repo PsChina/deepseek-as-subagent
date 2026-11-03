@@ -529,5 +529,66 @@ command = "/managed/deepseek-mcp"
         )
 
 
+class ConfigModePolicyTests(unittest.TestCase):
+    def test_windows_st_mode_cannot_force_a_config_rewrite(self) -> None:
+        snapshot = codex_configure._FileSnapshot
+        data = b'[mcp_servers.deepseek]\ncommand = "x"\n'
+        with patch.object(os, "name", "nt"):
+            # A normal Windows file reports 0o666; identical content must not
+            # trigger a transaction, backup, and replacement.
+            self.assertFalse(codex_configure._needs_install(
+                snapshot(True, data, 0o666), data
+            ))
+            self.assertTrue(codex_configure._needs_install(
+                snapshot(True, data, 0o666), data + b"# changed\n"
+            ))
+        with patch.object(os, "name", "posix"):
+            self.assertFalse(codex_configure._needs_install(
+                snapshot(True, data, 0o600), data
+            ))
+            # On POSIX a group-readable mode is still a real change to undo.
+            self.assertTrue(codex_configure._needs_install(
+                snapshot(True, data, 0o666), data
+            ))
+
+
+class ConfigLeaseContentionTests(unittest.TestCase):
+    def test_busy_lease_reports_one_line_error_not_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = root / "config.toml"
+            config.write_text("", encoding="utf-8")
+            program = f'''
+from pathlib import Path
+from adapters.codex import configure as module
+from adapters.codex import configure_cli
+
+module.config_lock.LOCK_WAIT_SECONDS = 0.2
+raise SystemExit(configure_cli.run(module, [
+    "install",
+    "--config", {str(config)!r},
+    "--backup", {str(root / "backup.toml")!r},
+    "--manifest", {str(root / "manifest.json")!r},
+    "--command", {str(root / "deepseek-mcp")!r},
+]))
+'''
+            with codex_configure._ConfigLease(config):
+                completed = subprocess.run(
+                    [sys.executable, "-c", program],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+            self.assertEqual(
+                completed.stderr.strip(),
+                "error: Codex config lock is busy; another install may be running",
+            )
+            self.assertNotIn("Traceback", completed.stderr)
+            self.assertFalse((root / "manifest.json").exists())
+            self.assertFalse((root / "backup.toml").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

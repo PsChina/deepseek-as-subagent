@@ -9,6 +9,7 @@ import json
 import os
 import stat
 import sys
+import time
 import uuid
 from pathlib import Path
 from collections.abc import Callable
@@ -17,19 +18,20 @@ from typing import NamedTuple
 import tomlkit
 
 if __package__:
-    from . import atomic_commit, windows_file_io
+    from . import atomic_commit, config_lock, windows_file_io
     from .configure_policy import (
         ConfigTransactionError, EXPOSED_TOOLS, FORWARDED_ENV_VARS,
         MANAGED_MARKER, OwnershipError, configure_install, configure_uninstall,
-        validate_registration_absent, validate_registration_payload,
+        mode_is_private, validate_registration_absent, validate_registration_payload,
     )
 else:  # Executed directly by the installer.
     import atomic_commit
+    import config_lock
     import windows_file_io
     from configure_policy import (
         ConfigTransactionError, EXPOSED_TOOLS, FORWARDED_ENV_VARS,
         MANAGED_MARKER, OwnershipError, configure_install, configure_uninstall,
-        validate_registration_absent, validate_registration_payload,
+        mode_is_private, validate_registration_absent, validate_registration_payload,
     )
 
 
@@ -64,48 +66,57 @@ class _ConfigLease:
         self.descriptor = -1
 
     def __enter__(self):
+        self._open_descriptor()
+        try:
+            self._require_private_file()
+            self._acquire()
+        except BaseException:
+            self._close_descriptor()
+            raise
+        return self
+
+    def _open_descriptor(self) -> None:
         if os.name == "nt":
             try:
                 self.descriptor = windows_file_io.open_lock(self.path)
             except (OSError, windows_file_io.WindowsPathError) as exc:
                 raise ConfigTransactionError("Codex config lock is unsafe") from exc
-        else:
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            flags = os.O_RDWR | os.O_CREAT
-            flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-            self.descriptor = os.open(self.path, flags, 0o600)
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        flags = os.O_RDWR | os.O_CREAT
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        self.descriptor = os.open(self.path, flags, 0o600)
+
+    def _require_private_file(self) -> None:
         info = os.fstat(self.descriptor)
         unsafe_links = os.name == "nt" and info.st_nlink != 1
         if not stat.S_ISREG(info.st_mode) or unsafe_links:
-            os.close(self.descriptor)
-            self.descriptor = -1
             raise ConfigTransactionError("Codex config lock is not a private regular file")
-        if os.name == "nt":
-            import msvcrt
 
-            if info.st_size == 0:
-                os.write(self.descriptor, b"\0")
-            os.lseek(self.descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(self.descriptor, msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            os.fchmod(self.descriptor, 0o600)
-            fcntl.flock(self.descriptor, fcntl.LOCK_EX)
-        return self
+    def _acquire(self) -> None:
+        # Contention is expected (two installers, or a holder still running),
+        # so it must surface as one catchable transaction error, never a raw
+        # OSError traceback from msvcrt/fcntl and never an unbounded block.
+        deadline = time.monotonic() + config_lock.LOCK_WAIT_SECONDS
+        while True:
+            busy = config_lock.try_acquire(self.descriptor)
+            if busy is None:
+                self.locked = True
+                return
+            if time.monotonic() >= deadline:
+                raise ConfigTransactionError(config_lock.LOCK_BUSY) from busy
+            time.sleep(config_lock.LOCK_POLL_SECONDS)
 
     def __exit__(self, _exc_type, _exc, _traceback):
         try:
-            if os.name == "nt":
-                import msvcrt
-
-                os.lseek(self.descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(self.descriptor, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self.descriptor, fcntl.LOCK_UN)
+            if self.locked:
+                config_lock.release(self.descriptor)
+                self.locked = False
         finally:
+            self._close_descriptor()
+
+    def _close_descriptor(self) -> None:
+        if self.descriptor >= 0:
             os.close(self.descriptor)
             self.descriptor = -1
 def _sha256(data: bytes) -> str:
@@ -182,7 +193,9 @@ def _snapshot_matches(path: Path, expected: _FileSnapshot) -> bool:
 def _same_snapshot(current: _FileSnapshot, expected: _FileSnapshot) -> bool:
     return current == expected and _sha256(current.data) == _sha256(expected.data)
 def _needs_install(snapshot: _FileSnapshot, installed: bytes) -> bool:
-    return installed != snapshot.data or (snapshot.exists and snapshot.mode != 0o600)
+    return installed != snapshot.data or (
+        snapshot.exists and not mode_is_private(snapshot.mode)
+    )
 def _load_document(raw: bytes):
     try:
         text = raw.decode("utf-8")
