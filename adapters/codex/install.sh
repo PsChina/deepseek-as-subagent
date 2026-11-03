@@ -178,8 +178,6 @@ else
 fi
 PYBIN="$VENV_BIN/python"
 [ -x "$PYBIN.exe" ] && PYBIN="$PYBIN.exe"
-CLI="$VENV_BIN/deepseek-mcp"
-[ -x "$CLI.exe" ] && CLI="$CLI.exe"
 "${PYTHON_CMD[@]}" "$PATH_GUARD" validate-venv "$GENERATION_DIR" "$PYBIN"
 
 echo "[2/5] Installing deepseek-as-subagent..."
@@ -187,8 +185,13 @@ echo "[2/5] Installing deepseek-as-subagent..."
 "$PYBIN" -m pip install --quiet --no-deps --no-build-isolation "$PROJECT_ROOT"
 "$PYBIN" -m pip check
 
-if [ ! -e "$CLI" ]; then
-    echo "✗ deepseek-mcp entrypoint was not created at $CLI"
+# The console script exists only now, and MSYS `test -e` resolves
+# `deepseek-mcp` to `deepseek-mcp.exe` while Python's Path.is_file does not.
+# Ask the runtime that will actually execute it which name is real, so the
+# shell probe and the smoke test cannot disagree about the same path.
+CLI="$("$PYBIN" "$PROJECT_ROOT/adapters/codex/resolve_entrypoint.py" "$VENV_BIN")" || CLI=""
+if [ -z "$CLI" ]; then
+    echo "✗ deepseek-mcp entrypoint was not created in $VENV_BIN" >&2
     exit 1
 fi
 

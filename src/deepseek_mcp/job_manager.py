@@ -70,6 +70,7 @@ class JobRecord:
     finished_at: float | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    progress: dict[str, Any] | None = None
     usage_recorded: bool = False
     usage_recording: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -143,6 +144,7 @@ class _JobOutcome:
     result: dict[str, Any] | None
     error: str | None
     preserve_mutation_error: bool = False
+    progress: dict[str, Any] | None = None
 
 
 def _run_background_agent(
@@ -159,11 +161,11 @@ def _run_background_agent(
         )
     except MutationOutcomeError as error:
         status = "cancelled" if isinstance(error, AgentLoopCancelled) else "failed"
-        return _JobOutcome(status, None, str(error), True)
+        return _JobOutcome(status, None, str(error), True, getattr(error, "progress", None))
     except AgentLoopCancelled as error:
-        return _JobOutcome("cancelled", None, str(error))
+        return _JobOutcome("cancelled", None, str(error), False, getattr(error, "progress", None))
     except AgentLoopError as error:
-        return _JobOutcome("failed", None, str(error))
+        return _JobOutcome("failed", None, str(error), False, getattr(error, "progress", None))
     except Exception:
         logger.error("DeepSeek background job failed category=internal")
         return _JobOutcome("failed", None, "unexpected internal failure")
@@ -350,6 +352,8 @@ class DeepSeekJobManager:
     def _result_payload_locked(job: JobRecord) -> dict[str, Any]:
         payload = job.snapshot()
         payload["result"] = job.result if job.status == "completed" else None
+        if job.progress and job.status != "completed":
+            payload["partial_progress"] = job.progress
         payload["ready"] = job.status in TERMINAL_STATES
         return payload
 
@@ -391,6 +395,7 @@ class DeepSeekJobManager:
             error=outcome.error,
             lease=lease,
             preserve_mutation_error=outcome.preserve_mutation_error,
+            progress=outcome.progress,
         )
 
     def _finish_job(
@@ -402,6 +407,7 @@ class DeepSeekJobManager:
         error: str | None,
         lease: WorkspaceExecutionLease,
         preserve_mutation_error: bool = False,
+        progress: dict[str, Any] | None = None,
     ) -> None:
         """Commit one terminal state atomically with accepted cancellation."""
         with self._lock:
@@ -419,6 +425,7 @@ class DeepSeekJobManager:
                 job.status = desired_status
                 job.result = result if desired_status == "completed" else None
                 job.error = error
+            job.progress = None if desired_status == "completed" else progress
             job.finished_at = time.time()
             job.close_messages()
             if self._active_job_id == job_id:

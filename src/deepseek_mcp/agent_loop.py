@@ -33,6 +33,7 @@ from .resource_budget import (
     MutationBudget,
     ResourceBudgetExceeded,
 )
+from .run_progress import attach_progress
 from .tools import build_tool_schemas, execute_tool
 from .tool_process import execute_in_subprocess
 
@@ -126,12 +127,14 @@ def run_agent(
     except Exception as error:
         if state.mutations.records:
             _raise_with_mutation_records(state, error)
+        attach_progress(error, state)
         raise
 
 
 def _raise_with_mutation_records(
     state: _AgentState, error: BaseException,
 ) -> None:
+    attach_progress(error, state)
     if not state.mutations.records:
         raise error
     reason = error if isinstance(error, AgentLoopError) else "unexpected internal failure"
@@ -141,7 +144,9 @@ def _raise_with_mutation_records(
         if isinstance(error, AgentLoopCancelled)
         else MutationOutcomeError
     )
-    raise error_type(message, tuple(state.mutations.records)) from None
+    stopped = error_type(message, tuple(state.mutations.records))
+    attach_progress(stopped, state)
+    raise stopped from None
 
 
 def _create_agent_state(

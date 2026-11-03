@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 API_RETRY_ATTEMPTS = 2
 API_RETRY_BACKOFF_SECONDS = 2.0
+CLIENT_RETRY_ATTEMPTS = 1
+TERMINAL_OUTPUT_FAILURES = frozenset(
+    {"category=output_truncated", "category=content_filtered"}
+)
 
 
 class AgentLoopError(Exception):
@@ -65,32 +69,56 @@ def call_with_retry(
     cancel_signal: CancellationSignal | None = None,
     deadline: Deadline | None = None,
 ):
-    """Retry only redacted transient failures from the killable child process."""
-    last_summary = "category=api"
-    attempts = 1 + API_RETRY_ATTEMPTS
-    for attempt in range(attempts):
+    """Retry only redacted transient failures from the killable child process.
+
+    ``category=client`` means the local child failed — spawn, pipe, crash, or
+    an unparsable envelope — rather than the API answering. The child performs
+    exactly one HTTP request and never touches the workspace, so re-sending the
+    same messages cannot duplicate a committed mutation. Aborting a multi-turn
+    run at turn five over one local hiccup was the costlier failure.
+    """
+    api_retries, client_retries = API_RETRY_ATTEMPTS, CLIENT_RETRY_ATTEMPTS
+    api_attempts = client_attempts = 0
+    while True:
         check_cancel(cancel_signal)
         response, summary, retryable = _request_once(
             config, messages, tools, cancel_signal, deadline
         )
         if response is not None:
             return response
-        if not retryable:
-            if summary in {"category=output_truncated", "category=content_filtered"}:
-                raise ProviderOutputError(
-                    f"DeepSeek model response incomplete: {summary}"
-                ) from None
-            kind = "client" if summary == "category=client" else "API"
-            raise AgentLoopError(
-                f"DeepSeek {kind} error on turn {turn}: {summary}"
+        if summary in TERMINAL_OUTPUT_FAILURES:
+            raise ProviderOutputError(
+                f"DeepSeek model response incomplete: {summary}"
             ) from None
-        last_summary = summary
-        if attempt < API_RETRY_ATTEMPTS:
-            _backoff(attempt, attempts, turn, summary, cancel_signal, deadline)
-    raise AgentLoopError(
-        f"DeepSeek API unreachable after {attempts} attempts on turn {turn}: "
-        f"{last_summary}"
-    ) from None
+        local = summary == "category=client"
+        if local and client_retries:
+            client_retries, client_attempts = client_retries - 1, client_attempts + 1
+            _backoff(
+                client_attempts - 1, 1 + CLIENT_RETRY_ATTEMPTS,
+                turn, summary, cancel_signal, deadline,
+            )
+            continue
+        if not local and retryable and api_retries:
+            api_retries, api_attempts = api_retries - 1, api_attempts + 1
+            _backoff(
+                api_attempts - 1, 1 + API_RETRY_ATTEMPTS,
+                turn, summary, cancel_signal, deadline,
+            )
+            continue
+        raise _terminal_failure(turn, summary, local, api_attempts) from None
+
+
+def _terminal_failure(
+    turn: int, summary: str, local: bool, api_attempts: int
+) -> AgentLoopError:
+    if local:
+        return AgentLoopError(f"DeepSeek client error on turn {turn}: {summary}")
+    if api_attempts:
+        return AgentLoopError(
+            f"DeepSeek API unreachable after {1 + api_attempts} attempts "
+            f"on turn {turn}: {summary}"
+        )
+    return AgentLoopError(f"DeepSeek API error on turn {turn}: {summary}")
 
 
 def _request_once(config, messages, tools, cancel_signal, deadline):
@@ -118,7 +146,7 @@ def _backoff(
 ) -> None:
     wait = API_RETRY_BACKOFF_SECONDS * (attempt + 1)
     logger.warning(
-        "Turn %d API transient error (attempt %d/%d): %s; retry in %.1fs",
+        "Turn %d transient provider request error (attempt %d/%d): %s; retry in %.1fs",
         turn,
         attempt + 1,
         attempts,

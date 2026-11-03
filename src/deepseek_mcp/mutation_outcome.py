@@ -74,12 +74,19 @@ def mutation_record(
 def mutation_failure_message(
     records: list[MutationRecord], failure: BaseException | str,
 ) -> str:
-    reason = str(failure)
+    """Keep the review handshake separate from the reason the run stopped.
+
+    One run-on clause reads as though the provider failure were the mutation
+    itself. The host needs the review requirement first, plus the stopping
+    reason as its own quotable line.
+    """
+    reason = str(failure) or "unknown failure"
     return (
-        f"workspace mutation requires review: {_summaries(records)}; "
-        "call get_deepseek_recovery, verify the files, then call "
-        "acknowledge_deepseek_mutations; DO NOT RETRY; subsequent execution "
-        f"stopped: {reason}"
+        "workspace mutation requires review: "
+        f"{_summaries(records)}; DO NOT RETRY the delegation until you call "
+        "get_deepseek_recovery, verify the files, then call "
+        "acknowledge_deepseek_mutations.\n"
+        f"execution stopped before acknowledgement: {reason}"
     )
 
 

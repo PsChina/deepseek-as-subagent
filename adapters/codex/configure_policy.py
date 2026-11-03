@@ -55,6 +55,18 @@ class OwnershipError(ConfigTransactionError):
     """The existing same-name MCP entry is not recognizably ours."""
 
 
+def mode_is_private(mode: int) -> bool:
+    """Whether st_mode proves a config file is not group/world accessible.
+
+    Windows st_mode only reflects the read-only bit, so a normal file reports
+    0o666 and can never satisfy the 0o600 expectation. NTFS privacy there is
+    enforced by the ACL validation inside windows_file_io on the write path, so
+    treating st_mode as authoritative on Windows would rewrite the managed block
+    on every install and widen the crash window this transaction closes.
+    """
+    return os.name == "nt" or mode == 0o600
+
+
 def _mapping(value: object, label: str) -> MutableMapping[str, object]:
     if not isinstance(value, MutableMapping):
         raise ConfigTransactionError(f"{label} must be a TOML table")

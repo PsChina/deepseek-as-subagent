@@ -32,8 +32,13 @@ from deepseek_mcp.provider_child import MAX_API_RESPONSE_BYTES, execute_request
 from deepseek_mcp.provider_response import ProviderResponse
 from deepseek_mcp.provider_process import ProviderRequestDeadline
 from deepseek_mcp.provider_process import _decode_response
-from deepseek_mcp.mutation_outcome import mutation_record
-from deepseek_mcp.provider_retry import MutationOutcomeCancelled, MutationOutcomeError, ProviderOutputError
+from deepseek_mcp.mutation_outcome import mutation_failure_message, mutation_record
+from deepseek_mcp.provider_retry import (
+    CLIENT_RETRY_ATTEMPTS,
+    MutationOutcomeCancelled,
+    MutationOutcomeError,
+    ProviderOutputError,
+)
 from deepseek_mcp.resource_budget import (
     MAX_TOOL_CALLS_PER_RUN,
     MAX_TOOL_CALLS_PER_TURN,
@@ -546,6 +551,22 @@ class RetryPolicyTests(unittest.TestCase):
         self.assertIn("DO NOT RETRY", str(raised.exception))
         self.assertIn("empty final response", str(raised.exception))
 
+    def test_stop_reason_stays_apart_from_the_review_requirement(self) -> None:
+        message = mutation_failure_message(
+            [mutation_record("a" * 32, "Write", "committed")],
+            "DeepSeek client error on turn 3: category=client",
+        )
+        review, stopped = message.splitlines()
+        self.assertIn("workspace mutation requires review", review)
+        self.assertIn("a" * 32, review)
+        self.assertIn("DO NOT RETRY", review)
+        self.assertIn("get_deepseek_recovery", review)
+        self.assertIn("acknowledge_deepseek_mutations", review)
+        self.assertNotIn("category=client", review)
+        self.assertIn("execution stopped before acknowledgement", stopped)
+        self.assertIn("DeepSeek client error on turn 3: category=client", stopped)
+        self.assertNotIn("DO NOT RETRY", stopped)
+
     def test_bash_failure_history_keeps_later_success_distinct(self) -> None:
         config = Config("sk-test", Path.cwd(), allowed_tools=["Bash"])
         with (
@@ -846,16 +867,78 @@ class RetryPolicyTests(unittest.TestCase):
             patch(
                 "deepseek_mcp.provider_retry.request_in_subprocess",
                 return_value=(None, "category=client", False),
-            ),
+            ) as request,
+            patch("deepseek_mcp.provider_retry.time.sleep") as sleep,
             self.assertRaises(AgentLoopError) as raised,
         ):
             _call_with_retry(_config(), [], [], 0)
 
+        self.assertEqual(request.call_count, 1 + CLIENT_RETRY_ATTEMPTS)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2.0])
         self.assertNotIn(marker, _exception_chain_text(raised.exception))
         self.assertIsNone(raised.exception.__context__)
         self.assertEqual(
             str(raised.exception),
             "DeepSeek client error on turn 0: category=client",
+        )
+
+    def test_local_child_failure_is_retried_once_and_can_succeed(self) -> None:
+        recovered = object()
+
+        with (
+            patch(
+                "deepseek_mcp.provider_retry.request_in_subprocess",
+                side_effect=[(None, "category=client", False), (recovered, "", False)],
+            ) as request,
+            patch("deepseek_mcp.provider_retry.time.sleep") as sleep,
+        ):
+            response = _call_with_retry(_config(), [], [], 4)
+
+        self.assertIs(response, recovered)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2.0])
+
+    def test_local_child_retry_replays_the_same_request_and_no_tools(self) -> None:
+        messages = [{"role": "user", "content": "translate README.md"}]
+        tools = [{"type": "function", "function": {"name": "Read"}}]
+
+        with (
+            patch(
+                "deepseek_mcp.provider_retry.request_in_subprocess",
+                side_effect=[(None, "category=client", False), (object(), "", False)],
+            ) as request,
+            patch("deepseek_mcp.provider_retry.time.sleep"),
+        ):
+            _call_with_retry(_config(), messages, tools, 0)
+
+        replays = [call.args[1] for call in request.call_args_list]
+        # The retry re-sends the provider request; it cannot re-run a committed
+        # workspace mutation, because only the provider child ran in between.
+        self.assertIs(replays[0], messages)
+        self.assertEqual(replays[1], messages)
+        self.assertEqual([call.args[2] for call in request.call_args_list], [tools, tools])
+
+    def test_local_child_retry_leaves_the_api_budget_untouched(self) -> None:
+        connection = (None, "category=connection", True)
+
+        with (
+            patch(
+                "deepseek_mcp.provider_retry.request_in_subprocess",
+                side_effect=[
+                    (None, "category=client", False),
+                    connection, connection, connection,
+                ],
+            ) as request,
+            patch("deepseek_mcp.provider_retry.time.sleep") as sleep,
+            self.assertRaises(AgentLoopError) as raised,
+        ):
+            _call_with_retry(_config(), [], [], 0)
+
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2.0, 2.0, 4.0])
+        self.assertEqual(
+            str(raised.exception),
+            "DeepSeek API unreachable after 3 attempts on turn 0: category=connection",
         )
 
     def test_final_failure_does_not_sleep_after_last_attempt(self) -> None:

@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deepseek_mcp.agent_loop import AgentIncompleteResponse, AgentLoopCancelled
+from deepseek_mcp.agent_loop import (
+    AgentIncompleteResponse,
+    AgentLoopCancelled,
+    AgentLoopError,
+)
 from deepseek_mcp.config import Config
 from deepseek_mcp.job_manager import (
     MAX_CONTEXT_BYTES,
@@ -133,6 +137,55 @@ class JobManagerTests(unittest.TestCase):
         result = manager.result(started["job_id"])
         self.assertTrue(result["ready"])
         self.assertIsNone(result["result"])
+
+    def test_failed_job_reports_how_far_the_run_got(self) -> None:
+        manager = self._manager()
+
+        def failing(task, config, **kwargs):
+            error = AgentLoopError(
+                "DeepSeek client error on turn 4: category=client"
+            )
+            error.progress = {
+                "turns_used": 4,
+                "tool_calls": 12,
+                "tokens": {"prompt": 900, "completion": 100, "total": 1000},
+                "mutations": [],
+                "duration_seconds": 37.5,
+            }
+            raise error
+
+        with patch("deepseek_mcp.job_manager.run_agent", side_effect=failing):
+            started = manager.start("translate every README", "", self._config())
+            status = self._assert_terminal(manager, started["job_id"])
+
+        self.assertEqual(status["status"], "failed")
+        payload = manager.result(started["job_id"])
+        self.assertIsNone(payload["result"])
+        self.assertEqual(payload["partial_progress"]["turns_used"], 4)
+        self.assertEqual(payload["partial_progress"]["tool_calls"], 12)
+
+    def test_cancelled_job_reports_progress_of_the_turns_it_reached(self) -> None:
+        manager = self._manager()
+
+        def cancelling(task, config, **kwargs):
+            error = AgentLoopCancelled("cancelled by host")
+            error.progress = {"turns_used": 2, "tool_calls": 3, "mutations": []}
+            raise error
+
+        with patch("deepseek_mcp.job_manager.run_agent", side_effect=cancelling):
+            started = manager.start("task", "", self._config())
+            self._assert_terminal(manager, started["job_id"])
+
+        payload = manager.result(started["job_id"])
+        self.assertEqual(payload["status"], "cancelled")
+        self.assertEqual(payload["partial_progress"]["turns_used"], 2)
+
+    def test_completed_job_keeps_no_partial_progress_section(self) -> None:
+        manager = self._manager()
+        with patch("deepseek_mcp.job_manager.run_agent", return_value=_result()):
+            started = manager.start("test task", "", self._config())
+            self._assert_terminal(manager, started["job_id"])
+        self.assertNotIn("partial_progress", manager.result(started["job_id"]))
 
     def test_cancel_is_cooperative_and_reaches_cancelled(self) -> None:
         manager = self._manager()
