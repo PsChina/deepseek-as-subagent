@@ -155,7 +155,10 @@ when several Codex/MCP processes exist. Different workspaces can run
 independently. Background job state is held in the current MCP process only:
 collect its result before closing or restarting the Codex task.
 
-Every workspace mutation is journaled before commit. After a result reports
+`Write`, `Edit`, and `NotebookEdit` mutations are journaled before commit;
+trusted-host Bash changes are not journaled and never appear in
+`get_deepseek_recovery`, so inspect the workspace independently after any run
+where Bash executed. After a result reports
 mutations, call `get_deepseek_recovery`, verify each file, then call
 `acknowledge_deepseek_mutations` with the exact reviewed IDs. After cancellation,
 disconnect, or restart, query recovery before retrying. New delegation is blocked

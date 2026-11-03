@@ -40,7 +40,10 @@ One DeepSeek execution may run per canonical workspace across both API types and
 across MCP server processes. Background jobs and their IDs are scoped to the
 current MCP session.
 
-Every file mutation is durably journaled before commit. After any result that
+`Write`, `Edit`, and `NotebookEdit` mutations are durably journaled before
+commit. Trusted-host Bash runs outside that journal and can change workspace
+files without ever appearing in `get_deepseek_recovery`; after any run where
+Bash executed, inspect the workspace independently. After any result that
 contains mutations, call `get_deepseek_recovery`, verify each reported file,
 then pass the exact transaction IDs to
 `acknowledge_deepseek_mutations(transaction_ids)`. Do the same after
