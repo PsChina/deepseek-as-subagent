@@ -422,7 +422,7 @@ class InstallerPathGuardTests(unittest.TestCase):
             self.assertTrue(sibling.is_dir())
 
     def test_codex_installer_prunes_only_after_registration_is_verified(self) -> None:
-        install = (ROOT / "adapters/codex/install.sh").read_text()
+        install = (ROOT / "adapters/codex/install.sh").read_text(encoding="utf-8")
         verification = install.index("if ! verify_registration; then")
         success = install.index("INSTALL_SUCCEEDED=1", verification)
         pruning = install.index("prune-generations", success)
@@ -438,8 +438,8 @@ class InstallerPathGuardTests(unittest.TestCase):
         self.assertNotIn("rm -rf", install)
 
     def test_codex_install_and_uninstall_share_a_fail_closed_mkdir_lease(self) -> None:
-        install = (ROOT / "adapters/codex/install.sh").read_text()
-        uninstall = (ROOT / "adapters/codex/uninstall.sh").read_text()
+        install = (ROOT / "adapters/codex/install.sh").read_text(encoding="utf-8")
+        uninstall = (ROOT / "adapters/codex/uninstall.sh").read_text(encoding="utf-8")
 
         for script in (install, uninstall):
             self.assertIn('ADAPTER_LOCK="$CONFIG_DIR/codex-adapter.lock"', script)
@@ -454,8 +454,8 @@ class InstallerPathGuardTests(unittest.TestCase):
         )
 
     def test_codex_installer_avoids_empty_arrays_under_set_u(self) -> None:
-        install = (ROOT / "adapters/codex/install.sh").read_text()
-        uninstall = (ROOT / "adapters/codex/uninstall.sh").read_text()
+        install = (ROOT / "adapters/codex/install.sh").read_text(encoding="utf-8")
+        uninstall = (ROOT / "adapters/codex/uninstall.sh").read_text(encoding="utf-8")
 
         self.assertNotIn('${CONFIG_ARGS[@]}', install)
         self.assertIn('if [ "$FORCE_REPLACE" -eq 1 ]; then', install)
@@ -465,7 +465,7 @@ class InstallerPathGuardTests(unittest.TestCase):
 
     def test_codex_rollbacks_mask_reentrant_signals_before_recovery(self) -> None:
         for name in ("install.sh", "uninstall.sh"):
-            script = (ROOT / "adapters" / "codex" / name).read_text()
+            script = (ROOT / "adapters" / "codex" / name).read_text(encoding="utf-8")
             on_exit = script.index("on_exit() {")
             masked = script.index("trap '' INT TERM HUP", on_exit)
             rollback = script.index('"$CONFIG_HELPER" rollback', on_exit)
