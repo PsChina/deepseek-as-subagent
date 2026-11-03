@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from .process_hardening import harden_provider_process
 from .parent_liveness import wait_for_parent_loss_or_timeout
+from .proxy_environment import sanitized_no_proxy_scope
 from .provider_settings import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     is_deepseek_endpoint,
@@ -62,6 +63,20 @@ def _bounded_timeout(request_timeout: float) -> httpx.Timeout:
         write=min(API_WRITE_TIMEOUT_SECONDS, request_timeout),
         pool=min(API_POOL_TIMEOUT_SECONDS, request_timeout),
     )
+
+
+def _build_transport(base_url: str, request_timeout: float) -> httpx.Client:
+    """Build the transport only after correcting unparsable no_proxy spellings.
+
+    httpx reads the environment with no injection point, so the correction has
+    to bracket the construction itself; without it a Docker Desktop style
+    ``[::1]`` entry raised ``InvalidURL`` and the run died as ``category=client``.
+    """
+    with sanitized_no_proxy_scope():
+        return httpx.Client(
+            timeout=_bounded_timeout(request_timeout),
+            trust_env=_trust_proxy_environment(base_url),
+        )
 
 
 def _is_local_network_host(hostname: str) -> bool:
@@ -156,10 +171,7 @@ def execute_request(
     client: OpenAI | None = None
     http_client: httpx.Client | None = None
     try:
-        http_client = httpx.Client(
-            timeout=_bounded_timeout(request_timeout),
-            trust_env=_trust_proxy_environment(settings["base_url"]),
-        )
+        http_client = _build_transport(settings["base_url"], request_timeout)
         client = OpenAI(
             **{"api_" + "key": settings["credential"]},
             base_url=settings["base_url"],

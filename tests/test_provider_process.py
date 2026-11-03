@@ -83,10 +83,77 @@ class ProviderProcessTests(unittest.TestCase):
         self.messages = [{"role": "user", "content": "wait"}]
 
     def test_parent_provider_boundary_has_no_openai_import(self) -> None:
-        source = (ROOT / "src" / "deepseek_mcp" / "provider_process.py").read_text()
+        source = (ROOT / "src" / "deepseek_mcp" / "provider_process.py").read_text(encoding="utf-8")
 
         self.assertNotIn("from openai", source)
         self.assertNotIn("import openai", source)
+
+    def test_child_stderr_tail_is_logged_once_bounded_and_scrubbed(self) -> None:
+        script = (
+            "import sys;"
+            "sys.stderr.write('x' * 200_000);"
+            f"sys.stderr.write(' child transport exploded {self.config.api_key}');"
+            "sys.stderr.flush(); raise SystemExit(3)"
+        )
+
+        with (
+            patch(
+                "deepseek_mcp.provider_process.isolated_child_argv",
+                return_value=[sys.executable, "-Sc", script],
+            ),
+            self.assertLogs("deepseek_mcp.provider_process", level="WARNING") as logs,
+        ):
+            result = request_in_subprocess(self.config, self.messages, [], None, None)
+
+        self.assertEqual(result, (None, "category=client", False))
+        record = "\n".join(logs.output)
+        self.assertIn("returncode=3", record)
+        self.assertIn("child transport exploded", record)
+        self.assertNotIn(self.config.api_key, record)
+        self.assertNotIn("x" * 5_000, record)
+        self.assertLess(len(record), 2_000)
+
+    def test_large_child_stderr_cannot_deadlock_the_request_pipe(self) -> None:
+        payload = (
+            '{"kind":"ok","response":{"choices":[{"finish_reason":"stop",'
+            '"message":{"role":"assistant","content":"done"}}],'
+            '"usage":{"prompt_tokens":1,"completion_tokens":1}}}'
+        )
+        script = (
+            "import sys;"
+            "sys.stderr.write('e' * 400_000); sys.stderr.flush();"
+            f"print({payload!r})"
+        )
+
+        with patch(
+            "deepseek_mcp.provider_process.isolated_child_argv",
+            return_value=[sys.executable, "-Sc", script],
+        ):
+            started = time.monotonic()
+            response, summary, _retryable = request_in_subprocess(
+                self.config, self.messages, [], None, None
+            )
+
+        self.assertIsNotNone(response)
+        self.assertEqual(summary, "")
+        self.assertLess(time.monotonic() - started, 10.0)
+
+    def test_stderr_tail_keeps_only_the_bounded_tail(self) -> None:
+        sink = provider_process._StderrTail()
+        for _ in range(100):
+            sink.extend(b"y" * 4_096)
+        self.assertEqual(len(sink.content), provider_process.STDERR_TAIL_BYTES)
+        self.assertEqual(sink.total, 409_600)
+
+    def test_stderr_detail_scrubs_credential_shapes(self) -> None:
+        detail = provider_process._redacted_stderr_detail(
+            "Authorization: Bearer abcdef0123456789  api_key = zzzzzzzzzzzzzz  "
+            "sk-live-abcdefghijkl9999  leaked-marker",
+            "placeholder",
+        )
+        self.assertIn("leaked-marker", detail)
+        for secret in ("abcdef0123456789", "zzzzzzzzzzzzzz", "sk-live-abcdefghijkl9999"):
+            self.assertNotIn(secret, detail)
 
     @unittest.skipUnless(os.name == "posix", "core dump limits require POSIX")
     def test_provider_child_disables_core_dumps_before_reading_request(self) -> None:
@@ -444,7 +511,7 @@ class ProviderProcessTests(unittest.TestCase):
             try:
                 os.chdir(workspace)
                 with patch.dict(os.environ, {"PYTHONPATH": str(workspace)}):
-                    process = provider_process._start_provider(4.0)
+                    process = provider_process._start_provider(4.0, subprocess.DEVNULL)
                     output, _ = process.communicate(b"{}", timeout=8)
             finally:
                 os.chdir(previous)
@@ -458,8 +525,8 @@ class ProviderProcessTests(unittest.TestCase):
         child_pids: list[int] = []
         original_start = provider_process._start_provider
 
-        def recording_start(timeout: float):
-            process = original_start(timeout)
+        def recording_start(timeout: float, stderr_target: int):
+            process = original_start(timeout, stderr_target)
             child_pids.append(process.pid)
             return process
 
@@ -497,7 +564,7 @@ class ProviderProcessTests(unittest.TestCase):
     def test_thread_start_failure_closes_provider_pipes(self) -> None:
         processes: list[subprocess.Popen[bytes]] = []
 
-        def start_sleeper(_timeout: float) -> subprocess.Popen[bytes]:
+        def start_sleeper(_timeout: float, _stderr: int) -> subprocess.Popen[bytes]:
             process = subprocess.Popen(
                 [sys.executable, "-c", "import time; time.sleep(30)"],
                 stdin=subprocess.PIPE,
