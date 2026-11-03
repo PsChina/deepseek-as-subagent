@@ -91,12 +91,32 @@ async def smoke(command: Path) -> None:
                 raise RuntimeError(f"ping failed: {text}")
 
 
+def _sibling_hint(command: Path) -> str:
+    """Name the real entries beside a missing command so an extension mismatch is obvious.
+
+    Deliberately does not resolve the path itself: silently accepting a
+    near-miss would hide the installer defect instead of reporting it.
+    """
+    parent = command.parent
+    try:
+        entries = list(parent.iterdir()) if parent.is_dir() else []
+    except OSError:
+        return ""
+    found = sorted(
+        entry.name for entry in entries
+        if entry.name.startswith(command.name) and entry.is_file()
+    )
+    return f"; {parent} contains: {', '.join(found)}" if found else ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", type=Path)
     args = parser.parse_args()
     if not args.command.is_file():
-        parser.error(f"MCP command does not exist: {args.command}")
+        parser.error(
+            f"MCP command does not exist: {args.command}{_sibling_hint(args.command)}"
+        )
     asyncio.run(asyncio.wait_for(smoke(args.command), timeout=20))
     print("       MCP initialize/list_tools/ping OK")
     return 0
