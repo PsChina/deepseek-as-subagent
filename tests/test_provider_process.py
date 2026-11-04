@@ -644,6 +644,15 @@ class ProviderProcessTests(unittest.TestCase):
 
 
 def _process_exists(process_id: int) -> bool:
+    if os.name == "nt":
+        completed = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {process_id}", "/NH"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return str(process_id) in completed.stdout
     completed = subprocess.run(
         ["ps", "-p", str(process_id), "-o", "stat="],
         stdin=subprocess.DEVNULL,
