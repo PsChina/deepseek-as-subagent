@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -122,11 +123,21 @@ class LocalOpenAIEndpointTests(unittest.TestCase):
         self.assertEqual(result["tokens"]["total"], 0)
 
     def test_local_coding_loop_commits_and_verifies_file_changes(self) -> None:
+        # The Bash tool runs the host shell: /bin/sh on POSIX, %COMSPEC% on
+        # Windows, so the verification step has to be spelled the way that shell
+        # understands it. On Windows avoid `findstr /x`: it matches whole lines
+        # and this server writes LF-only files, so /x only ever matches CRLF
+        # files. The strict content check lives in the read_text assertion.
+        verify = (
+            'test "$(cat output.txt)" = verified && printf VERIFIED'
+            if os.name == "posix"
+            else "findstr /c:verified output.txt >nul && echo VERIFIED"
+        )
         base_url = self._start_server([
             ("Read", {"path": "input.txt"}),
             ("Write", {"path": "output.txt", "content": "original\n"}),
             ("Edit", {"path": "output.txt", "old_string": "original", "new_string": "verified"}),
-            ("Bash", {"command": "test \"$(cat output.txt)\" = verified && printf VERIFIED"}),
+            ("Bash", {"command": verify}),
         ])
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir).resolve()
