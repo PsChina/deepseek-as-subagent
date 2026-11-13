@@ -74,6 +74,7 @@ def _config_payload(config) -> dict:
         "max_run_seconds": config.max_run_seconds,
         "delegation_capability": config.delegation_capability,
         "expected_workspace_identity": config.expected_workspace_identity,
+        "effective_policy": config.effective_policy.to_dict() if config.effective_policy is not None else None,
     }
 
 

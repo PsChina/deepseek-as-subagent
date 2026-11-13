@@ -32,6 +32,8 @@ from .agent_loop import AgentIncompleteResponse, AgentLoopCancelled, AgentLoopEr
 from .provider_retry import AgentBudgetExceeded, MutationOutcomeError, MutationOutcomeCancelled, ProviderOutputError
 from .mutation_outcome import mutation_failure_message, records_from_result
 from .config import Config
+from .task_contract import TaskContract
+from .policy_engine import compile_task_policy
 from .execution_profile import (
     CODING_PROFILE, READONLY_PROFILE, ExecutionProfile, configure_delegation,
 )
@@ -231,11 +233,22 @@ def _json(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice = "flash") -> Config:
+def _load_config(
+    profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice = "flash",
+    contract: dict | None = None,
+) -> Config:
     if _deepseek_mode() == "off":
         raise JobError("DeepSeek delegation is disabled (DEEPSEEK_MODE=off)")
     try:
         config = configure_delegation(Config.load(), profile)
+        if contract is not None:
+            try:
+                parsed_contract = TaskContract.from_dict(contract)
+                policy = compile_task_policy(parsed_contract, config.allowed_tools)
+            except ValueError as error:
+                raise JobError(f"invalid task contract: {error}") from None
+            config.effective_policy = policy
+            config.allowed_tools = list(policy.allowed_tools)
         config.model, config.reasoning_effort = resolve_profile(
             model, flash_model=config.flash_model, pro_model=config.pro_model,
             flash_effort=config.flash_reasoning_effort,
@@ -292,9 +305,12 @@ async def _run_sync_cancellable(full_task: str, config: Config) -> dict:
                 raise MutationOutcomeCancelled(message, tuple(records)) from None
         raise
 
-async def _delegate(task: str, context: str, profile: ExecutionProfile, model: ModelChoice) -> str:
+async def _delegate(
+    task: str, context: str, profile: ExecutionProfile, model: ModelChoice,
+    contract: dict | None = None,
+) -> str:
     try:
-        config, full_task = _prepare_sync_request(task, context, profile, model)
+        config, full_task = _prepare_sync_request(task, context, profile, model, contract)
     except JobError as e:
         return str(e)
     try:
@@ -324,24 +340,33 @@ async def _delegate(task: str, context: str, profile: ExecutionProfile, model: M
     return _format_sync_result(result)
 
 @mcp.tool(annotations=_AGENT_EXECUTION)
-async def delegate_to_deepseek(task: str, context: str = "", model: ModelChoice = "flash") -> str:
-    """Run a full coding delegation; Flash is default, Pro is for hard tasks."""
-    return await _delegate(task, context, CODING_PROFILE, model)
+async def delegate_to_deepseek(
+    task: str, context: str = "", model: ModelChoice = "flash",
+    contract: dict | None = None,
+) -> str:
+    """Run a coding delegation, optionally bounded by a task contract."""
+    return await _delegate(task, context, CODING_PROFILE, model, contract)
 
 @mcp.tool(annotations=_READONLY_AGENT_EXECUTION)
-async def delegate_to_deepseek_readonly(task: str, context: str = "", model: ModelChoice = "flash") -> str:
-    """Run pure file analysis; Flash is default, Pro is for hard tasks."""
-    return await _delegate(task, context, READONLY_PROFILE, model)
+async def delegate_to_deepseek_readonly(
+    task: str, context: str = "", model: ModelChoice = "flash",
+    contract: dict | None = None,
+) -> str:
+    """Run read-only analysis, optionally bounded by a task contract."""
+    return await _delegate(task, context, READONLY_PROFILE, model, contract)
 
 
-def _prepare_sync_request(task: str, context: str, profile: ExecutionProfile, model: ModelChoice = "flash") -> tuple[Config, str]:
+def _prepare_sync_request(
+    task: str, context: str, profile: ExecutionProfile,
+    model: ModelChoice = "flash", contract: dict | None = None,
+) -> tuple[Config, str]:
     if _deepseek_mode() == "off":
         raise JobError(
             "DeepSeek delegation is disabled (DEEPSEEK_MODE=off). "
             "Continue the task yourself in the main conversation."
         )
     try:
-        config = _load_config(profile, model)
+        config = _load_config(profile, model, contract)
     except JobError:
         raise
     except Exception as error:
@@ -369,23 +394,32 @@ def _log_sync_completion(result: dict) -> None:
     )
 
 
-def _start_delegation(task: str, context: str, profile: ExecutionProfile, model: ModelChoice) -> str:
+def _start_delegation(
+    task: str, context: str, profile: ExecutionProfile, model: ModelChoice,
+    contract: dict | None = None,
+) -> str:
     try:
-        payload = job_manager.start(task, context, _load_config(profile, model))
+        payload = job_manager.start(task, context, _load_config(profile, model, contract))
     except JobError as e:
         return _json({"ok": False, "error": str(e)})
     logger.info("Background DeepSeek job started: %s model=%s", payload["job_id"], model)
     return _json({"ok": True, **payload})
 
 @mcp.tool(annotations=_AGENT_EXECUTION)
-def start_deepseek(task: str, context: str = "", model: ModelChoice = "flash") -> str:
-    """Start a coding job; Flash is default, Pro is for hard tasks."""
-    return _start_delegation(task, context, CODING_PROFILE, model)
+def start_deepseek(
+    task: str, context: str = "", model: ModelChoice = "flash",
+    contract: dict | None = None,
+) -> str:
+    """Start a coding job, optionally bounded by a task contract."""
+    return _start_delegation(task, context, CODING_PROFILE, model, contract)
 
 @mcp.tool(annotations=_READONLY_AGENT_EXECUTION)
-def start_deepseek_readonly(task: str, context: str = "", model: ModelChoice = "flash") -> str:
-    """Start a read-only job; Flash is default, Pro is for hard tasks."""
-    return _start_delegation(task, context, READONLY_PROFILE, model)
+def start_deepseek_readonly(
+    task: str, context: str = "", model: ModelChoice = "flash",
+    contract: dict | None = None,
+) -> str:
+    """Start a read-only job, optionally bounded by a task contract."""
+    return _start_delegation(task, context, READONLY_PROFILE, model, contract)
 
 @mcp.tool(annotations=_READ_ONLY)
 def get_deepseek_status(job_id: str) -> str:
