@@ -189,7 +189,7 @@ def require_canonical_relative_path(label: str, workspace: Path, resolved: Path)
     raw = Path(label)
     if not raw.parts or raw.is_absolute() or ".." in raw.parts or raw.as_posix() != label:
         raise SandboxViolation("canonical workspace path is not normalized")
-    root = workspace.resolve()
+    root = workspace
     try:
         lexical = (root / raw).absolute().relative_to(root)
         actual = resolved.relative_to(root)
