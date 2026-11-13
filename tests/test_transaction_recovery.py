@@ -107,6 +107,25 @@ class TransactionRecoveryTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["status"], "uncertain")
 
+    def test_batch_acknowledgement_is_all_or_nothing(self) -> None:
+        first = self._record("a" * 32)
+        second_path = self.workspace / "other.txt"
+        second_path.write_text("committed", encoding="utf-8")
+        journal.record_intent(
+            self.config, "b" * 32, "Write", {"path": "other.txt"},
+            hashlib.sha256(b"committed").digest(),
+        )
+        second_path.write_text("changed", encoding="utf-8")
+
+        with self.assertRaisesRegex(TransactionJournalError, "does not match"):
+            acknowledge_with_lease(self.config, [first, "b" * 32], self.locks)
+
+        pending = query_with_lease(self.config, self.locks)
+        self.assertEqual(
+            {item["transaction_id"] for item in pending},
+            {first, "b" * 32},
+        )
+
     def test_recovery_operations_are_busy_during_active_workspace_lease(self) -> None:
         lease = acquire_workspace_lease(self.workspace, self.locks)
         try:
