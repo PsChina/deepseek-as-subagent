@@ -80,7 +80,6 @@ def _relative_target(config, arguments: object) -> str:
         root = config.workspace.resolve()
         target = resolve_safe_path(arguments["path"], root)
         relative = target.relative_to(root)
-        enforce_current_file_policy(relative.as_posix())
     except (OSError, RuntimeError, ValueError, SandboxViolation) as error:
         raise TransactionJournalError("mutation path is outside the workspace") from error
     if not relative.parts:
@@ -391,9 +390,9 @@ def record_intent(
     if tool not in _TOOLS:
         raise TransactionJournalError("journal tool is not a mutation tool")
     baseline_state, baseline_sha256 = _baseline_fields(baseline)
-    path = (
-        _relative_target(config, arguments)
-        if canonical_path is None else _canonical_target(tool, canonical_path)
+    path = _canonical_target(
+        tool,
+        _relative_target(config, arguments) if canonical_path is None else canonical_path,
     )
     record = _StoredRecord(
         identifier, identity, tool, path, _digest(digest),
