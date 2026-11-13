@@ -70,6 +70,13 @@ def check_tool_access(policy: EffectivePolicy, name: str, arguments: dict, works
     if name == "Read":
         return _check_scoped_path(arguments.get("path"), workspace, policy.read_paths, policy.deny_paths, "read")
     if name in _WRITE_TOOLS:
+        if name in {"Edit", "NotebookEdit"}:
+            denied = _check_scoped_path(
+                arguments.get("path"), workspace, policy.read_paths,
+                policy.deny_paths, "read",
+            )
+            if denied:
+                return denied
         return _check_scoped_path(arguments.get("path"), workspace, policy.write_paths, policy.deny_paths, "write")
     if name == "Bash":
         return "ERROR: Bash is disabled for task-contract executions"
