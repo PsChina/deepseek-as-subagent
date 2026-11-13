@@ -690,7 +690,7 @@ server._record_usage(1, {
         self.assertIn("max_tool_calls", schema)
         self.assertIn("max_mutation_bytes", schema)
 
-    def test_public_tool_schemas_add_only_flash_pro_model_selector(self) -> None
+    def test_public_tool_schemas_add_only_flash_pro_model_selector(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
         self.assertEqual(
