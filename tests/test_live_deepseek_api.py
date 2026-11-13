@@ -6,6 +6,7 @@ DEEPSEEK_API_KEY already set. CI intentionally does not supply credentials.
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,8 +30,9 @@ class LiveDeepSeekContractSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary).resolve()
             (workspace / "src").mkdir()
+            marker = "CONTRACT_LIVE_PROBE_" + secrets.token_hex(12)
             (workspace / "src" / "probe.txt").write_text(
-                "A contract-bound readonly smoke test.", encoding="utf-8"
+                marker, encoding="utf-8"
             )
             config = Config(
                 api_key=api_key, workspace=workspace, model=model,
@@ -50,13 +52,14 @@ class LiveDeepSeekContractSmokeTests(unittest.TestCase):
                 },
             })
             result = run_agent(
-                "Read src/probe.txt and briefly confirm the file is accessible. "
-                "Do not alter any files.",
+                "Use the Read tool to open src/probe.txt. Then include the exact "
+                "marker from that file in your final answer. Do not alter any files.",
                 config,
             )
             self.assertFalse((workspace / "src" / "unexpected.txt").exists())
-        self.assertTrue(result["final_message"].strip())
-        self.assertGreaterEqual(result["turns_used"], 1)
+        self.assertIn(marker, result["final_message"])
+        self.assertGreaterEqual(result["tool_calls"], 1)
+        self.assertGreaterEqual(result["turns_used"], 2)
         self.assertEqual(result["mutations"], [])
         self.assertEqual(result["task_contract"]["intent"], "readonly_scan")
         self.assertEqual(result["bash"]["executed_calls"], 0)
