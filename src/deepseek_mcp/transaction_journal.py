@@ -490,6 +490,12 @@ def acknowledge(config, ids) -> list[str]:
             record = _decode(existing[0])
             if record.workspace_identity != identity:
                 continue
+            # Acknowledgement is the recovery gate: never delete the durable
+            # intent until the current workspace file still matches its digest.
+            if _classify(config, record)["status"] != "committed":
+                raise TransactionJournalError(
+                    "cannot acknowledge a mutation whose current file does not match its journal digest"
+                )
             store.delete(_name(identifier), existing[1])
             removed.append(identifier)
     return removed
