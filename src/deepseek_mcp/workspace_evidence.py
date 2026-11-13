@@ -7,11 +7,10 @@ from __future__ import annotations
 
 import re
 import os
-from pathlib import Path
 
 from . import file_io
 from .policy_enforcement import path_is_allowed
-from .workspace_guard import bind_workspace_identity, require_workspace_identity
+from .workspace_guard import bind_workspace_identity
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -29,11 +28,10 @@ def _readback_one(config, path: str, record: dict) -> dict:
         return result
     try:
         with bind_workspace_identity(config.expected_workspace_identity):
-            root = config.workspace.resolve()
-            require_workspace_identity(root)
-            relative = Path(path)
+            root, relative = file_io._location(config.workspace, path)
+            if relative.as_posix() != path:
+                return result
             if os.name == "nt":
-                file_io._validate_windows_parts(relative)
                 _, identity = file_io._read_windows(
                     root, relative, strict_utf8=False, reject_binary=False
                 )
