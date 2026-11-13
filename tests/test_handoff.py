@@ -33,6 +33,7 @@ class HandoffTests(unittest.TestCase):
             "final_message": "Implemented the feature.",
             "turns_used": 3,
             "tool_calls": 4,
+            "mutation_bytes_reserved": 5,
             "tokens": {"prompt": 100, "completion": 50, "total": 150},
             "duration_seconds": 2.5,
             "bash": {"calls": 0, "executed_calls": 0, "failure_count": 0, "last_status": None, "failures": []},
@@ -46,6 +47,7 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(report["changed_files"][0]["path"], "src/app.py")
         self.assertEqual(report["changed_files"][0]["sha256"], "c" * 64)
         self.assertEqual(report["verification_status"], "partial")
+        self.assertEqual(report["verification"]["resource_compliance"], "passed")
         self.assertTrue(report["needs_review"])
         self.assertEqual(report["verification"]["success_checks"][0]["status"], "not_run")
         self.assertEqual(report["verification"]["semantic_constraints"][0]["status"], "not_verified")
@@ -94,6 +96,31 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(report["verification"]["policy_compliance"], "failed")
         self.assertTrue(any("outside the effective read scope" in risk
                             for risk in report["verification"]["risks"]))
+
+    def test_tool_call_limit_is_verified_in_handoff(self):
+        result = self._result()
+        result["tool_calls"] = 21
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["resource_compliance"], "failed")
+        self.assertEqual(report["verification_status"], "failed")
+        self.assertTrue(any("tool call count exceeded" in risk
+                            for risk in report["verification"]["risks"]))
+
+    def test_mutation_byte_limit_is_verified_in_handoff(self):
+        result = self._result()
+        result["mutation_bytes_reserved"] = 1025
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["resource_compliance"], "failed")
+        self.assertEqual(report["verification_status"], "failed")
+        self.assertTrue(any("reserved mutation bytes exceeded" in risk
+                            for risk in report["verification"]["risks"]))
+
+    def test_missing_resource_metrics_are_not_reported_as_verified(self):
+        result = self._result()
+        result.pop("mutation_bytes_reserved")
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["resource_compliance"], "not_verifiable")
+        self.assertEqual(report["verification_status"], "partial")
 
     def test_policy_violation_is_reported_as_failed(self):
         result = self._result()
