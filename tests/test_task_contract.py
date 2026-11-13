@@ -1,4 +1,4 @@
-from __future__ import annotations
+"from __future__ import annotations
 
 import os
 import tempfile
@@ -11,10 +11,18 @@ from deepseek_mcp.agent_loop import AgentLoopError, _validate_tool_batch
 from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
 from deepseek_mcp.execution_profile import CODING_PROFILE, READONLY_PROFILE
 from deepseek_mcp.policy_engine import EffectivePolicy, compile_task_policy
-from deepseek_mcp.resource_budget import MutationBudget, ResourceBudgetExceeded
+from deepseek_mcp.resource_budget import (
+    MAX_MUTATION_BYTES_PER_RUN,
+    MutationBudget,
+    ResourceBudgetExceeded,
+)
 from deepseek_mcp.policy_enforcement import path_is_allowed, path_matches_pattern
 from deepseek_mcp.task_contract import DEFAULT_DENY_PATHS, TaskContract
-from deepseek_mcp.tool_child import _config as child_config
+from deepseek_mcp.tool_child import (
+    _budget as child_budget,
+    _config as child_config,
+    _execute as execute_child_payload,
+)
 from deepseek_mcp.tool_process import _config_payload, execute_in_subprocess
 from deepseek_mcp.tools import execute_tool
 
@@ -189,3 +197,4 @@ class TaskContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+"
