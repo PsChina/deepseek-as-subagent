@@ -298,7 +298,7 @@ class TransactionRecoveryTests(unittest.TestCase):
                 MISSING_FILE,
             )
 
-        publish.assert_called_once_with(digest)
+        publish.assert_called_once_with(digest, None)
 
     def test_post_commit_journal_failure_emits_safe_generic_warning(self) -> None:
         with (
