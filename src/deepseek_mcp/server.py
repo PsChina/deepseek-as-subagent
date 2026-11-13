@@ -252,11 +252,9 @@ def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice 
     except Exception as e:
         raise JobError(f"deepseek-mcp not configured: {e}") from e
 
-
 def _build_full_task(task: str, context: str) -> str:
     validate_delegation_input(task, context)
     return f"{task}\n\n# Additional context\n{context}" if context else task
-
 
 def _consume_cancelled_worker(worker: asyncio.Task) -> None:
     """Always retrieve a detached thread task outcome after repeated cancellation."""
