@@ -33,7 +33,7 @@ class MutationBudget:
         ):
             raise ValueError("mutation budget is invalid")
         if self.limit > maximum:
-            raise ValueError(
+            raise ResourceBudgetExceeded(
                 f"mutation budget exceeds the effective maximum of {maximum} bytes"
             )
 
@@ -50,16 +50,23 @@ class MutationBudget:
         yield
 
 
-def coerce_mutation_budget(
+def ensure_mutation_budget(
     budget: MutationBudget | None, maximum: int
-) -> tuple[MutationBudget, str | None]:
+) -> MutationBudget:
     """Create or validate a mutation budget against the active hard ceiling."""
-    selected = budget if budget is not None else MutationBudget(limit=maximum)
-    try:
-        selected.validate(maximum)
-    except (AttributeError, ValueError) as error:
-        return selected, str(error)
-    return selected, None
+    if budget is None:
+        budget = MutationBudget(limit=maximum)
+    if not isinstance(budget, MutationBudget):
+        raise ValueError("mutation budget is invalid")
+    budget.validate(maximum)
+    return budget
+
+
+def ensure_mutation_budget_for_tool(budget: MutationBudget | None, config) -> MutationBudget:
+    """Apply the task ceiling when a tool dispatcher receives a mutation call."""
+    policy = getattr(config, "effective_policy", None)
+    maximum = getattr(policy, "max_mutation_bytes", MAX_MUTATION_BYTES_PER_RUN)
+    return ensure_mutation_budget(budget, maximum)
 
 
 def apply_mutation(
