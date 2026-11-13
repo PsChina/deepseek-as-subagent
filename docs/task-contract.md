@@ -40,7 +40,9 @@ The effective tool set is the intersection of the administrator's
 `config.json` `allowed_tools`, the immutable API execution profile, and the
 contract's optional `permissions.tools` list. The host compiles this into an
 immutable `EffectivePolicy`, passes the same snapshot across the isolated
-tool-process boundary, and checks it again at dispatch time.
+tool-process boundary, and checks it again at dispatch time. Read, Write, Edit,
+and NotebookEdit paths are also rechecked against the canonical path produced
+by the file-I/O resolver immediately before descriptor-based access or commit.
 
 - `read_paths` limits Read, Glob, and Grep results. Edit and NotebookEdit also
   require read access because they inspect existing file contents.
@@ -133,7 +135,8 @@ lease and recovery acknowledgement after uncertain mutations.
 
 POSIX file access uses directory descriptors and no-follow file opening;
 Windows uses handle checks, reparse-point rejection, and before/after path
-identity checks. Dedicated tests cover a Windows parent rename between handle
+identity checks. The task scope remains bound through canonical file resolution,
+parent-side mutation verification, and final workspace readback. Dedicated tests cover a Windows parent rename between handle
 observations and POSIX ancestor swapping. These measures do **not** provide
 a general OS-level sandbox or prove the absence of all adversarial concurrent
 filesystem races. Running an untrusted process under the same OS identity
