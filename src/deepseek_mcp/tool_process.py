@@ -28,6 +28,7 @@ from .provider_retry import (
 )
 from .file_identity import ToolInputError
 from .file_io import read_workspace_text
+from .policy_enforcement import bind_file_policy
 from .safety import resolve_safe_path
 from .hard_deadline import Deadline, remaining as deadline_remaining
 from .lease_inheritance import ChildLeaseAnchor
@@ -238,7 +239,7 @@ def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[s
     relative = None
     try:
         assert config.expected_workspace_identity is not None
-        with bind_workspace_identity(config.expected_workspace_identity):
+        with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(getattr(config, "effective_policy", None), name):
             target = resolve_safe_path(label, config.workspace)
             relative = target.relative_to(config.workspace.resolve()).as_posix()
             _text, identity = read_workspace_text(config.workspace, label)
