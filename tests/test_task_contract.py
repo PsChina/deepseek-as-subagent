@@ -135,6 +135,14 @@ class TaskContractTests(unittest.TestCase):
         self.assertFalse(path_is_allowed("src/.env.local", ("src/**",), (".env*", "**/.env*")))
         self.assertFalse(path_is_allowed("src/.ENV.local", ("src/**",), (".env*", "**/.env*")))
         self.assertFalse(path_is_allowed(".aws/credentials", ("**/*",), DEFAULT_DENY_PATHS))
+        for git_metadata in (
+            ".git", ".git/config", ".git/modules/submodule/config",
+            "repo/.git/config", "repo/.git/credentials",
+        ):
+            self.assertFalse(
+                path_is_allowed(git_metadata, ("**/*",), DEFAULT_DENY_PATHS),
+                git_metadata,
+            )
         for secret in (
             ".config/gcloud/application_default_credentials.json",
             ".config/gh/hosts.yml",
