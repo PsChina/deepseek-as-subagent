@@ -240,7 +240,7 @@ def _write_posix(
         os.close(descriptor)
         descriptor = -1
         assert replacement.digest is not None
-        mutation_ready(replacement.digest, baseline)
+        mutation_ready(replacement.digest, baseline, relative.as_posix())
         _validate_target(_current_posix_info(parent, relative.name), baseline)
         _finish_posix_commit(
             parent, temporary, relative.name, baseline, replacement, state
