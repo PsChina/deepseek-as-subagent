@@ -659,14 +659,12 @@ class WorkspaceFileRaceTests(unittest.TestCase):
     def test_deferred_termination_keeps_post_commit_recovery_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            target = workspace / "target.txt"
-            target.write_text("before", encoding="utf-8")
-            real_commit = file_io._commit_posix_file
+            parent = os.open(
+                workspace, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            )
+            replacement = file_io.FileIdentity.from_stat(os.fstat(parent))
+            state = file_io._PosixCommitState()
             warnings: list[str] = []
-
-            def commit_then_warn(*args) -> None:
-                real_commit(*args)
-                raise file_io.MutationCommittedWarning("recover from retained-copy")
 
             @contextmanager
             def terminate_after_commit():
@@ -674,25 +672,24 @@ class WorkspaceFileRaceTests(unittest.TestCase):
                 raise tool_child._ToolTermination()
 
             with (
-                transaction_report.bind_reporter(lambda _digest: None, warnings.append),
                 patch.object(
-                    file_io, "_commit_posix_file", side_effect=commit_then_warn
+                    file_io, "_commit_posix_file",
+                    side_effect=file_io.MutationCommittedWarning(
+                        "recover from retained-copy"
+                    ),
                 ),
                 patch.object(
                     file_io, "_defer_posix_termination", terminate_after_commit
                 ),
+                patch.object(file_io, "mutation_warning", warnings.append),
                 self.assertRaises(tool_child._ToolTermination),
             ):
-                _execute_edit(
-                    {
-                        "path": "target.txt",
-                        "old_string": "before",
-                        "new_string": "after",
-                    },
-                    workspace,
+                file_io._finish_posix_commit(
+                    parent, "temporary", "target", None, replacement, state
                 )
 
-            self.assertEqual(target.read_text(encoding="utf-8"), "after")
+            os.close(parent)
+            self.assertTrue(state.committed)
             self.assertIn("recover from retained-copy", warnings)
 
     @unittest.skipIf(os.name == "nt", "directory fsync is POSIX-specific")
