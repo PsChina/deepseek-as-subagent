@@ -68,6 +68,23 @@ class WorkspaceFileRaceTests(unittest.TestCase):
         self.assertIn(signal.SIGTERM, inherited[0])
         self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), before)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX hard-link behavior")
+    def test_read_rejects_hard_link_to_file_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "outside-secret.txt"
+            outside.write_text("external-secret-marker", encoding="utf-8")
+            alias = workspace / "apparently-safe.txt"
+            try:
+                os.link(outside, alias)
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            result = _execute_read({"path": "apparently-safe.txt"}, workspace)
+            self.assertTrue(result.startswith("ERROR:"), result)
+            self.assertNotIn("external-secret-marker", result)
+
     def test_file_tools_cannot_access_vcs_control_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
