@@ -56,7 +56,10 @@ def build_handoff(result: object) -> dict | None:
     contract = result["task_contract"]
     mutations = result.get("mutations", [])
     bash = _bash_summary(result)
-    verification = verify_execution_record(contract, mutations, bash["executed_calls"])
+    verification = verify_execution_record(
+        contract, mutations, bash["executed_calls"],
+        result.get("tool_calls"), result.get("mutation_bytes_reserved"),
+    )
     return {
         "schema_version": 1,
         "execution_status": "completed",
@@ -69,6 +72,7 @@ def build_handoff(result: object) -> dict | None:
         "metrics": {
             "turns_used": result.get("turns_used"),
             "tool_calls": result.get("tool_calls"),
+            "mutation_bytes_reserved": result.get("mutation_bytes_reserved"),
             "tokens": result.get("tokens"),
             "duration_seconds": result.get("duration_seconds"),
         },
