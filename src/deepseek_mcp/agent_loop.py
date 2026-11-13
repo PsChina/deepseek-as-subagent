@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .bash_outcome import record_bash_result
+from .bash_outcome import BashOutcome, record_bash_result
 from .config import Config
 from .hard_deadline import Deadline, HardDeadline
 from .mutation_outcome import (
@@ -93,9 +93,7 @@ class _AgentState:
     last_request_bytes: int = 0
     tool_calls: int = 0
     empty_final_attempts: int = 0
-    bash_calls: int = 0; bash_executions: int = 0
-    last_bash_status: str | None = None
-    bash_failures: list[dict] = field(default_factory=list)
+    bash_outcome: BashOutcome = field(default_factory=BashOutcome)
     mutation_budget: MutationBudget = field(default_factory=MutationBudget)
     mutations: MutationAccumulator = field(default_factory=MutationAccumulator)
 
@@ -322,12 +320,7 @@ def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
             "total": total_tokens,
         },
         "tool_calls": state.tool_calls,
-        "bash": {
-            "calls": state.bash_calls, "executed_calls": state.bash_executions,
-            "failure_count": len(state.bash_failures),
-            "last_status": state.last_bash_status,
-            "failures": list(state.bash_failures),
-        },
+        "bash": state.bash_outcome.payload(),
         "duration_seconds": round(max(0.0, time.time() - state.started), 2),
         "mutations": state.mutations.payload(),
         **({"task_contract": policy.to_dict()} if policy is not None else {}),
@@ -371,7 +364,7 @@ def _execute_and_record_tool(state: _AgentState, tool_call, turn: int) -> None:
         outcome_reporter=state.mutations.add,
     )
     if tool_call.function.name == "Bash":
-        record_bash_result(state, result, turn)
+        record_bash_result(state.bash_outcome, result, turn)
     state.messages.append(
         {"role": "tool", "tool_call_id": tool_call.id, "content": result}
     )
