@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import json
+import unittest
+
+from deepseek_mcp.handoff import build_handoff
+from deepseek_mcp.mutation_outcome import MutationAccumulator, mutation_record
+from deepseek_mcp.result_format import format_sync_result
+from deepseek_mcp.verification import verify_execution_record
+
+
+class HandoffTests(unittest.TestCase):
+    def _result(self):
+        contract = {
+            "intent": "implement",
+            "contract_hash": "a" * 64,
+            "allowed_tools": ["Read", "Write"],
+            "read_paths": ["src/**"],
+            "write_paths": ["src/**"],
+            "deny_paths": [".env*", "**/.env*"],
+            "max_tool_calls": 20,
+            "max_mutation_bytes": 1024,
+            "success_checks": ["pytest tests/"],
+            "must_not_change": ["public API"],
+            "expected_outputs": ["changed_files"],
+        }
+        accumulator = MutationAccumulator()
+        accumulator.add(mutation_record(
+            "b" * 32, "Write", "committed", path="src/app.py", sha256="c" * 64
+        ))
+        return {
+            "final_message": "Implemented the feature.",
+            "turns_used": 3,
+            "tool_calls": 4,
+            "tokens": {"prompt": 100, "completion": 50, "total": 150},
+            "duration_seconds": 2.5,
+            "bash": {"calls": 0, "failure_count": 0, "last_status": None, "failures": []},
+            "mutations": accumulator.payload(),
+            "task_contract": contract,
+        }
+
+    def test_handoff_contains_host_recorded_file_evidence(self):
+        report = build_handoff(self._result())
+        self.assertEqual(report["execution_status"], "completed")
+        self.assertEqual(report["changed_files"][0]["path"], "src/app.py")
+        self.assertEqual(report["changed_files"][0]["sha256"], "c" * 64)
+        self.assertEqual(report["verification_status"], "partial")
+        self.assertTrue(report["needs_review"])
+        self.assertEqual(report["verification"]["success_checks"][0]["status"], "not_run")
+        self.assertEqual(report["verification"]["semantic_constraints"][0]["status"], "not_verified")
+
+    def test_policy_violation_is_reported_as_failed(self):
+        result = self._result()
+        result["mutations"][0]["path"] = "private/secret.py"
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["policy_compliance"], "failed")
+        self.assertEqual(report["verification_status"], "failed")
+
+    def test_legacy_results_do_not_change_format(self):
+        self.assertIsNone(build_handoff({"final_message": "legacy"}))
+        formatted = format_sync_result({"final_message": "legacy", "turns_used": 1, "tool_calls": 0, "tokens": {"total": 1}, "duration_seconds": 1, "bash": {}})
+        self.assertNotIn("[deepseek-mcp handoff]", formatted)
+
+    def test_sync_format_includes_machine_readable_handoff(self):
+        formatted = format_sync_result(self._result())
+        encoded = formatted.split("[deepseek-mcp handoff]\n", 1)[1]
+        report = json.loads(encoded)
+        self.assertEqual(report["changed_files"][0]["path"], "src/app.py")
+
+
+if __name__ == "__main__":
+    unittest.main()

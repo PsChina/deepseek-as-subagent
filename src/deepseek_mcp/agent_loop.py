@@ -305,6 +305,7 @@ def _finalize_or_steer(state: _AgentState, message, turn: int) -> dict | None:
 def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
     if not content or not content.strip():
         raise AgentIncompleteResponse("model returned an empty final response")
+    policy = getattr(state.config, "effective_policy", None)
     total_tokens = state.prompt_tokens + state.completion_tokens
     final_message = content
     notices = filter(
@@ -329,6 +330,7 @@ def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
         },
         "duration_seconds": round(max(0.0, time.time() - state.started), 2),
         "mutations": state.mutations.payload(),
+        "task_contract": policy.to_dict() if policy is not None else None,
     }
 
 

@@ -65,3 +65,31 @@ Calls without a contract retain existing Bash behavior.
 `must_not_change` and `success_checks` are supplied to the model as task
 instructions. They are not proof of compliance. Independent verification and
 structured handoff are follow-on work; a model's final text is not test evidence.
+
+
+## Execution audit and structured handoff
+
+Contract-bound results include a versioned handoff object. It records the
+effective policy, transaction IDs, canonical workspace-relative changed-file
+paths, operation, commit status, and the SHA-256 digest observed by the host
+after each mutation. The parent process compares the tool's mutation digest
+with the file identity before recording a committed mutation.
+
+The handoff also reports deterministic policy-compliance checks and mutation
+record integrity. It deliberately distinguishes these from functional
+verification:
+
+- `success_checks` are listed as `not_run` unless a separate verifier has
+  actually executed them.
+- `must_not_change` constraints are marked `not_verified` and require
+  independent review.
+- `expected_outputs` are marked `not_validated` until a reviewer confirms
+  them.
+- `verification_status=policy_verified` means only that the recorded
+  mutations satisfy the effective path policy and have commit-time digest
+  evidence. It is not a claim that the code is functionally correct.
+- `verification_status=partial` means policy evidence exists but one or more
+  declared checks or semantic constraints remain unverified.
+
+Contract-bound Bash remains disabled, so `commands_run` is empty. Raw shell
+commands and tool output are not retained in the handoff.

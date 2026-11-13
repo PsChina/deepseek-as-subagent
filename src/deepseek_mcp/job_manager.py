@@ -23,6 +23,7 @@ from .agent_loop import (
 )
 from .config import Config
 from .mutation_outcome import mutation_failure_message, records_from_result
+from .handoff import build_handoff
 from .provider_retry import MutationOutcomeError
 from .transaction_recovery import TransactionRecoveryError, require_no_pending
 from .execution_lock import (
@@ -355,6 +356,7 @@ class DeepSeekJobManager:
         if job.progress and job.status != "completed":
             payload["partial_progress"] = job.progress
         payload["ready"] = job.status in TERMINAL_STATES
+        if job.status == "completed" and job.result and (handoff := build_handoff(job.result)): payload["handoff"] = handoff
         return payload
 
     @staticmethod

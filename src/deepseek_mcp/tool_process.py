@@ -28,6 +28,7 @@ from .provider_retry import (
 )
 from .file_identity import ToolInputError
 from .file_io import read_workspace_text
+from .safety import resolve_safe_path
 from .hard_deadline import Deadline, remaining as deadline_remaining
 from .lease_inheritance import ChildLeaseAnchor
 from .parent_liveness import ParentLiveness, close_parent_liveness
@@ -228,20 +229,25 @@ def _mutation_warning(raw: bytes) -> str | None:
     return "; ".join(warnings) or None
 
 
-def _interrupted_mutation_state(config, name: str, arguments: dict, raw: bytes) -> str | None:
+def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[str, str | None, str] | None:
     digest = _mutation_digest(raw)
-    if digest is None or name not in {"Write", "Edit", "NotebookEdit"}:
-        return None
+    if digest is None or name not in {"Write", "Edit", "NotebookEdit"}: return None
     label = arguments.get("path")
-    if not isinstance(label, str) or not label:
-        return "uncertain"
+    if not isinstance(label, str) or not label: return "uncertain", None, digest.hex()
     try:
         assert config.expected_workspace_identity is not None
         with bind_workspace_identity(config.expected_workspace_identity):
+            target = resolve_safe_path(label, config.workspace)
+            relative = target.relative_to(config.workspace.resolve()).as_posix()
             _text, identity = read_workspace_text(config.workspace, label)
     except Exception:
-        return "uncertain"
-    return "committed" if identity.digest == digest else "uncertain"
+        return "uncertain", None, digest.hex()
+    return ("committed" if identity.digest == digest else "uncertain", relative, digest.hex())
+
+
+def _interrupted_mutation_state(config, name: str, arguments: dict, raw: bytes) -> str | None:
+    details = _mutation_details(config, name, arguments, raw)
+    return details[0] if details is not None else None
 
 
 def _wait_for_tool(ready: threading.Event, cancel_signal, deadline: Deadline) -> None:
@@ -333,18 +339,15 @@ def _finish_interrupted_call(
     config, name: str, arguments: dict, output: bytes, transaction_id: str,
     outcome_reporter: Callable[[MutationRecord], None] | None,
 ) -> None:
-    mutation_state = _interrupted_mutation_state(
-        config, name, arguments, output
-    )
-    if mutation_state is not None:
+    details = _mutation_details(config, name, arguments, output)
+    if details is not None:
+        mutation_state, path, digest = details
         warning = _mutation_warning(output)
         if cleanup_error is not None:
             warning = "; ".join(
                 filter(None, (warning, f"cleanup failed: {cleanup_error}"))
             )
-        record = mutation_record(
-            transaction_id, name, mutation_state, warning
-        )
+        record = mutation_record(transaction_id, name, mutation_state, warning, path, digest)
         if outcome_reporter is not None:
             outcome_reporter(record)
         raise _interrupted_error(failure, record)
@@ -357,17 +360,16 @@ def _completed_mutation_record(
     active: _ActiveTool, config, name: str, arguments: dict,
     cleanup_ok: bool, cleanup_error: AgentLoopError | None,
 ) -> MutationRecord | None:
-    state = _interrupted_mutation_state(
-        config, name, arguments, active.state.output
-    )
-    if state is None:
+    details = _mutation_details(config, name, arguments, active.state.output)
+    if details is None:
         return None
+    state, path, digest = details
     warning = _mutation_warning(active.state.output)
     if cleanup_error is not None:
         warning = "; ".join(filter(None, (warning, f"cleanup failed: {cleanup_error}")))
     elif not cleanup_ok:
         warning = "; ".join(filter(None, (warning, "artifact cleanup failed")))
-    return mutation_record(active.transaction_id, name, state, warning)
+    return mutation_record(active.transaction_id, name, state, warning, path, digest)
 
 
 def _launch_tool_call(
