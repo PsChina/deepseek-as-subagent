@@ -35,9 +35,9 @@ def _mapping(value: object, label: str, allowed: set[str]) -> dict:
     return value
 
 
-def _string_list(value: object, label: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or len(value) > MAX_LIST_ITEMS:
-        raise ValueError(f"{label} must be a list with at most {MAX_LIST_ITEMS} items")
+def _string_list(value: object, label: str, max_items: int = MAX_LIST_ITEMS) -> tuple[str, ...]:
+    if not isinstance(value, list) or len(value) > max_items:
+        raise ValueError(f"{label} must be a list with at most {max_items} items")
     result: list[str] = []
     for item in value:
         if not isinstance(item, str) or not item or item != item.strip() or len(item) > MAX_TEXT_CHARS or "\x00" in item:
@@ -48,8 +48,8 @@ def _string_list(value: object, label: str) -> tuple[str, ...]:
     return tuple(result)
 
 
-def validate_path_patterns(value: object, label: str) -> tuple[str, ...]:
-    patterns = _string_list(value, label)
+def validate_path_patterns(value: object, label: str, max_items: int = MAX_LIST_ITEMS) -> tuple[str, ...]:
+    patterns = _string_list(value, label, max_items)
     for pattern in patterns:
         if len(pattern) > MAX_PATH_PATTERN_CHARS or len(pattern.split("/")) > MAX_PATH_PATTERN_SEGMENTS:
             raise ValueError(f"{label} contains an overlong path pattern")
@@ -100,7 +100,7 @@ def _parse_permissions(data: dict, intent: str) -> tuple:
             raise ValueError("Bash is not available in task-contract mode; use an explicit future sandbox policy")
     read_paths = validate_path_patterns(permissions.get("read_paths", ["**/*"]), "permissions.read_paths")
     write_paths = validate_path_patterns(permissions.get("write_paths", []), "permissions.write_paths")
-    extra_denies = validate_path_patterns(permissions.get("deny_paths", []), "permissions.deny_paths")
+    extra_denies = validate_path_patterns(permissions.get("deny_paths", []), "permissions.deny_paths", MAX_LIST_ITEMS - len(DEFAULT_DENY_PATHS))
     deny_paths = tuple(dict.fromkeys((*DEFAULT_DENY_PATHS, *extra_denies)))
     if intent in READ_ONLY_INTENTS and write_paths:
         raise ValueError(f"intent '{intent}' cannot declare write_paths")

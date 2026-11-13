@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from .resource_budget import MAX_MUTATION_BYTES_PER_RUN, MAX_TOOL_CALLS_PER_RUN
 from .task_contract import (
-    DEFAULT_DENY_PATHS, KNOWN_TOOLS, MUTATION_TOOLS, READ_ONLY_INTENTS,
+    DEFAULT_DENY_PATHS, KNOWN_TOOLS, MAX_LIST_ITEMS, MUTATION_TOOLS, READ_ONLY_INTENTS,
     TaskContract, validate_path_patterns,
 )
 
@@ -26,7 +26,7 @@ def _policy_tools(value: dict) -> tuple[str, ...]:
 def _policy_paths(value: dict) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     read_paths = validate_path_patterns(value.get("read_paths"), "effective_policy.read_paths")
     write_paths = validate_path_patterns(value.get("write_paths"), "effective_policy.write_paths")
-    deny_paths = validate_path_patterns(value.get("deny_paths"), "effective_policy.deny_paths")
+    deny_paths = validate_path_patterns(value.get("deny_paths"), "effective_policy.deny_paths", MAX_LIST_ITEMS)
     if not set(DEFAULT_DENY_PATHS).issubset(deny_paths):
         raise ValueError("effective policy is missing built-in denied paths")
     return read_paths, write_paths, deny_paths

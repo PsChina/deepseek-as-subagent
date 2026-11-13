@@ -1,6 +1,7 @@
 """Runtime checks for immutable task-contract policies."""
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -13,9 +14,12 @@ _WRITE_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 
 
 @lru_cache(maxsize=8192)
-def path_matches_pattern(relative_path: str, pattern: str) -> bool:
-    path_parts = tuple(part.casefold() for part in relative_path.split("/") if part)
-    pattern_parts = tuple(part.casefold() for part in pattern.split("/"))
+def path_matches_pattern(relative_path: str, pattern: str, case_sensitive: bool = True) -> bool:
+    path_parts = tuple(part for part in relative_path.split("/") if part)
+    pattern_parts = tuple(pattern.split("/"))
+    if not case_sensitive:
+        path_parts = tuple(part.casefold() for part in path_parts)
+        pattern_parts = tuple(part.casefold() for part in pattern_parts)
     previous = [False] * (len(path_parts) + 1)
     previous[0] = True
     for segment in pattern_parts:
@@ -32,12 +36,13 @@ def path_matches_pattern(relative_path: str, pattern: str) -> bool:
 
 
 def path_is_denied(relative_path: str, deny_paths: tuple[str, ...]) -> bool:
-    return any(path_matches_pattern(relative_path, pattern) for pattern in deny_paths)
+    return any(path_matches_pattern(relative_path, pattern, case_sensitive=False) for pattern in deny_paths)
 
 
 def path_is_allowed(relative_path: str, allowed_paths: tuple[str, ...], deny_paths: tuple[str, ...]) -> bool:
     return not path_is_denied(relative_path, deny_paths) and any(
-        path_matches_pattern(relative_path, pattern) for pattern in allowed_paths
+        path_matches_pattern(relative_path, pattern, case_sensitive=os.name != "nt")
+        for pattern in allowed_paths
     )
 
 
