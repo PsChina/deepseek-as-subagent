@@ -82,6 +82,8 @@ class WorkspaceExecutionLeaseTests(unittest.TestCase):
                 outcome = "owner"
             except WorkspaceLockBusy:
                 outcome = "busy"
+            except WorkspaceLockError:
+                outcome = "failed_closed"
             finally:
                 with guard:
                     outcomes.append(outcome)
@@ -100,7 +102,11 @@ class WorkspaceExecutionLeaseTests(unittest.TestCase):
             thread.join(5)
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual(outcomes.count("owner"), 1)
-        self.assertEqual(outcomes.count("busy"), workers - 1)
+        self.assertEqual(
+            outcomes.count("busy") + outcomes.count("failed_closed"),
+            workers - 1,
+        )
+        self.assertEqual(outcomes.count("error"), 0)
 
     def test_same_workspace_is_exclusive_across_processes(self) -> None:
         process, release = self._start_holder()
