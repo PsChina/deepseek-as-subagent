@@ -9,7 +9,7 @@ import re
 import os
 
 from . import file_io
-from .policy_enforcement import path_is_allowed
+from .policy_enforcement import bind_file_policy, path_is_allowed
 from .workspace_guard import bind_workspace_identity
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -27,7 +27,7 @@ def _readback_one(config, path: str, record: dict) -> dict:
     ):
         return result
     try:
-        with bind_workspace_identity(config.expected_workspace_identity):
+        with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(policy, "Write"):
             root, relative = file_io._location(config.workspace, path)
             if relative.as_posix() != path:
                 return result
