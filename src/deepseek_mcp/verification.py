@@ -44,15 +44,24 @@ def _verify_mutation(item: object, allowed_tools: set[str], write_paths: tuple[s
     return policy_status, integrity_status, risks
 
 
-def _verify_mutations(contract: dict, mutations: object, bash_calls: int) -> tuple[str, str, list[str]]:
+def _verify_mutations(contract: dict, mutations: object, bash_executions: object) -> tuple[str, str, list[str]]:
     if not isinstance(mutations, list):
         return "not_verifiable", "not_verifiable", ["mutation record list is invalid"]
     write_paths = tuple(_string_items(contract.get("write_paths")))
     deny_paths = tuple(_string_items(contract.get("deny_paths")))
     allowed_tools = set(_string_items(contract.get("allowed_tools")))
-    policy_statuses = ["failed" if bash_calls else "passed"]
+    valid_bash_evidence = (
+        not isinstance(bash_executions, bool)
+        and isinstance(bash_executions, int)
+        and bash_executions >= 0
+    )
+    if not valid_bash_evidence:
+        policy_statuses = ["not_verifiable"]
+        risks = ["Bash execution evidence is missing or invalid"]
+    else:
+        policy_statuses = ["failed" if bash_executions else "passed"]
+        risks = []
     integrity_statuses: list[str] = []
-    risks: list[str] = []
     for item in mutations:
         policy, integrity, item_risks = _verify_mutation(item, allowed_tools, write_paths, deny_paths)
         policy_statuses.append(policy)
@@ -60,14 +69,14 @@ def _verify_mutations(contract: dict, mutations: object, bash_calls: int) -> tup
         risks.extend(item_risks)
     policy_status = next(status for status in ("failed", "not_verifiable", "passed") if status in policy_statuses)
     integrity_status = next((status for status in ("failed", "uncertain", "not_verifiable", "verified_at_commit") if status in integrity_statuses), "not_applicable")
-    if bash_calls:
+    if valid_bash_evidence and bash_executions:
         risks.append("Bash was executed during a contract-bound delegation")
     return policy_status, integrity_status, risks
 
 
-def verify_execution_record(contract: dict, mutations: object, bash_calls: int = 0) -> dict:
+def verify_execution_record(contract: dict, mutations: object, bash_executions: object = 0) -> dict:
     """Verify path-policy compliance and mutation evidence; never infer test success."""
-    policy_status, integrity_status, risks = _verify_mutations(contract, mutations, bash_calls)
+    policy_status, integrity_status, risks = _verify_mutations(contract, mutations, bash_executions)
     checks = [{"name": name, "status": "not_run", "evidence": None}
               for name in _string_items(contract.get("success_checks"))]
     semantic = [{"constraint": name, "status": "not_verified"}
