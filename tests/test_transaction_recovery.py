@@ -100,7 +100,7 @@ class TransactionRecoveryTests(unittest.TestCase):
         transaction_id = self._record()
         (self.workspace / "target.txt").unlink()
 
-        with self.assertRaisesRegex(TransactionJournalError, "does not match"):
+        with self.assertRaisesRegex(TransactionRecoveryError, "failed safely"):
             acknowledge_with_lease(self.config, [transaction_id], self.locks)
 
         pending = query_with_lease(self.config, self.locks)
@@ -117,7 +117,7 @@ class TransactionRecoveryTests(unittest.TestCase):
         )
         second_path.write_text("changed", encoding="utf-8")
 
-        with self.assertRaisesRegex(TransactionJournalError, "does not match"):
+        with self.assertRaisesRegex(TransactionRecoveryError, "failed safely"):
             acknowledge_with_lease(self.config, [first, "b" * 32], self.locks)
 
         pending = query_with_lease(self.config, self.locks)
