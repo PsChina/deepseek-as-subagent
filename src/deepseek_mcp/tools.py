@@ -394,7 +394,7 @@ def _grep_file(entry: WalkEntry, regex: RegexPattern, limit: int) -> list[str]:
         displayed = line[:MAX_GREP_LINE_CHARS]
         if len(line) > MAX_GREP_LINE_CHARS:
             displayed += "... [line truncated]"
-        matches.append(f"{entry.relative_to_workspace}:{line_number}: {displayed}")
+        matches.append(f"{entry.relative_to_workspace.as_posix()}:{line_number}: {displayed}")
         if len(matches) >= limit:
             break
     return matches
