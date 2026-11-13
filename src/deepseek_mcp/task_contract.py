@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 
 from .resource_budget import MAX_MUTATION_BYTES_PER_RUN, MAX_TOOL_CALLS_PER_RUN
