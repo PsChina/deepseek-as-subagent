@@ -17,7 +17,7 @@ from deepseek_mcp.resource_budget import (
     ResourceBudgetExceeded,
 )
 from deepseek_mcp.policy_enforcement import path_is_allowed, path_matches_pattern
-from deepseek_mcp.task_contract import DEFAULT_DENY_PATHS, TaskContract
+from deepseek_mcp.task_contract import DEFAULT_DENY_PATHS, TaskContract, _validated_input
 from deepseek_mcp.tool_child import _config as child_config
 from deepseek_mcp.tool_process import _config_payload, execute_in_subprocess
 from deepseek_mcp.tools import execute_tool
@@ -39,7 +39,7 @@ class TaskContractTests(unittest.TestCase):
         for _ in range(1200):
             nested = [nested]
         with self.assertRaisesRegex(ValueError, "bounded JSON-compatible"):
-            TaskContract.from_dict({"permissions": {"read_paths": nested}})
+            _validated_input({"nested": nested})
 
     def test_mutation_requires_explicit_write_paths(self) -> None:
         with self.assertRaisesRegex(ValueError, "explicit permissions.write_paths"):
