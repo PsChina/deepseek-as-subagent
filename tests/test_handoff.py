@@ -85,6 +85,16 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(report["bash_summary"]["executed_calls"], 0)
         self.assertEqual(report["verification"]["policy_compliance"], "passed")
 
+    def test_edit_mutation_must_also_be_inside_read_scope(self):
+        result = self._result()
+        result["task_contract"]["allowed_tools"].append("Edit")
+        result["task_contract"]["read_paths"] = ["tests/**"]
+        result["mutations"][0]["tool"] = "Edit"
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["policy_compliance"], "failed")
+        self.assertTrue(any("outside the effective read scope" in risk
+                            for risk in report["verification"]["risks"]))
+
     def test_policy_violation_is_reported_as_failed(self):
         result = self._result()
         result["mutations"][0]["path"] = "private/secret.py"
