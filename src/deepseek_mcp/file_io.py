@@ -20,6 +20,7 @@ from .file_identity import (
     WorkspaceFileNotFound,
     validate_target as _validate_target,
     write_baseline as _write_baseline,
+    validate_readable_file,
 )
 from .posix_atomic_commit import (
     commit as _commit_posix_file,
@@ -110,10 +111,7 @@ def _decode(data: bytes, *, strict_utf8: bool, reject_binary: bool) -> str:
 def _checked_read(descriptor: int, *, strict_utf8: bool, reject_binary: bool) -> tuple[str, FileIdentity]:
     initial_stat = os.fstat(descriptor)
     before = FileIdentity.from_stat(initial_stat)
-    if not stat.S_ISREG(before.mode):
-        raise ToolInputError("file is not a regular file")
-    if getattr(initial_stat, "st_nlink", 1) > 1:
-        raise ToolInputError("workspace files with multiple hard links are not readable")
+    validate_readable_file(initial_stat)
     data = _read_descriptor(descriptor)
     if len(data) != before.size or FileIdentity.from_stat(os.fstat(descriptor)) != before:
         raise ToolInputError("file changed while reading")
@@ -175,7 +173,6 @@ class _PosixCommitState:
     committed: bool = False
     warnings: list[str] = field(default_factory=list)
 
-
 @contextmanager
 def _defer_posix_termination():
     mask = getattr(signal, "pthread_sigmask", None)
@@ -187,7 +184,6 @@ def _defer_posix_termination():
         yield
     finally:
         mask(signal.SIG_SETMASK, previous)
-
 
 def _finish_posix_commit(
     parent: int, temporary: str, target: str, baseline,
