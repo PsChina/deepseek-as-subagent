@@ -122,6 +122,14 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(report["verification"]["resource_compliance"], "not_verifiable")
         self.assertEqual(report["verification_status"], "partial")
 
+    def test_malformed_mutation_tool_evidence_is_rejected_without_crashing(self):
+        result = self._result()
+        result["mutations"][0]["tool"] = ["Write"]
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["policy_compliance"], "failed")
+        self.assertTrue(any("outside the effective tool set" in risk
+                            for risk in report["verification"]["risks"]))
+
     def test_policy_violation_is_reported_as_failed(self):
         result = self._result()
         result["mutations"][0]["path"] = "private/secret.py"
