@@ -264,7 +264,7 @@ class TransactionRecoveryTests(unittest.TestCase):
             patch.object(
                 tool_child,
                 "_write_mutation_ready",
-                side_effect=lambda _digest: calls.append("event"),
+                side_effect=lambda _digest, _path=None: calls.append("event"),
             ),
         ):
             tool_child._persist_mutation_ready(
