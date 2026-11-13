@@ -108,8 +108,7 @@ class TaskContract:
             raise ValueError(f"intent '{intent}' cannot declare write_paths")
         if tools is not None and set(tools).intersection(MUTATION_TOOLS) and not write_paths:
             raise ValueError("mutation tools require explicit permissions.write_paths")
-        if intent in READ_ONLY_INTENTS and tools is not None and set(tools).intersection(MUTATION_TOOLS):
-            raise ValueError(f"intent '{intent}' cannot request mutation tools")
+        if intent in READ_ONLY_INTENTS and tools is not None and set(tools).intersection(MUTATION_TOOLS): raise ValueError(f"intent '{intent}' cannot request mutation tools")
 
         constraints = _mapping(data.get("constraints", {}), "constraints", {"must_not_change", "success_checks", "expected_outputs"})
         must_not_change = _string_list(constraints.get("must_not_change", []), "constraints.must_not_change")

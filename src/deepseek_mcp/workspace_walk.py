@@ -111,10 +111,8 @@ class WorkspaceWalk:
         self.pattern = _GlobPattern.parse(raw_pattern)
         self.truncated = False
         self._deadline = time.monotonic() + MAX_WALK_SECONDS
-        self._entries = 0
-        self._directories = 0
-        self._open_files = open_files
-        self._allowed_paths, self._denied_paths = allowed_paths, denied_paths
+        self._entries = self._directories = 0
+        self._open_files, self._allowed_paths, self._denied_paths = open_files, allowed_paths, denied_paths
         self._iterator = self._walk(relative)
 
     def __enter__(self) -> WorkspaceWalk:
