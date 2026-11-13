@@ -289,7 +289,9 @@ class TaskContractTests(unittest.TestCase):
             grep = execute_tool("Grep", {"pattern": "SENTINEL_GIT_CREDENTIAL"}, config)
         self.assertTrue(direct.startswith("ERROR:"), direct)
         self.assertNotIn(".git/config", glob)
-        self.assertNotIn("SENTINEL_GIT_CREDENTIAL", direct + glob + grep)
+        self.assertNotIn("SENTINEL_GIT_CREDENTIAL", direct + glob)
+        self.assertIn("No matches found", grep)
+        self.assertNotIn(".git/config:", grep)
         self.assertIn("visible.txt", glob)
 
     def test_global_tool_allowlist_is_not_expanded_by_profiles(self) -> None:
