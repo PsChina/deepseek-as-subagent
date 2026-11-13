@@ -158,7 +158,7 @@ def _create_agent_state(
     controls: _AgentControls,
     execution_lease_fd: int | None,
 ) -> _AgentState:
-    policy = config.effective_policy
+    policy = getattr(config, "effective_policy", None)
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools=", ".join(config.allowed_tools), workspace=config.workspace, contract_rules=policy.prompt_instructions() if policy is not None else "")
     started = time.time()
     return _AgentState(
@@ -435,7 +435,7 @@ def _validate_tool_batch(state: _AgentState, tool_calls) -> None:
         raise AgentLoopError(
             f"tool call batch exceeds {MAX_TOOL_CALLS_PER_TURN} per turn"
         )
-    policy_limit = state.config.effective_policy.max_tool_calls if state.config.effective_policy is not None else MAX_TOOL_CALLS_PER_RUN
+    policy_limit = getattr(getattr(state.config, "effective_policy", None), "max_tool_calls", MAX_TOOL_CALLS_PER_RUN)
     if state.tool_calls + planned > policy_limit: raise AgentLoopError(f"tool call budget exceeds {policy_limit} per run")
 
 

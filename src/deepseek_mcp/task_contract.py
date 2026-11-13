@@ -58,6 +58,68 @@ def _bounded_integer(value: object, label: str, maximum: int) -> int:
     return value
 
 
+def _validated_input(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("task contract must be an object")
+    try:
+        encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        raise ValueError("task contract must contain JSON-compatible values") from None
+    if len(encoded.encode("utf-8")) > MAX_CONTRACT_BYTES:
+        raise ValueError(f"task contract exceeds {MAX_CONTRACT_BYTES} bytes")
+    return _mapping(value, "task contract", {"version", "intent", "permissions", "constraints", "limits"})
+
+
+def _parse_intent(data: dict) -> str:
+    version = data.get("version", CONTRACT_VERSION)
+    if isinstance(version, bool) or not isinstance(version, int) or version != CONTRACT_VERSION:
+        raise ValueError(f"unsupported task contract version: {version!r}")
+    intent = data.get("intent", "implement")
+    if not isinstance(intent, str) or intent not in VALID_INTENTS:
+        raise ValueError(f"intent must be one of: {', '.join(sorted(VALID_INTENTS))}")
+    return intent
+
+
+def _parse_permissions(data: dict, intent: str) -> tuple:
+    permissions = _mapping(data.get("permissions", {}), "permissions", {"tools", "read_paths", "write_paths", "deny_paths"})
+    raw_tools = permissions.get("tools")
+    tools = None if raw_tools is None else _string_list(raw_tools, "permissions.tools")
+    if tools is not None:
+        unknown = sorted(set(tools) - KNOWN_TOOLS)
+        if unknown:
+            raise ValueError(f"unknown tool(s): {', '.join(unknown)}")
+        if "Bash" in tools:
+            raise ValueError("Bash is not available in task-contract mode; use an explicit future sandbox policy")
+    read_paths = validate_path_patterns(permissions.get("read_paths", ["**/*"]), "permissions.read_paths")
+    write_paths = validate_path_patterns(permissions.get("write_paths", []), "permissions.write_paths")
+    extra_denies = validate_path_patterns(permissions.get("deny_paths", []), "permissions.deny_paths")
+    deny_paths = tuple(dict.fromkeys((*DEFAULT_DENY_PATHS, *extra_denies)))
+    if intent in READ_ONLY_INTENTS and write_paths:
+        raise ValueError(f"intent '{intent}' cannot declare write_paths")
+    if tools is not None and set(tools).intersection(MUTATION_TOOLS) and not write_paths:
+        raise ValueError("mutation tools require explicit permissions.write_paths")
+    if intent in READ_ONLY_INTENTS and tools is not None and set(tools).intersection(MUTATION_TOOLS):
+        raise ValueError(f"intent '{intent}' cannot request mutation tools")
+    return tools, read_paths, write_paths, deny_paths
+
+
+def _parse_constraints(data: dict) -> tuple:
+    constraints = _mapping(data.get("constraints", {}), "constraints", {"must_not_change", "success_checks", "expected_outputs"})
+    return (
+        _string_list(constraints.get("must_not_change", []), "constraints.must_not_change"),
+        _string_list(constraints.get("success_checks", []), "constraints.success_checks"),
+        _string_list(constraints.get("expected_outputs", []), "constraints.expected_outputs"),
+    )
+
+
+def _parse_limits(data: dict) -> tuple[int, int]:
+    limits = _mapping(data.get("limits", {}), "limits", {"max_tool_calls", "max_mutation_bytes"})
+    return (
+        _bounded_integer(limits.get("max_tool_calls", MAX_TOOL_CALLS_PER_RUN), "limits.max_tool_calls", MAX_TOOL_CALLS_PER_RUN),
+        _bounded_integer(limits.get("max_mutation_bytes", MAX_MUTATION_BYTES_PER_RUN), "limits.max_mutation_bytes", MAX_MUTATION_BYTES_PER_RUN),
+    )
+
+
 @dataclass(frozen=True)
 class TaskContract:
     version: int
@@ -74,54 +136,12 @@ class TaskContract:
 
     @classmethod
     def from_dict(cls, value: object) -> "TaskContract":
-        if not isinstance(value, dict):
-            raise ValueError("task contract must be an object")
-        try:
-            encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        except (TypeError, ValueError):
-            raise ValueError("task contract must contain JSON-compatible values") from None
-        if len(encoded.encode("utf-8")) > MAX_CONTRACT_BYTES:
-            raise ValueError(f"task contract exceeds {MAX_CONTRACT_BYTES} bytes")
-        data = _mapping(value, "task contract", {"version", "intent", "permissions", "constraints", "limits"})
-        version = data.get("version", CONTRACT_VERSION)
-        if isinstance(version, bool) or not isinstance(version, int) or version != CONTRACT_VERSION:
-            raise ValueError(f"unsupported task contract version: {version!r}")
-        intent = data.get("intent", "implement")
-        if not isinstance(intent, str) or intent not in VALID_INTENTS:
-            raise ValueError(f"intent must be one of: {', '.join(sorted(VALID_INTENTS))}")
-
-        permissions = _mapping(data.get("permissions", {}), "permissions", {"tools", "read_paths", "write_paths", "deny_paths"})
-        raw_tools = permissions.get("tools")
-        tools = None if raw_tools is None else _string_list(raw_tools, "permissions.tools")
-        if tools is not None:
-            unknown_tools = sorted(set(tools) - KNOWN_TOOLS)
-            if unknown_tools:
-                raise ValueError(f"unknown tool(s): {', '.join(unknown_tools)}")
-            if "Bash" in tools:
-                raise ValueError("Bash is not available in task-contract mode; use an explicit future sandbox policy")
-
-        read_paths = validate_path_patterns(permissions.get("read_paths", ["**/*"]), "permissions.read_paths")
-        write_paths = validate_path_patterns(permissions.get("write_paths", []), "permissions.write_paths")
-        extra_denies = validate_path_patterns(permissions.get("deny_paths", []), "permissions.deny_paths")
-        deny_paths = tuple(dict.fromkeys((*DEFAULT_DENY_PATHS, *extra_denies)))
-        if intent in READ_ONLY_INTENTS and write_paths:
-            raise ValueError(f"intent '{intent}' cannot declare write_paths")
-        if tools is not None and set(tools).intersection(MUTATION_TOOLS) and not write_paths:
-            raise ValueError("mutation tools require explicit permissions.write_paths")
-        if intent in READ_ONLY_INTENTS and tools is not None and set(tools).intersection(MUTATION_TOOLS): raise ValueError(f"intent '{intent}' cannot request mutation tools")
-
-        constraints = _mapping(data.get("constraints", {}), "constraints", {"must_not_change", "success_checks", "expected_outputs"})
-        must_not_change = _string_list(constraints.get("must_not_change", []), "constraints.must_not_change")
-        success_checks = _string_list(constraints.get("success_checks", []), "constraints.success_checks")
-        expected_outputs = _string_list(constraints.get("expected_outputs", []), "constraints.expected_outputs")
-        limits = _mapping(data.get("limits", {}), "limits", {"max_tool_calls", "max_mutation_bytes"})
-        max_tool_calls = _bounded_integer(limits.get("max_tool_calls", MAX_TOOL_CALLS_PER_RUN), "limits.max_tool_calls", MAX_TOOL_CALLS_PER_RUN)
-        max_mutation_bytes = _bounded_integer(limits.get("max_mutation_bytes", MAX_MUTATION_BYTES_PER_RUN), "limits.max_mutation_bytes", MAX_MUTATION_BYTES_PER_RUN)
-        return cls(
-            CONTRACT_VERSION, intent, tools, read_paths, write_paths, deny_paths,
-            must_not_change, success_checks, expected_outputs,
-            max_tool_calls, max_mutation_bytes,
-        )
+        data = _validated_input(value)
+        intent = _parse_intent(data)
+        permissions = _parse_permissions(data, intent)
+        constraints = _parse_constraints(data)
+        limits = _parse_limits(data)
+        return cls(CONTRACT_VERSION, intent, *permissions, *constraints, *limits)
 
     def canonical_dict(self) -> dict:
         return {

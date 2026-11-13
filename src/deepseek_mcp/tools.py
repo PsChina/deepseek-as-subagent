@@ -482,7 +482,7 @@ def execute_tool(
         return "ERROR: tool name must be a string"
     if not isinstance(args, dict):
         return "ERROR: tool arguments must be an object"
-    if config.effective_policy is not None and (denied := check_tool_access(config.effective_policy, name, args, config.workspace)): return denied
+    if getattr(config, "effective_policy", None) is not None and (denied := check_tool_access(config.effective_policy, name, args, config.workspace)): return denied
     if name not in config.allowed_tools:
         return f"ERROR: tool '{name}' is not allowed by configuration"
     if name == "Bash":
@@ -496,5 +496,5 @@ def execute_tool(
         return f"ERROR: unknown tool '{name}'. Available: {available}"
     if name in {"Write", "Edit", "NotebookEdit"}:
         return fn(args, config.workspace, mutation_budget)
-    if name in {"Glob", "Grep"}: return fn(args, config.workspace, policy=config.effective_policy)
+    if name in {"Glob", "Grep"}: return fn(args, config.workspace, policy=getattr(config, "effective_policy", None))
     return fn(args, config.workspace)
