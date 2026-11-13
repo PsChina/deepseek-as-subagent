@@ -67,6 +67,23 @@ class WorkspaceEvidenceTests(unittest.TestCase):
             self.assertEqual(missing[0]["status"], "not_verifiable")
             self.assertNotIn("observed_sha256", missing[0])
 
+    def test_readback_rejects_symlink_alias_to_out_of_scope_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "private").mkdir()
+            secret = root / "private" / "secret.txt"
+            secret.write_text("private-only", encoding="utf-8")
+            alias = root / "src" / "file.txt"
+            try:
+                alias.symlink_to(secret)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            cfg = self._config(root)
+            evidence = collect_workspace_evidence(cfg, [self._record("private-only")])
+            self.assertEqual(evidence[0]["status"], "not_verifiable")
+            self.assertNotIn("observed_sha256", evidence[0])
+
     def test_last_committed_version_is_checked_after_multiple_edits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
