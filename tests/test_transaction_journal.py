@@ -9,7 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deepseek_mcp.config import Config
+from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
+from deepseek_mcp.policy_enforcement import bind_file_policy
+from deepseek_mcp.policy_engine import compile_task_policy
+from deepseek_mcp.task_contract import TaskContract
 from deepseek_mcp import transaction_journal as journal
 from deepseek_mcp.transaction_journal import TransactionJournalError
 
@@ -113,6 +116,30 @@ class TransactionJournalTests(unittest.TestCase):
         raw = b'{"nested":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
         with self.assertRaises(TransactionJournalError):
             journal._decode(raw)
+
+    def test_record_intent_uses_and_rechecks_canonical_file_io_path(self) -> None:
+        contract = TaskContract.from_dict({
+            "permissions": {
+                "tools": ["Write"],
+                "write_paths": ["src/**"],
+            }
+        })
+        policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+        config = Config(
+            "", self.workspace, allowed_tools=list(policy.allowed_tools),
+            effective_policy=policy,
+        )
+        with bind_file_policy(policy, "Write"):
+            record = journal.record_intent(
+                config, "a" * 32, "Write", {"path": "src/alias.txt"},
+                _sha256("replacement"), canonical_path="src/actual.txt",
+            )
+            with self.assertRaises(TransactionJournalError):
+                journal.record_intent(
+                    config, "b" * 32, "Write", {"path": "src/alias.txt"},
+                    _sha256("replacement"), canonical_path="private/secret.txt",
+                )
+        self.assertEqual(record["path"], "src/actual.txt")
 
     def test_record_intent_is_idempotent_but_rejects_id_reuse(self) -> None:
         transaction_id = "b" * 32
