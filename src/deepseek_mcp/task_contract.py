@@ -71,8 +71,8 @@ def _validated_input(value: object) -> dict:
         raise ValueError("task contract must be an object")
     try:
         encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError):
-        raise ValueError("task contract must contain JSON-compatible values") from None
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError("task contract must contain bounded JSON-compatible values") from None
     if len(encoded.encode("utf-8")) > MAX_CONTRACT_BYTES:
         raise ValueError(f"task contract exceeds {MAX_CONTRACT_BYTES} bytes")
     return _mapping(value, "task contract", {"version", "intent", "permissions", "constraints", "limits"})
