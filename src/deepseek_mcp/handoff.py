@@ -43,6 +43,7 @@ def _bash_summary(result: dict) -> dict:
         bash = {}
     return {
         "calls": bash.get("calls", 0),
+        "executed_calls": bash.get("executed_calls"),
         "failure_count": bash.get("failure_count", 0),
         "last_status": bash.get("last_status"),
         "failures": bash.get("failures", []),
@@ -55,7 +56,7 @@ def build_handoff(result: object) -> dict | None:
     contract = result["task_contract"]
     mutations = result.get("mutations", [])
     bash = _bash_summary(result)
-    verification = verify_execution_record(contract, mutations, bash["calls"])
+    verification = verify_execution_record(contract, mutations, bash["executed_calls"])
     return {
         "schema_version": 1,
         "execution_status": "completed",
