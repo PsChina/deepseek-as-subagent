@@ -66,11 +66,43 @@ def _bounded_integer(value: object, label: str, maximum: int) -> int:
     return value
 
 
+
+def _check_json_shape(value: object, max_depth: int = 64, max_nodes: int = 10_000) -> None:
+    """Reject excessive nesting and non-JSON values without recursive traversal."""
+    stack = [(value, 0)]
+    visited = 0
+    while stack:
+        current, depth = stack.pop()
+        visited += 1
+        if visited > max_nodes:
+            raise ValueError("task contract exceeds the maximum JSON node count")
+        if depth > max_depth:
+            raise ValueError("task contract exceeds the maximum JSON nesting depth")
+        if current is None or isinstance(current, (str, bool, int)):
+            continue
+        if isinstance(current, float):
+            import math
+            if not math.isfinite(current):
+                raise ValueError("task contract contains a non-finite number")
+            continue
+        if isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+            continue
+        if isinstance(current, dict):
+            for key, item in current.items():
+                if not isinstance(key, str):
+                    raise ValueError("task contract object keys must be strings")
+                stack.append((item, depth + 1))
+            continue
+        raise ValueError("task contract contains a non-JSON value")
+
+
 def _validated_input(value: object) -> dict:
     if not isinstance(value, dict):
         raise ValueError("task contract must be an object")
     try:
-        encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        _check_json_shape(value)
+        encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
     except (TypeError, ValueError, RecursionError):
         raise ValueError("task contract must contain bounded JSON-compatible values") from None
     if len(encoded.encode("utf-8")) > MAX_CONTRACT_BYTES:
