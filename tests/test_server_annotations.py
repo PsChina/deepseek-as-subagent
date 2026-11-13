@@ -661,6 +661,10 @@ server._record_usage(1, {
             "get_deepseek_result": (False, False, True, False),
             "get_deepseek_recovery": (False, False, True, False),
             "acknowledge_deepseek_mutations": (False, True, True, False),
+            "delegate_to_deepseek_with_contract": (False, True, False, True),
+            "delegate_to_deepseek_readonly_with_contract": (True, False, False, True),
+            "start_deepseek_with_contract": (False, True, False, True),
+            "start_deepseek_readonly_with_contract": (True, False, False, True),
         }
 
         self.assertEqual(set(tools), set(expected))

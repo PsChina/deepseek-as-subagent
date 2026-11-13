@@ -473,7 +473,7 @@ def _record_usage(task_length: int, result: dict) -> bool:
         return False
 
 
-register_contract_tools(mcp, _delegate, _start_delegation, CODING_PROFILE, READONLY_PROFILE)
+register_contract_tools(mcp, _delegate, _start_delegation, CODING_PROFILE, READONLY_PROFILE, _AGENT_EXECUTION, _READONLY_AGENT_EXECUTION)
 
 
 def main() -> None:
