@@ -195,6 +195,7 @@ def write_windows(
         try:
             _commit(parent, temporary, relative.name, baseline, replacement)
         except MutationCommittedWarning as warning:
+            created = False
             mutation_warning(str(warning))
             raise
         created = False
