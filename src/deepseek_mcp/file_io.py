@@ -26,7 +26,7 @@ from .posix_atomic_commit import (
     commit as _commit_posix_file,
     discard as _discard_posix_file,
 )
-from .safety import resolve_safe_path, validate_windows_path_parts
+from .safety import resolve_safe_path, validate_windows_path_parts as _validate_windows_parts
 from .policy_enforcement import enforce_current_file_policy
 from . import windows_atomic_commit
 from .transaction_report import mutation_ready, mutation_warning
@@ -51,7 +51,7 @@ def _location(workspace: Path, label: str) -> tuple[Path, Path]:
     if not relative.parts:
         raise ToolInputError("write target is not a regular file")
     if os.name == "nt":
-        validate_windows_path_parts(relative)
+        _validate_windows_parts(relative)
     return root, relative
 def _directory_flags() -> int:
     return (
