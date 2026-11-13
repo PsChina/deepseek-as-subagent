@@ -36,6 +36,7 @@ from .resource_budget import (
 from .run_progress import attach_progress
 from .tools import build_tool_schemas, execute_tool
 from .tool_process import execute_in_subprocess
+from .workspace_evidence import collect_workspace_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +325,7 @@ def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
         "bash": state.bash_outcome.payload(),
         "duration_seconds": round(max(0.0, time.time() - state.started), 2),
         "mutations": state.mutations.payload(),
+        **({"workspace_evidence": collect_workspace_evidence(state.config, state.mutations.payload())} if policy is not None else {}),
         **({"task_contract": policy.to_dict()} if policy is not None else {}),
     }
 
