@@ -9,7 +9,6 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-
 from .file_identity import (
     ExpectedIdentity,
     FileIdentity,
@@ -27,6 +26,7 @@ from .posix_atomic_commit import (
     discard as _discard_posix_file,
 )
 from .safety import resolve_safe_path, validate_windows_path_parts as _validate_windows_parts
+from .safety import require_canonical_relative_path
 from .policy_enforcement import enforce_current_file_policy
 from . import windows_atomic_commit
 from .transaction_report import mutation_ready, mutation_warning
@@ -34,7 +34,6 @@ from .workspace_guard import require_workspace_identity, require_workspace_stat
 MAX_TEXT_FILE_BYTES = 5_000_000
 _REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _DIRECTORY_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
-
 def _temporary_name() -> str:
     value = os.environ.get("DEEPSEEK_TOOL_TRANSACTION_ID", "")
     try:
@@ -42,11 +41,14 @@ def _temporary_name() -> str:
     except (ValueError, AttributeError):
         token = uuid.uuid4().hex
     return f".deepseek-mcp-{token}.tmp"
-def _location(workspace: Path, label: str) -> tuple[Path, Path]:
+def _location(
+    workspace: Path, label: str, *, require_canonical: bool = False
+) -> tuple[Path, Path]:
     require_workspace_identity(workspace)
     root = workspace.resolve()
     absolute = resolve_safe_path(label, root)
     relative = absolute.relative_to(root)
+    if require_canonical: require_canonical_relative_path(label, root, absolute)
     enforce_current_file_policy(relative.as_posix())
     if not relative.parts:
         raise ToolInputError("write target is not a regular file")
@@ -105,7 +107,6 @@ def _decode(data: bytes, *, strict_utf8: bool, reject_binary: bool) -> str:
         return data.decode("utf-8", errors="strict" if strict_utf8 else "replace")
     except UnicodeDecodeError:
         raise ToolInputError("file is not valid UTF-8") from None
-
 def _checked_read(descriptor: int, *, strict_utf8: bool, reject_binary: bool) -> tuple[str, FileIdentity]:
     initial_stat = os.fstat(descriptor)
     before = FileIdentity.from_stat(initial_stat)
@@ -115,7 +116,6 @@ def _checked_read(descriptor: int, *, strict_utf8: bool, reject_binary: bool) ->
         raise ToolInputError("file changed while reading")
     identity = FileIdentity.from_stat(os.fstat(descriptor), hashlib.sha256(data).digest())
     return _decode(data, strict_utf8=strict_utf8, reject_binary=reject_binary), identity
-
 def _read_posix(
     root: Path, relative: Path, *, strict_utf8: bool, reject_binary: bool
 ) -> tuple[str, FileIdentity]:
