@@ -28,7 +28,9 @@ def _readback_one(config, path: str, record: dict) -> dict:
         return result
     try:
         with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(policy, "Write"):
-            root, relative = file_io._location(config.workspace, path)
+            root, relative = file_io._location(
+                config.workspace, path, require_canonical=True
+            )
             if relative.as_posix() != path:
                 return result
             if os.name == "nt":
