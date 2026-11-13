@@ -18,6 +18,7 @@ MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 READ_ONLY_INTENTS = frozenset({"readonly_scan", "audit", "review"})
 VALID_INTENTS = frozenset({"implement", *READ_ONLY_INTENTS})
 DEFAULT_DENY_PATHS = (
+    ".git", "**/.git", ".git/**", "**/.git/**",
     ".env*", "**/.env*", ".npmrc", "**/.npmrc", ".pypirc", "**/.pypirc",
     ".netrc", "**/.netrc", ".git-credentials", "**/.git-credentials",
     "credentials", "**/credentials", "**/credentials.*", "secrets/**", "**/secrets/**",
