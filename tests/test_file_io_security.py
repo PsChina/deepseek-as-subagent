@@ -14,6 +14,7 @@ from unittest.mock import patch
 import deepseek_mcp.file_io as file_io
 import deepseek_mcp.posix_atomic_commit as posix_atomic_commit
 import deepseek_mcp.tool_child as tool_child
+import deepseek_mcp.windows_workspace_write as windows_workspace_write
 import deepseek_mcp.transaction_report as transaction_report
 import deepseek_mcp.tools as tools
 import deepseek_mcp.workspace_walk as workspace_walk
@@ -897,6 +898,57 @@ class WindowsHandlePolicyTests(unittest.TestCase):
 
         close_descriptor.assert_not_called()
         close_handle.assert_called_once_with(17)
+
+    @unittest.skipUnless(os.name == "nt", "Windows atomic writer is required")
+    def test_committed_warning_interrupt_preserves_windows_recovery_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "target.txt"
+            target.write_text("before", encoding="utf-8")
+            _text, baseline = file_io.read_workspace_text(root, "target.txt")
+            real_commit = windows_workspace_write._commit
+            temporary_names: list[str] = []
+            warnings: list[str] = []
+            discard_calls: list[tuple] = []
+
+            def commit_then_warn(
+                parent, temporary, name, expected, replacement
+            ) -> None:
+                real_commit(parent, temporary, name, expected, replacement)
+                temporary_names.append(temporary)
+                (root / temporary).write_bytes(b"retained-original")
+                raise file_io.MutationCommittedWarning(
+                    "recover from retained-copy"
+                )
+
+            def interrupt_warning(detail: str) -> None:
+                warnings.append(detail)
+                raise tool_child._ToolTermination()
+
+            with (
+                patch.object(
+                    windows_workspace_write, "_commit", side_effect=commit_then_warn
+                ),
+                patch.object(
+                    windows_workspace_write, "mutation_warning",
+                    side_effect=interrupt_warning,
+                ),
+                patch.object(
+                    windows_workspace_write, "_discard_if_version",
+                    side_effect=lambda *args: discard_calls.append(args),
+                ),
+                self.assertRaises(tool_child._ToolTermination),
+            ):
+                windows_workspace_write.write_windows(
+                    root, Path("target.txt"), b"after", baseline
+                )
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "after")
+            self.assertEqual(discard_calls, [])
+            self.assertEqual(
+                (root / temporary_names[0]).read_bytes(), b"retained-original"
+            )
+            self.assertIn("recover from retained-copy", warnings)
 
     def test_windows_write_rechecks_implicit_call_local_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
