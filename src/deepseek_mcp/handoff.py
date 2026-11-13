@@ -59,6 +59,7 @@ def build_handoff(result: object) -> dict | None:
     verification = verify_execution_record(
         contract, mutations, bash["executed_calls"],
         result.get("tool_calls"), result.get("mutation_bytes_reserved"),
+        result.get("workspace_evidence"),
     )
     return {
         "schema_version": 1,
@@ -66,6 +67,7 @@ def build_handoff(result: object) -> dict | None:
         "verification_status": verification["overall_status"],
         "contract": _contract_summary(contract),
         "changed_files": _changed_files(mutations),
+        "workspace_evidence": result.get("workspace_evidence"),
         "commands_run": [],
         "bash_summary": bash,
         "verification": verification,
