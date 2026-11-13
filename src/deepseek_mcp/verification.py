@@ -15,43 +15,53 @@ def _string_items(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _verify_mutation(item: object, allowed_tools: set[str], write_paths: tuple[str, ...], deny_paths: tuple[str, ...]) -> tuple[str, str, list[str]]:
+    if not isinstance(item, dict):
+        return "failed", "failed", ["malformed mutation record"]
+    path, tool, status, digest = (
+        item.get("path"), item.get("tool"), item.get("status"), item.get("sha256")
+    )
+    policy_status, integrity_status = "passed", "not_applicable"
+    risks: list[str] = []
+    if tool not in _MUTATION_TOOLS or tool not in allowed_tools:
+        policy_status = "failed"
+        risks.append("mutation record contains an operation outside the effective tool set")
+    if not isinstance(path, str) or not path:
+        policy_status = "not_verifiable" if policy_status == "passed" else policy_status
+        integrity_status = "not_verifiable"
+        risks.append("mutation path is missing")
+    elif not path_is_allowed(path, write_paths, deny_paths):
+        policy_status = "failed"
+        risks.append(f"mutation path is outside the effective write scope: {path}")
+    if status != "committed":
+        integrity_status = "uncertain"
+        risks.append(f"mutation outcome is uncertain: {path or 'unknown path'}")
+    elif not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        integrity_status = "not_verifiable"
+        risks.append(f"mutation digest is missing or invalid: {path or 'unknown path'}")
+    else:
+        integrity_status = "verified_at_commit"
+    return policy_status, integrity_status, risks
+
+
 def _verify_mutations(contract: dict, mutations: object, bash_calls: int) -> tuple[str, str, list[str]]:
     if not isinstance(mutations, list):
         return "not_verifiable", "not_verifiable", ["mutation record list is invalid"]
     write_paths = tuple(_string_items(contract.get("write_paths")))
     deny_paths = tuple(_string_items(contract.get("deny_paths")))
     allowed_tools = set(_string_items(contract.get("allowed_tools")))
-    policy_status, integrity_status = "passed", "not_applicable"
+    policy_statuses = ["failed" if bash_calls else "passed"]
+    integrity_statuses: list[str] = []
     risks: list[str] = []
-    if bash_calls:
-        policy_status = "failed"
-        risks.append("Bash was executed during a contract-bound delegation")
     for item in mutations:
-        if not isinstance(item, dict):
-            policy_status = integrity_status = "failed"
-            risks.append("malformed mutation record")
-            continue
-        path, tool, status, digest = (
-            item.get("path"), item.get("tool"), item.get("status"), item.get("sha256")
-        )
-        if tool not in _MUTATION_TOOLS or tool not in allowed_tools:
-            policy_status = "failed"
-            risks.append("mutation record contains an operation outside the effective tool set")
-        if not isinstance(path, str) or not path:
-            if policy_status == "passed": policy_status = "not_verifiable"
-            if integrity_status == "not_applicable": integrity_status = "not_verifiable"
-            risks.append("mutation path is missing")
-        elif not path_is_allowed(path, write_paths, deny_paths):
-            policy_status = "failed"
-            risks.append(f"mutation path is outside the effective write scope: {path}")
-        if status != "committed":
-            integrity_status = "uncertain"
-            risks.append(f"mutation outcome is uncertain: {path or 'unknown path'}")
-        elif not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
-            integrity_status = "not_verifiable"
-            risks.append(f"mutation digest is missing or invalid: {path or 'unknown path'}")
-        elif integrity_status == "not_applicable":
-            integrity_status = "verified_at_commit"
+        policy, integrity, item_risks = _verify_mutation(item, allowed_tools, write_paths, deny_paths)
+        policy_statuses.append(policy)
+        integrity_statuses.append(integrity)
+        risks.extend(item_risks)
+    policy_status = next(status for status in ("failed", "not_verifiable", "passed") if status in policy_statuses)
+    integrity_status = next((status for status in ("failed", "uncertain", "not_verifiable", "verified_at_commit") if status in integrity_statuses), "not_applicable")
+    if bash_calls:
+        risks.append("Bash was executed during a contract-bound delegation")
     return policy_status, integrity_status, risks
 
 
@@ -73,7 +83,7 @@ def verify_execution_record(contract: dict, mutations: object, bash_calls: int =
     risks.append("functional correctness has not been independently verified")
     if policy_status == "failed":
         overall = "failed"
-    elif policy_status != "passed" or integrity_status in {"uncertain", "not_verifiable"} or checks or semantic or outputs:
+    elif policy_status != "passed" or integrity_status in {"failed", "uncertain", "not_verifiable"} or checks or semantic or outputs:
         overall = "partial"
     else:
         overall = "policy_verified"
