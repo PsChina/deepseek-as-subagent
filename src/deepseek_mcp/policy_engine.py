@@ -51,6 +51,9 @@ class EffectivePolicy:
         read_paths = validate_path_patterns(value.get("read_paths"), "effective_policy.read_paths")
         write_paths = validate_path_patterns(value.get("write_paths"), "effective_policy.write_paths")
         deny_paths = validate_path_patterns(value.get("deny_paths"), "effective_policy.deny_paths")
+        from .task_contract import DEFAULT_DENY_PATHS
+        if not set(DEFAULT_DENY_PATHS).issubset(deny_paths):
+            raise ValueError("effective policy is missing built-in denied paths")
         intent = value.get("intent")
         if not isinstance(intent, str) or intent not in {"implement", *READ_ONLY_INTENTS}:
             raise ValueError("effective policy intent is invalid")
@@ -114,3 +117,12 @@ def compile_task_policy(contract: TaskContract, profile_tools: list[str]) -> Eff
         contract.intent, contract.must_not_change, contract.success_checks,
         contract.expected_outputs, contract.digest(),
     )
+
+
+def bind_task_contract(config, raw_contract: object) -> EffectivePolicy:
+    """Validate and bind a contract to a profile-bound Config in place."""
+    contract = TaskContract.from_dict(raw_contract)
+    policy = compile_task_policy(contract, config.allowed_tools)
+    config.effective_policy = policy
+    config.allowed_tools = list(policy.allowed_tools)
+    return policy

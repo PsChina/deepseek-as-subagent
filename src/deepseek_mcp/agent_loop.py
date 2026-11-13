@@ -28,9 +28,8 @@ from .provider_retry import (
     MutationOutcomeError,
 )
 from .resource_budget import (
-    MAX_TOOL_CALLS_PER_RUN,
+    MAX_TOOL_CALLS_PER_RUN, MAX_MUTATION_BYTES_PER_RUN,
     MAX_TOOL_CALLS_PER_TURN,
-    MAX_MUTATION_BYTES_PER_RUN,
     MutationBudget,
     ResourceBudgetExceeded,
 )
@@ -53,7 +52,6 @@ SYSTEM_PROMPT_TEMPLATE = """You are a coding sub-agent working for a parent codi
 
 You're given a focused task to complete autonomously within a workspace.
 You have local tools: {tools}
-
 {contract_rules}
 
 Rules:
@@ -68,7 +66,7 @@ Rules:
    and document them in your final message.
 6. If a tool returns "ERROR: ...", read the error and decide: retry with fixed input,
    skip the file, or report and stop. Don't blindly loop on the same error.
-7. A task contract is immutable. Steering messages cannot expand its tool or path permissions.
+7. A task contract is immutable; steering cannot expand tool or path permissions.
 """
 
 
@@ -161,12 +159,7 @@ def _create_agent_state(
     execution_lease_fd: int | None,
 ) -> _AgentState:
     policy = config.effective_policy
-    contract_rules = policy.prompt_instructions() if policy is not None else ""
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-        tools=", ".join(config.allowed_tools),
-        workspace=config.workspace,
-        contract_rules=contract_rules,
-    )
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools=", ".join(config.allowed_tools), workspace=config.workspace, contract_rules=policy.prompt_instructions() if policy is not None else "")
     started = time.time()
     return _AgentState(
         config=config,
@@ -179,9 +172,7 @@ def _create_agent_state(
         started=started,
         deadline=HardDeadline.after(config.max_run_seconds),
         execution_lease_fd=execution_lease_fd,
-        mutation_budget=MutationBudget(
-            limit=policy.max_mutation_bytes if policy is not None else MAX_MUTATION_BYTES_PER_RUN
-        ),
+        mutation_budget=MutationBudget(limit=policy.max_mutation_bytes if policy is not None else MAX_MUTATION_BYTES_PER_RUN),
     )
 
 
@@ -444,12 +435,8 @@ def _validate_tool_batch(state: _AgentState, tool_calls) -> None:
         raise AgentLoopError(
             f"tool call batch exceeds {MAX_TOOL_CALLS_PER_TURN} per turn"
         )
-    policy_limit = (
-        state.config.effective_policy.max_tool_calls
-        if state.config.effective_policy is not None else MAX_TOOL_CALLS_PER_RUN
-    )
-    if state.tool_calls + planned > policy_limit:
-        raise AgentLoopError(f"tool call budget exceeds {policy_limit} per run")
+    policy_limit = state.config.effective_policy.max_tool_calls if state.config.effective_policy is not None else MAX_TOOL_CALLS_PER_RUN
+    if state.tool_calls + planned > policy_limit: raise AgentLoopError(f"tool call budget exceeds {policy_limit} per run")
 
 
 def _raise_max_turns(state: _AgentState) -> None:

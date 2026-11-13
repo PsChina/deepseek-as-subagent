@@ -437,15 +437,10 @@ class Config:
         self.max_turns = _validate_max_turns(self.max_turns)
         self.max_output_tokens = _validate_max_output_tokens(self.max_output_tokens)
         self.max_run_seconds = _validate_max_run_seconds(self.max_run_seconds)
-        if self.delegation_capability not in {"coding", "readonly"}:
-            raise RuntimeError("invalid delegation capability")
+        if self.delegation_capability not in {"coding", "readonly"}: raise RuntimeError("invalid delegation capability")
         if self.effective_policy is not None:
-            if isinstance(self.effective_policy, dict):
-                self.effective_policy = EffectivePolicy.from_dict(self.effective_policy)
-            if not isinstance(self.effective_policy, EffectivePolicy):
-                raise RuntimeError("invalid effective task policy")
-            if tuple(self.allowed_tools) != self.effective_policy.allowed_tools:
-                raise RuntimeError("effective task policy does not match allowed tools")
+            self.effective_policy = EffectivePolicy.from_dict(self.effective_policy) if isinstance(self.effective_policy, dict) else self.effective_policy
+            if not isinstance(self.effective_policy, EffectivePolicy) or tuple(self.allowed_tools) != self.effective_policy.allowed_tools: raise RuntimeError("invalid or mismatched effective task policy")
         self._validate_mutation_runtime()
 
     def _validate_mutation_runtime(self) -> None:

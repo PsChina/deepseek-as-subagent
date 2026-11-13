@@ -187,11 +187,7 @@ def _parse_glob_request(args: dict, workspace: Path, policy=None) -> WorkspaceWa
     base = args.get("path", "")
     if not isinstance(base, str):
         raise ToolInputError("'path' must be a string")
-    return WorkspaceWalk(
-        base, workspace, pattern,
-        allowed_paths=policy.read_paths if policy is not None else None,
-        denied_paths=policy.deny_paths if policy is not None else (),
-    )
+    return WorkspaceWalk(base, workspace, pattern, allowed_paths=policy.read_paths if policy is not None else None, denied_paths=policy.deny_paths if policy is not None else ())
 
 def _scan_glob_matches(walk: WorkspaceWalk) -> tuple[list[Path], bool]:
     matches: list[Path] = []
@@ -403,9 +399,7 @@ def _grep_file(entry: WalkEntry, regex: RegexPattern, limit: int) -> list[str]:
             break
     return matches
 
-def _parse_grep_request(
-    args: dict, workspace: Path, policy=None
-) -> tuple[WorkspaceWalk, RegexPattern, int]:
+def _parse_grep_request(args: dict, workspace: Path, policy=None) -> tuple[WorkspaceWalk, RegexPattern, int]:
     pattern = args.get("pattern", "")
     file_glob = args.get("glob", "**/*")
     if not isinstance(pattern, str) or not pattern:
@@ -418,11 +412,7 @@ def _parse_grep_request(
     limit = bounded_integer(
         args.get("max_matches", 100), "max_matches", minimum=1, maximum=1000
     )
-    walk = WorkspaceWalk(
-        base, workspace, file_glob, open_files=True,
-        allowed_paths=policy.read_paths if policy is not None else None,
-        denied_paths=policy.deny_paths if policy is not None else (),
-    )
+    walk = WorkspaceWalk(base, workspace, file_glob, open_files=True, allowed_paths=policy.read_paths if policy is not None else None, denied_paths=policy.deny_paths if policy is not None else ())
     return walk, compile_safe_regex(pattern), limit
 
 
@@ -492,10 +482,7 @@ def execute_tool(
         return "ERROR: tool name must be a string"
     if not isinstance(args, dict):
         return "ERROR: tool arguments must be an object"
-    if config.effective_policy is not None:
-        denied = check_tool_access(config.effective_policy, name, args, config.workspace)
-        if denied is not None:
-            return denied
+    if config.effective_policy is not None and (denied := check_tool_access(config.effective_policy, name, args, config.workspace)): return denied
     if name not in config.allowed_tools:
         return f"ERROR: tool '{name}' is not allowed by configuration"
     if name == "Bash":
@@ -509,6 +496,5 @@ def execute_tool(
         return f"ERROR: unknown tool '{name}'. Available: {available}"
     if name in {"Write", "Edit", "NotebookEdit"}:
         return fn(args, config.workspace, mutation_budget)
-    if name in {"Glob", "Grep"}:
-        return fn(args, config.workspace, policy=config.effective_policy)
+    if name in {"Glob", "Grep"}: return fn(args, config.workspace, policy=config.effective_policy)
     return fn(args, config.workspace)

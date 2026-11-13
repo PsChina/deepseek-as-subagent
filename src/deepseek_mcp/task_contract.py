@@ -84,7 +84,7 @@ class TaskContract:
             raise ValueError(f"task contract exceeds {MAX_CONTRACT_BYTES} bytes")
         data = _mapping(value, "task contract", {"version", "intent", "permissions", "constraints", "limits"})
         version = data.get("version", CONTRACT_VERSION)
-        if isinstance(version, bool) or version != CONTRACT_VERSION:
+        if isinstance(version, bool) or not isinstance(version, int) or version != CONTRACT_VERSION:
             raise ValueError(f"unsupported task contract version: {version!r}")
         intent = data.get("intent", "implement")
         if not isinstance(intent, str) or intent not in VALID_INTENTS:

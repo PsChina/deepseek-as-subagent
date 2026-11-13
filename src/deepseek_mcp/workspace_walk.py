@@ -105,11 +105,7 @@ class _Frame:
 class WorkspaceWalk:
     """Context-managed iterator so early result limits still close descriptors."""
 
-    def __init__(
-        self, base: str, workspace: Path, raw_pattern: str, *, open_files: bool = False,
-        allowed_paths: tuple[str, ...] | None = None,
-        denied_paths: tuple[str, ...] = (),
-    ) -> None:
+    def __init__(self, base: str, workspace: Path, raw_pattern: str, *, open_files: bool = False, allowed_paths: tuple[str, ...] | None = None, denied_paths: tuple[str, ...] = ()) -> None:
         self.root, self.base, relative = _resolve_base(base, workspace)
         self.pruned = walk_support.PrunedDirectories(self.root)
         self.pattern = _GlobPattern.parse(raw_pattern)
@@ -118,8 +114,7 @@ class WorkspaceWalk:
         self._entries = 0
         self._directories = 0
         self._open_files = open_files
-        self._allowed_paths = allowed_paths
-        self._denied_paths = denied_paths
+        self._allowed_paths, self._denied_paths = allowed_paths, denied_paths
         self._iterator = self._walk(relative)
 
     def __enter__(self) -> WorkspaceWalk:
@@ -183,9 +178,7 @@ class WorkspaceWalk:
         path = parent.display_path / entry.name
         if is_protected_host_path(path):
             return None, None
-        relative = path.relative_to(self.root).as_posix()
-        if path_is_denied(relative, self._denied_paths):
-            return None, None
+        if path_is_denied(path.relative_to(self.root).as_posix(), self._denied_paths): return None, None
         matched = self._matched_entry(path, parts, states, is_file, is_dir, info, parent)
         child = self._child_frame(path, parts, states, info, parent) if is_dir else None
         return matched, child
@@ -202,11 +195,7 @@ class WorkspaceWalk:
     ) -> WalkEntry | None:
         if not self.pattern.is_match(states):
             return None
-        relative = path.relative_to(self.root).as_posix()
-        if self._allowed_paths is not None and not path_is_allowed(
-            relative, self._allowed_paths, self._denied_paths
-        ):
-            return None
+        if self._allowed_paths is not None and not path_is_allowed(path.relative_to(self.root).as_posix(), self._allowed_paths, self._denied_paths): return None
         needs_descriptor = is_file and self._open_files
         descriptor = _open_regular(parent, path, parts[-1], info) if needs_descriptor else None
         if needs_descriptor and descriptor is None:
