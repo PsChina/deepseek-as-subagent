@@ -142,8 +142,11 @@ def read_workspace_text(
     *,
     strict_utf8: bool = False,
     reject_binary: bool = False,
+    require_canonical: bool = False,
 ) -> tuple[str, FileIdentity]:
-    root, relative = _location(workspace, label)
+    root, relative = _location(
+        workspace, label, require_canonical=require_canonical
+    )
     if os.name == "nt":
         return _read_windows(
             root, relative, strict_utf8=strict_utf8, reject_binary=reject_binary
