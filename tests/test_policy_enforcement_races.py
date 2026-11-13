@@ -85,11 +85,17 @@ class PolicyResolutionRaceTests(unittest.TestCase):
                 "", root, allowed_tools=list(policy.allowed_tools),
                 effective_policy=policy,
             )
-            # Simulate the alias being redirected to a private workspace path
-            # between the early dispatcher check and the atomic writer.
+            # Redirect the directory alias after the dispatcher check but
+            # before the atomic writer resolves its canonical target.
+            real_resolve = file_io.resolve_safe_path
+
+            def redirect_write(label, workspace):
+                alias.unlink()
+                alias.symlink_to(private, target_is_directory=True)
+                return real_resolve(label, workspace)
+
             with patch.object(
-                file_io, "resolve_safe_path",
-                return_value=root.resolve() / "private" / "new.txt"
+                file_io, "resolve_safe_path", side_effect=redirect_write
             ):
                 result = execute_tool(
                     "Write", {"path": "src/alias/new.txt", "content": "blocked"},
