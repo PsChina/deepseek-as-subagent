@@ -116,6 +116,21 @@ class TaskContractTests(unittest.TestCase):
         self.assertFalse(path_is_allowed("src/.env.local", ("src/**",), (".env*", "**/.env*")))
         self.assertFalse(path_is_allowed("src/.ENV.local", ("src/**",), (".env*", "**/.env*")))
         self.assertFalse(path_is_allowed(".aws/credentials", ("**/*",), DEFAULT_DENY_PATHS))
+        for secret in (
+            ".config/gcloud/application_default_credentials.json",
+            ".config/gh/hosts.yml",
+            ".config/containers/auth.json",
+            "infra/.terraform.d/credentials.tfrc.json",
+            ".cargo/credentials.toml",
+            ".npm/_authToken",
+            "infra/terraform.tfstate",
+            "keys/AuthKey_ABC.p8",
+            "certs/release.jks",
+            "id_ecdsa",
+        ):
+            self.assertFalse(
+                path_is_allowed(secret, ("**/*",), DEFAULT_DENY_PATHS), secret
+            )
         for unsafe in ("/etc/passwd", "../outside", "src/../outside", "C:/secret", "src\\secret"):
             self.assertFalse(path_is_allowed(unsafe, ("**/*",), ()))
         self.assertFalse(path_is_allowed("src/.ENV.local", ("src/**",), DEFAULT_DENY_PATHS))
