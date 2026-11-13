@@ -41,11 +41,17 @@ class PolicyResolutionRaceTests(unittest.TestCase):
                 "", root, allowed_tools=list(policy.allowed_tools),
                 effective_policy=policy,
             )
-            # The dispatcher sees an in-scope symlink target. Simulate an
-            # attacker swapping it before file_io resolves the path to open.
+            # The dispatcher sees an in-scope symlink target. Swap it just
+            # before file_io resolves the path that will actually be opened.
+            real_resolve = file_io.resolve_safe_path
+
+            def redirect_read(label, workspace):
+                alias.unlink()
+                alias.symlink_to(secret)
+                return real_resolve(label, workspace)
+
             with patch.object(
-                file_io, "resolve_safe_path",
-                return_value=root.resolve() / "private" / "secret.txt",
+                file_io, "resolve_safe_path", side_effect=redirect_read
             ):
                 result = execute_tool("Read", {"path": "src/alias.txt"}, config)
 
