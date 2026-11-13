@@ -944,7 +944,8 @@ class WindowsHandlePolicyTests(unittest.TestCase):
             root = Path(tmpdir)
             target = root / "target.txt"
             target.write_text("before", encoding="utf-8")
-            baseline = file_io.FileIdentity.from_stat(target.stat())
+            baseline_stat = target.stat()
+            baseline = file_io.FileIdentity.from_stat(baseline_stat)
             temporary_names: list[str] = []
             warnings: list[str] = []
             discard_calls: list[tuple] = []
@@ -965,7 +966,7 @@ class WindowsHandlePolicyTests(unittest.TestCase):
 
             with (
                 patch.object(
-                    file_io, "_win_current_info", return_value=baseline
+                    file_io, "_win_current_info", return_value=baseline_stat
                 ),
                 patch.object(
                     windows_workspace_write, "_commit", side_effect=commit_then_warn
