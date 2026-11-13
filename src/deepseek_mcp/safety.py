@@ -187,7 +187,10 @@ def resolve_safe_path(rel_or_abs: str, workspace: Path) -> Path:
 def require_canonical_relative_path(label: str, workspace: Path, resolved: Path) -> None:
     """Reject symlink or reparse-point redirection for already-canonical paths."""
     raw = Path(label)
-    if not raw.parts or raw.is_absolute() or ".." in raw.parts or raw.as_posix() != label:
+    if (
+        not raw.parts or raw.is_absolute() or ".." in raw.parts
+        or raw.as_posix() != label
+    ):
         raise SandboxViolation("canonical workspace path is not normalized")
     root = workspace
     try:
