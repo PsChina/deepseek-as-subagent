@@ -68,7 +68,6 @@ class WorkspaceFileRaceTests(unittest.TestCase):
         self.assertIn(signal.SIGTERM, inherited[0])
         self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), before)
 
-    @unittest.skipUnless(os.name == "posix", "POSIX hard-link behavior")
     def test_read_rejects_hard_link_to_file_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
