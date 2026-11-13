@@ -39,7 +39,7 @@ class TaskContractTests(unittest.TestCase):
         for _ in range(1200):
             nested = [nested]
         with self.assertRaisesRegex(ValueError, "bounded JSON-compatible"):
-            _validated_input({"nested": nested})
+            _validated_input({"permissions": {"read_paths": nested}})
 
     def test_mutation_requires_explicit_write_paths(self) -> None:
         with self.assertRaisesRegex(ValueError, "explicit permissions.write_paths"):
