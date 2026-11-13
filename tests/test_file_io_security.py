@@ -7,7 +7,6 @@ import stat
 import tempfile
 import threading
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -656,40 +655,61 @@ class WorkspaceFileRaceTests(unittest.TestCase):
             self.assertEqual(list(workspace.glob(".deepseek-mcp-*")), [])
 
     @unittest.skipIf(os.name == "nt", "POSIX atomic commit is required")
-    def test_deferred_termination_keeps_post_commit_recovery_warning(self) -> None:
+    def test_post_commit_warning_interruption_preserves_retained_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            parent = os.open(
-                workspace, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            )
-            replacement = file_io.FileIdentity.from_stat(os.fstat(parent))
-            state = file_io._PosixCommitState()
+            target = workspace / "target.txt"
+            target.write_text("before", encoding="utf-8")
+            _text, baseline = file_io.read_workspace_text(workspace, "target.txt")
+            real_commit = file_io._commit_posix_file
+            temporary_names: list[str] = []
             warnings: list[str] = []
+            discard_calls: list[tuple] = []
 
-            @contextmanager
-            def terminate_after_commit():
-                yield
+            def commit_then_warn(
+                parent, temporary, name, expected, replacement
+            ) -> None:
+                real_commit(parent, temporary, name, expected, replacement)
+                temporary_names.append(temporary)
+                descriptor = os.open(
+                    temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    0o600, dir_fd=parent,
+                )
+                try:
+                    os.write(descriptor, b"retained-original")
+                finally:
+                    os.close(descriptor)
+                raise file_io.MutationCommittedWarning(
+                    "recover from retained-copy"
+                )
+
+            def interrupt_warning(detail: str) -> None:
+                warnings.append(detail)
                 raise tool_child._ToolTermination()
 
             with (
                 patch.object(
-                    file_io, "_commit_posix_file",
-                    side_effect=file_io.MutationCommittedWarning(
-                        "recover from retained-copy"
-                    ),
+                    file_io, "_commit_posix_file", side_effect=commit_then_warn
                 ),
                 patch.object(
-                    file_io, "_defer_posix_termination", terminate_after_commit
+                    file_io, "mutation_warning", side_effect=interrupt_warning
                 ),
-                patch.object(file_io, "mutation_warning", warnings.append),
+                patch.object(
+                    file_io, "_discard_owned_posix_temp",
+                    side_effect=lambda *args: discard_calls.append(args),
+                ),
                 self.assertRaises(tool_child._ToolTermination),
             ):
-                file_io._finish_posix_commit(
-                    parent, "temporary", "target", None, replacement, state
+                file_io._write_posix(
+                    workspace, Path("target.txt"), b"after", baseline
                 )
 
-            os.close(parent)
-            self.assertTrue(state.committed)
+            self.assertEqual(target.read_text(encoding="utf-8"), "after")
+            self.assertEqual(discard_calls, [])
+            self.assertEqual(
+                (workspace / temporary_names[0]).read_bytes(),
+                b"retained-original",
+            )
             self.assertIn("recover from retained-copy", warnings)
 
     @unittest.skipIf(os.name == "nt", "directory fsync is POSIX-specific")
