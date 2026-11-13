@@ -481,7 +481,7 @@ def _ack_ids(ids) -> list[str]:
 def acknowledge(config, ids) -> list[str]:
     identity = _workspace_identity(config)
     identifiers = _ack_ids(ids)
-    removed: list[str] = []
+    entries = []
     with _store(identity) as store:
         for identifier in identifiers:
             existing = store.read(_name(identifier))
@@ -490,9 +490,10 @@ def acknowledge(config, ids) -> list[str]:
             record = _decode(existing[0])
             if record.workspace_identity != identity:
                 continue
-            # Keep the durable intent until its current file digest matches.
             if _classify(config, record)["status"] != "committed":
                 raise TransactionJournalError("cannot acknowledge a mutation whose current file does not match its journal digest")
-            store.delete(_name(identifier), existing[1])
-            removed.append(identifier)
-    return removed
+            entries.append((identifier, existing[1]))
+        for identifier, version in entries:
+            store.delete(_name(identifier), version)
+    return [identifier for identifier, _version in entries]
+
