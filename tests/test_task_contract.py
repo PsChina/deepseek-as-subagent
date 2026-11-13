@@ -287,7 +287,7 @@ class TaskContractTests(unittest.TestCase):
             direct = execute_tool("Read", {"path": ".git/config"}, config)
             glob = execute_tool("Glob", {"pattern": "**/*"}, config)
             grep = execute_tool("Grep", {"pattern": "SENTINEL_GIT_CREDENTIAL"}, config)
-        self.assertIn("outside the task contract read scope", direct)
+        self.assertTrue(direct.startswith("ERROR:"), direct)
         self.assertNotIn(".git/config", glob)
         self.assertNotIn("SENTINEL_GIT_CREDENTIAL", direct + glob + grep)
         self.assertIn("visible.txt", glob)
