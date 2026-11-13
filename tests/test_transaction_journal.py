@@ -13,6 +13,9 @@ from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
 from deepseek_mcp.policy_enforcement import bind_file_policy
 from deepseek_mcp.policy_engine import compile_task_policy
 from deepseek_mcp.task_contract import TaskContract
+from deepseek_mcp.transaction_report import (
+    bind_reporter, current_mutation_path, mutation_ready,
+)
 from deepseek_mcp import transaction_journal as journal
 from deepseek_mcp.transaction_journal import TransactionJournalError
 
@@ -129,17 +132,23 @@ class TransactionJournalTests(unittest.TestCase):
             "", self.workspace, allowed_tools=list(policy.allowed_tools),
             effective_policy=policy,
         )
-        with bind_file_policy(policy, "Write"):
-            record = journal.record_intent(
+        records: list[dict[str, object]] = []
+
+        def persist(digest: bytes, baseline) -> None:
+            records.append(journal.record_intent(
                 config, "a" * 32, "Write", {"path": "src/alias.txt"},
-                _sha256("replacement"), canonical_path="src/actual.txt",
-            )
+                digest, baseline, canonical_path=current_mutation_path(),
+            ))
+
+        with bind_file_policy(policy, "Write"), bind_reporter(persist):
+            mutation_ready(_sha256("replacement"), None, "src/actual.txt")
             with self.assertRaises(TransactionJournalError):
-                journal.record_intent(
-                    config, "b" * 32, "Write", {"path": "src/alias.txt"},
-                    _sha256("replacement"), canonical_path="private/secret.txt",
+                mutation_ready(
+                    _sha256("replacement"), None, "private/secret.txt"
                 )
-        self.assertEqual(record["path"], "src/actual.txt")
+
+        self.assertEqual(records[0]["path"], "src/actual.txt")
+        self.assertIsNone(current_mutation_path())
 
     def test_record_intent_is_idempotent_but_rejects_id_reuse(self) -> None:
         transaction_id = "b" * 32
