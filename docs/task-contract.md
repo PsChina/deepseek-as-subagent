@@ -56,7 +56,8 @@ by the file-I/O resolver immediately before descriptor-based access or commit.
   allowed-path matching is case-insensitive on Windows and case-sensitive on
   POSIX to avoid broadening scopes on case-sensitive filesystems. Absolute paths, parent traversal, backslashes, and
   overlong patterns are rejected. Built-in denies cover common environment,
-  package-manager, SSH, cloud, Kubernetes, Docker, and private-key credentials.
+  package-manager, SSH, cloud, Kubernetes, Docker, Git internal metadata
+  (including remote configuration), and private-key credentials.
 
 ## Current limitations
 
@@ -164,3 +165,31 @@ current file matches the recorded replacement digest. Batch acknowledgement
 validates every requested record before beginning deletion. If storage fails
 during deletion, the result is explicitly uncertain; query recovery again
 before retrying rather than assuming the batch was rolled back.
+
+## Validation: deterministic E2E vs. live provider
+
+The normal CI matrix tests the complete Python package on Ubuntu, Windows, and
+macOS (Python 3.10, 3.11, and 3.12). It also exercises a local OpenAI-compatible
+HTTP endpoint over the real provider/agent/tool-child processes, including a
+contract-bound multi-step Read → Write → Edit task, denied out-of-scope tool
+requests, and final host workspace digest evidence. This is an **offline,
+deterministic integration test**, not a claim that the DeepSeek production API
+has been exercised.
+
+For an optional real-API smoke test, run this only in a trusted environment
+where the credential is already available as an environment variable:
+
+```sh
+export DEEPSEEK_LIVE_TEST=1
+export DEEPSEEK_API_KEY=...  # Set privately; never commit to Git
+# Optional: DEEPSEEK_LIVE_MODEL and DEEPSEEK_LIVE_BASE_URL
+python -m unittest discover -s tests -p 'test_live_deepseek_api.py' -v
+```
+
+The real-API test uses a temporary read-only workspace, a task contract limited
+to `src/**`, and a short turn/token budget. If the opt-in flag is absent, it
+is skipped. GitHub PR CI intentionally does not receive a real provider key.
+A green offline matrix therefore does **not** establish real API compatibility;
+record a separate live test result, timestamp, model, and endpoint before
+considering that gate passed. Never log or attach the API key, full request
+headers, or raw secret-bearing model output.
