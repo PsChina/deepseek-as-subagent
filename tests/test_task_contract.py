@@ -35,6 +35,20 @@ class TaskContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "workspace-relative"):
             TaskContract.from_dict({"permissions": {"read_paths": ["../outside"]}})
 
+    def test_bounds_contract_text_nodes_and_integer_magnitude(self) -> None:
+        with self.assertRaises(ValueError):
+            TaskContract.from_dict({
+                "permissions": {"read_paths": ["x" * 40_000]}
+            })
+        with self.assertRaises(ValueError):
+            TaskContract.from_dict({
+                "limits": {"max_tool_calls": 1 << 100}
+            })
+        with self.assertRaises(ValueError):
+            TaskContract.from_dict({
+                "permissions": {"read_paths": ["src/**"] * 10_001}
+            })
+
     def test_deeply_nested_contract_is_rejected_as_validation_error(self) -> None:
         nested: object = []
         for _ in range(1200):
