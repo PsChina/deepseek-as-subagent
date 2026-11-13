@@ -64,6 +64,10 @@ class TaskContractInput(_StrictInput):
     limits: ContractLimitsInput = Field(default_factory=ContractLimitsInput)
 
 
-def contract_payload(contract: TaskContractInput) -> dict:
+def contract_payload(contract: TaskContractInput | dict) -> dict:
     """Convert validated MCP input to the strict runtime parser's plain mapping."""
+    if isinstance(contract, dict):
+        contract = TaskContractInput.model_validate(contract)
+    if not isinstance(contract, TaskContractInput):
+        raise TypeError("contract must be a TaskContractInput object")
     return contract.model_dump(exclude_unset=True, exclude_none=True)
