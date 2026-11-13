@@ -88,7 +88,7 @@ class TransactionRecoveryTests(unittest.TestCase):
         transaction_id = self._record()
         (self.workspace / "target.txt").write_text("changed", encoding="utf-8")
 
-        with self.assertRaisesRegex(TransactionJournalError, "does not match"):
+        with self.assertRaisesRegex(TransactionRecoveryError, "failed safely"):
             acknowledge_with_lease(self.config, [transaction_id], self.locks)
 
         pending = query_with_lease(self.config, self.locks)
