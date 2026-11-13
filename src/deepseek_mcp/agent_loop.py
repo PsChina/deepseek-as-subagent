@@ -320,6 +320,7 @@ def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
             "total": total_tokens,
         },
         "tool_calls": state.tool_calls,
+        "mutation_bytes_reserved": state.mutation_budget.used,
         "bash": state.bash_outcome.payload(),
         "duration_seconds": round(max(0.0, time.time() - state.started), 2),
         "mutations": state.mutations.payload(),
