@@ -427,7 +427,9 @@ def append_warning(config, transaction_id: str, warning: str) -> dict[str, objec
 def _classify(config, record: _StoredRecord) -> dict[str, object]:
     try:
         with bind_workspace_identity(record.workspace_identity):
-            _text, current = read_workspace_text(config.workspace, record.path)
+            _text, current = read_workspace_text(
+                config.workspace, record.path, require_canonical=True
+            )
     except WorkspaceFileNotFound:
         status = "not_committed" if record.baseline_state == "missing" else "uncertain"
     except (OSError, RuntimeError, ValueError, SandboxViolation):
