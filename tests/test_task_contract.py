@@ -4,6 +4,7 @@ import os
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,6 +77,37 @@ class TaskContractTests(unittest.TestCase):
         with self.assertRaises(ResourceBudgetExceeded):
             with MutationBudget(limit=policy.max_mutation_bytes).reserve(1025):
                 pass
+
+    def test_concurrent_mutation_reservations_are_atomic(self) -> None:
+        budget = MutationBudget(limit=64)
+
+        def attempt(_index: int) -> bool:
+            try:
+                with budget.reserve(1):
+                    return True
+            except ResourceBudgetExceeded:
+                return False
+
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            results = list(pool.map(attempt, range(512)))
+        self.assertEqual(sum(results), 64)
+        self.assertEqual(budget.used, 64)
+
+    def test_child_budget_reconciliation_cannot_regress_or_overflow(self) -> None:
+        budget = MutationBudget(limit=12, used=5)
+        budget.advance_to(11)
+        self.assertEqual(budget.used, 11)
+        for value in (10, 13, True, -1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                budget.advance_to(value)
+        self.assertEqual(budget.used, 11)
+
+    def test_failed_reservation_is_not_refunded(self) -> None:
+        budget = MutationBudget(limit=10)
+        with self.assertRaisesRegex(RuntimeError, "after writing"):
+            with budget.reserve(7):
+                raise RuntimeError("after writing")
+        self.assertEqual(budget.used, 7)
 
     def test_path_globs_support_recursive_double_star_and_deny_precedence(self) -> None:
         self.assertTrue(path_matches_pattern("src/nested/app.py", "src/**/*.py"))
