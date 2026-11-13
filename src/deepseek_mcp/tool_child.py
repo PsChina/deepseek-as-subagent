@@ -11,7 +11,11 @@ from pathlib import Path
 from .config import Config, HARD_MAX_RUN_SECONDS
 from .process_hardening import disable_core_dumps
 from .parent_liveness import wait_for_parent_loss_or_timeout
-from .resource_budget import MutationBudget, ResourceBudgetExceeded
+from .resource_budget import (
+    MAX_MUTATION_BYTES_PER_RUN,
+    MutationBudget,
+    ResourceBudgetExceeded,
+)
 from .tools import execute_tool
 from .transaction_journal import (
     JournalUpdatePublishedWarning,
@@ -112,7 +116,12 @@ def _budget(value: object) -> MutationBudget:
     limit, used = value.get("limit"), value.get("used")
     if any(isinstance(item, bool) or not isinstance(item, int) for item in (limit, used)):
         raise ValueError("tool mutation budget is invalid")
-    if limit < 0 or used < 0 or used > limit:
+    if (
+        limit < 0
+        or limit > MAX_MUTATION_BYTES_PER_RUN
+        or used < 0
+        or used > limit
+    ):
         raise ValueError("tool mutation budget is invalid")
     return MutationBudget(limit=limit, used=used)
 
@@ -136,6 +145,9 @@ def _execute(payload: dict, lease_fd: int | None) -> dict:
     os.environ["DEEPSEEK_TOOL_TRANSACTION_ID"] = transaction_id
     budget = _budget(payload.get("mutation_budget"))
     config = _config(payload.get("config"))
+    policy = config.effective_policy
+    if policy is not None and budget.limit > policy.max_mutation_bytes:
+        raise ValueError("tool mutation budget exceeds the task contract limit")
     assert config.expected_workspace_identity is not None
     with (
         bind_workspace_identity(config.expected_workspace_identity),
@@ -175,7 +187,7 @@ def _write_mutation_ready(digest: bytes) -> None:
         json.dumps(
             {"kind": "mutation_ready", "sha256": digest.hex()},
             separators=(",", ":"),
-        ).encode("ascii") + b"\n"
+        ).encode("ascii") + b"\\n"
     )
 
 
@@ -198,7 +210,7 @@ def _write_mutation_warning(detail: str) -> None:
         json.dumps(
             {"kind": "mutation_warning", "detail": detail},
             separators=(",", ":"), ensure_ascii=True,
-        ).encode("utf-8") + b"\n"
+        ).encode("utf-8") + b"\\n"
     )
 
 
