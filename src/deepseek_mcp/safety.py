@@ -8,6 +8,8 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
+from .file_identity import ToolInputError
+
 _VCS_DIRECTORY_NAMES = frozenset({".git", ".hg", ".svn"})
 _AGENT_CONTROL_DIRECTORY_NAMES = frozenset(
     {".agents", ".claude", ".codex", ".deepseek-mcp"}
@@ -48,6 +50,13 @@ def is_protected_host_path(path: Path) -> bool:
     ):
         return True
     return candidate.name.casefold() in _AGENT_CONTROL_FILE_NAMES
+
+
+def validate_windows_path_parts(relative: Path) -> None:
+    """Reject Windows device/stream and trailing-dot/space path components."""
+    for part in relative.parts:
+        if ":" in part or part.rstrip(" .") != part:
+            raise ToolInputError("Windows path contains an unsafe component")
 
 
 def is_unsafe_workspace_root(path: Path) -> bool:
