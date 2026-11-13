@@ -36,6 +36,7 @@ from .parent_liveness import ParentLiveness, close_parent_liveness
 from .resource_budget import MutationBudget, ResourceBudgetExceeded, MUTATION_TOOL_NAMES, ensure_mutation_budget_for_tool
 from .mutation_outcome import MutationRecord, mutation_record
 from .tool_child import MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES
+from .transaction_report import mutation_evidence
 from .tool_cleanup import cleanup_tool_artifacts
 from .workspace_guard import bind_workspace_identity, require_workspace_identity
 
@@ -201,16 +202,7 @@ def _decode(raw: bytes, budget: MutationBudget) -> str:
 
 
 def _mutation_digest(raw: bytes) -> bytes | None:
-    for line in raw.splitlines():
-        try:
-            payload = json.loads(line)
-            digest = payload.get("sha256")
-            if payload.get("kind") == "mutation_ready" and isinstance(digest, str):
-                if len(digest) == 64:
-                    return bytes.fromhex(digest)
-        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            continue
-    return None
+    return mutation_evidence(raw)[0]
 
 
 def _mutation_warning(raw: bytes) -> str | None:
@@ -232,9 +224,9 @@ def _mutation_warning(raw: bytes) -> str | None:
 
 
 def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[str, str | None, str] | None:
-    digest = _mutation_digest(raw)
+    digest, canonical_path = mutation_evidence(raw)
     if digest is None or name not in {"Write", "Edit", "NotebookEdit"}: return None
-    label = arguments.get("path")
+    label = canonical_path if canonical_path is not None else arguments.get("path")
     if not isinstance(label, str) or not label: return "uncertain", None, digest.hex()
     relative = None
     try:
@@ -242,6 +234,8 @@ def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[s
         with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(getattr(config, "effective_policy", None), name):
             target = resolve_safe_path(label, config.workspace)
             relative = target.relative_to(config.workspace.resolve()).as_posix()
+            if canonical_path is not None and relative != canonical_path:
+                return "uncertain", relative, digest.hex()
             _text, identity = read_workspace_text(config.workspace, label)
     except Exception:
         return "uncertain", relative, digest.hex()
