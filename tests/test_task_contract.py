@@ -263,6 +263,35 @@ class TaskContractTests(unittest.TestCase):
         self.assertNotIn("private/hidden.txt", grep_result)
         self.assertNotIn("needle secret", grep_result)
 
+    def test_git_remote_metadata_is_unreadable_with_broad_read_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".git").mkdir()
+            (root / ".git" / "config").write_text(
+                "url=https://example.invalid/SENTINEL_GIT_CREDENTIAL",
+                encoding="utf-8",
+            )
+            (root / "visible.txt").write_text("public", encoding="utf-8")
+            contract = TaskContract.from_dict({
+                "intent": "readonly_scan",
+                "permissions": {
+                    "tools": ["Read", "Glob", "Grep"],
+                    "read_paths": ["**/*"],
+                },
+            })
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            config = Config(
+                "", root, allowed_tools=list(policy.allowed_tools),
+                effective_policy=policy,
+            )
+            direct = execute_tool("Read", {"path": ".git/config"}, config)
+            glob = execute_tool("Glob", {"pattern": "**/*"}, config)
+            grep = execute_tool("Grep", {"pattern": "SENTINEL_GIT_CREDENTIAL"}, config)
+        self.assertIn("outside the task contract read scope", direct)
+        self.assertNotIn(".git/config", glob)
+        self.assertNotIn("SENTINEL_GIT_CREDENTIAL", direct + glob + grep)
+        self.assertIn("visible.txt", glob)
+
     def test_global_tool_allowlist_is_not_expanded_by_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config("", Path(tmpdir), allowed_tools=["Read"])
