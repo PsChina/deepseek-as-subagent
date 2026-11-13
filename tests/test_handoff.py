@@ -48,6 +48,15 @@ class HandoffTests(unittest.TestCase):
         self.assertTrue(report["needs_review"])
         self.assertEqual(report["verification"]["success_checks"][0]["status"], "not_run")
         self.assertEqual(report["verification"]["semantic_constraints"][0]["status"], "not_verified")
+        self.assertEqual(report["verification"]["functional_correctness"], "not_independently_verified")
+
+    def test_bash_execution_under_contract_is_reported_as_policy_failure(self):
+        result = self._result()
+        result["bash"]["calls"] = 1
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["policy_compliance"], "failed")
+        self.assertEqual(report["verification_status"], "failed")
+        self.assertTrue(report["needs_review"])
 
     def test_policy_violation_is_reported_as_failed(self):
         result = self._result()

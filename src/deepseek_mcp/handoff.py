@@ -9,7 +9,9 @@ def build_handoff(result: object) -> dict | None:
         return None
     contract = result["task_contract"]
     mutations = result.get("mutations", [])
-    verification = verify_execution_record(contract, mutations)
+    bash = result.get("bash", {})
+    if not isinstance(bash, dict): bash = {}
+    verification = verify_execution_record(contract, mutations, bash.get("calls", 0))
     changed_files = []
     if isinstance(mutations, list):
         for item in mutations:
@@ -23,9 +25,6 @@ def build_handoff(result: object) -> dict | None:
                 "sha256": item.get("sha256"),
                 "warning": item.get("warning"),
             })
-    bash = result.get("bash", {})
-    if not isinstance(bash, dict):
-        bash = {}
     return {
         "schema_version": 1,
         "execution_status": "completed",
