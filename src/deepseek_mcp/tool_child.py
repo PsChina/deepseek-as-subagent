@@ -140,8 +140,8 @@ def _execute(payload: dict, lease_fd: int | None) -> dict:
     with (
         bind_workspace_identity(config.expected_workspace_identity),
         bind_reporter(
-            lambda digest: _persist_mutation_ready(
-                config, transaction_id, name, arguments, digest
+            lambda digest, baseline: _persist_mutation_ready(
+                config, transaction_id, name, arguments, digest, baseline
             ),
             lambda detail: _persist_mutation_warning(
                 config, transaction_id, detail
@@ -160,10 +160,11 @@ def _execute(payload: dict, lease_fd: int | None) -> dict:
 
 
 def _persist_mutation_ready(
-    config, transaction_id: str, name: str, arguments: dict, digest: bytes,
+    config, transaction_id: str, name: str, arguments: dict,
+    digest: bytes, baseline,
 ) -> None:
     try:
-        record_intent(config, transaction_id, name, arguments, digest)
+        record_intent(config, transaction_id, name, arguments, digest, baseline)
     except JournalUpdatePublishedWarning:
         _write_mutation_ready(digest)
         raise

@@ -195,7 +195,7 @@ def ping() -> str:
 
 @mcp.tool(annotations=_RESULT_WITH_BOOKKEEPING)
 def get_deepseek_recovery() -> str:
-    """List durable, unacknowledged workspace mutation outcomes."""
+    """List pending mutation outcomes as committed, not_committed, or uncertain."""
     try:
         records = query_with_lease(load_recovery_config())
     except (RuntimeError, TransactionRecoveryError) as error:
@@ -204,7 +204,7 @@ def get_deepseek_recovery() -> str:
 
 @mcp.tool(annotations=_RECOVERY_ACK)
 def acknowledge_deepseek_mutations(transaction_ids: list[str]) -> str:
-    """Acknowledge exact transaction IDs after the host verifies their files."""
+    """Acknowledge exact IDs only when files match the committed or original baseline state."""
     try:
         removed, pending = acknowledge_with_lease(
             load_recovery_config(), transaction_ids

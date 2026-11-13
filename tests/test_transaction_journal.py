@@ -84,6 +84,36 @@ class TransactionJournalTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(record_path.stat().st_mode), 0o600)
             self.assertEqual(record_path.stat().st_nlink, 1)
 
+
+    def test_legacy_v1_record_remains_readable_and_acknowledgeable(self) -> None:
+        transaction_id = "4" * 32
+        (self.workspace / "target.txt").write_text("replacement", encoding="utf-8")
+        identity = self.config.expected_workspace_identity
+        legacy = journal._StoredRecord(
+            transaction_id, identity, "Write", "target.txt",
+            _sha256("replacement").hex(), version=1,
+        )
+        with journal._store(identity) as store:
+            store.write(journal._name(transaction_id), journal._encode(legacy), None)
+
+        pending = journal.pending_records(self.config)
+        self.assertEqual(pending[0]["status"], "committed")
+        self.assertEqual(journal.acknowledge(self.config, [transaction_id]), [transaction_id])
+
+    def test_corrupt_unhashable_tool_field_fails_closed(self) -> None:
+        payload = journal._StoredRecord(
+            "5" * 32, self.config.expected_workspace_identity,
+            "Write", "target.txt", _sha256("replacement").hex(),
+        ).storage_payload()
+        payload["tool"] = []
+        with self.assertRaises(TransactionJournalError):
+            journal._decode(json.dumps(payload).encode("utf-8"))
+
+    def test_deeply_nested_corrupt_record_fails_closed(self) -> None:
+        raw = b'{"nested":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+        with self.assertRaises(TransactionJournalError):
+            journal._decode(raw)
+
     def test_record_intent_is_idempotent_but_rejects_id_reuse(self) -> None:
         transaction_id = "b" * 32
         first = self._record(transaction_id)

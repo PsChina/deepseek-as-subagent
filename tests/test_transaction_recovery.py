@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deepseek_mcp import tool_child, transaction_journal as journal
+from deepseek_mcp import file_io, tool_child, tools, transaction_journal as journal, windows_workspace_write
 from deepseek_mcp.config import Config
+from deepseek_mcp.file_identity import FileIdentity, MISSING_FILE
+from deepseek_mcp.transaction_report import bind_reporter
 from deepseek_mcp.execution_lock import acquire_workspace_lease
 from deepseek_mcp.job_manager import DeepSeekJobManager, JobError
 from deepseek_mcp.transaction_recovery import (
@@ -50,6 +53,10 @@ class TransactionRecoveryTests(unittest.TestCase):
 
     def _record(self, transaction_id: str = "a" * 32) -> str:
         target = self.workspace / "target.txt"
+        target.write_text("before", encoding="utf-8")
+        baseline = FileIdentity.from_stat(
+            target.stat(), hashlib.sha256(b"before").digest()
+        )
         target.write_text("committed", encoding="utf-8")
         digest = hashlib.sha256(b"committed").digest()
         journal.record_intent(
@@ -58,6 +65,7 @@ class TransactionRecoveryTests(unittest.TestCase):
             "Write",
             {"path": "target.txt"},
             digest,
+            baseline,
         )
         return transaction_id
 
@@ -107,7 +115,7 @@ class TransactionRecoveryTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["status"], "uncertain")
 
-    def test_batch_acknowledgement_is_all_or_nothing(self) -> None:
+    def test_batch_acknowledgement_validates_every_record_before_deleting(self) -> None:
         first = self._record("a" * 32)
         second_path = self.workspace / "other.txt"
         second_path.write_text("committed", encoding="utf-8")
@@ -125,6 +133,95 @@ class TransactionRecoveryTests(unittest.TestCase):
             {item["transaction_id"] for item in pending},
             {first, "b" * 32},
         )
+
+
+    def test_precommit_failure_is_classified_and_acknowledgeable(self) -> None:
+        target = self.workspace / "target.txt"
+        target.write_text("before", encoding="utf-8")
+        transaction_id = "e" * 32
+
+        def persist_intent(digest, baseline):
+            journal.record_intent(
+                self.config, transaction_id, "Edit", {"path": "target.txt"},
+                digest, baseline,
+            )
+
+        with bind_reporter(persist_intent):
+            if os.name == "nt":
+                commit_patch = patch.object(
+                    windows_workspace_write, "_commit",
+                    side_effect=OSError("injected precommit failure"),
+                )
+            else:
+                commit_patch = patch.object(
+                    file_io, "_commit_posix_file",
+                    side_effect=OSError("injected precommit failure"),
+                )
+            with commit_patch:
+                result = tools._execute_edit(
+                    {"path": "target.txt", "old_string": "before", "new_string": "after"},
+                    self.workspace,
+                )
+
+        self.assertTrue(result.startswith("ERROR:"))
+        self.assertEqual(target.read_text(encoding="utf-8"), "before")
+        pending = query_with_lease(self.config, self.locks)
+        self.assertEqual(pending[0]["status"], "not_committed")
+        removed, remaining = acknowledge_with_lease(
+            self.config, [transaction_id], self.locks
+        )
+        self.assertEqual(removed, [transaction_id])
+        self.assertEqual(remaining, [])
+
+    def test_absent_target_after_precommit_write_is_not_committed(self) -> None:
+        transaction_id = "f" * 32
+        journal.record_intent(
+            self.config, transaction_id, "Write", {"path": "new.txt"},
+            hashlib.sha256(b"new content").digest(), MISSING_FILE,
+        )
+        pending = query_with_lease(self.config, self.locks)
+        self.assertEqual(pending[0]["status"], "not_committed")
+        removed, remaining = acknowledge_with_lease(
+            self.config, [transaction_id], self.locks
+        )
+        self.assertEqual(removed, [transaction_id])
+        self.assertEqual(remaining, [])
+
+    def test_diverged_file_remains_uncertain_after_precommit_intent(self) -> None:
+        target = self.workspace / "target.txt"
+        target.write_text("before", encoding="utf-8")
+        baseline = FileIdentity.from_stat(
+            target.stat(), hashlib.sha256(b"before").digest()
+        )
+        journal.record_intent(
+            self.config, "1" * 32, "Edit", {"path": "target.txt"},
+            hashlib.sha256(b"intended").digest(), baseline,
+        )
+        target.write_text("third-party", encoding="utf-8")
+        pending = query_with_lease(self.config, self.locks)
+        self.assertEqual(pending[0]["status"], "uncertain")
+        with self.assertRaisesRegex(TransactionRecoveryError, "failed safely"):
+            acknowledge_with_lease(self.config, ["1" * 32], self.locks)
+
+    def test_partial_batch_delete_requires_requery_before_retry(self) -> None:
+        first, second = self._record("2" * 32), self._record("3" * 32)
+        store_type = journal._WindowsStore if os.name == "nt" else journal._PosixStore
+        original_delete = store_type.delete
+        calls = 0
+
+        def fail_second_delete(store, name, version):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected journal delete failure")
+            return original_delete(store, name, version)
+
+        with patch.object(store_type, "delete", side_effect=fail_second_delete):
+            with self.assertRaisesRegex(TransactionRecoveryError, "outcome is uncertain"):
+                acknowledge_with_lease(self.config, [first, second], self.locks)
+
+        pending = query_with_lease(self.config, self.locks)
+        self.assertEqual([item["transaction_id"] for item in pending], [second])
 
     def test_recovery_operations_are_busy_during_active_workspace_lease(self) -> None:
         lease = acquire_workspace_lease(self.workspace, self.locks)
@@ -174,6 +271,7 @@ class TransactionRecoveryTests(unittest.TestCase):
                 "Write",
                 {"path": "target.txt"},
                 hashlib.sha256(b"value").digest(),
+                MISSING_FILE,
             )
 
         self.assertEqual(calls, ["journal", "event"])
@@ -195,6 +293,7 @@ class TransactionRecoveryTests(unittest.TestCase):
                 "Write",
                 {"path": "target.txt"},
                 digest,
+                MISSING_FILE,
             )
 
         publish.assert_called_once_with(digest)

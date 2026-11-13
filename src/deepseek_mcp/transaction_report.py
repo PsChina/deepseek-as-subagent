@@ -5,7 +5,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Callable, Iterator
 
-_Reporter = Callable[[bytes], None]
+from .file_identity import ExpectedIdentity
+
+_Reporter = Callable[[bytes, ExpectedIdentity], None]
 _WarningReporter = Callable[[str], None]
 _REPORTER: ContextVar[_Reporter | None] = ContextVar(
     "deepseek_mutation_reporter", default=None
@@ -28,11 +30,11 @@ def bind_reporter(
         _REPORTER.reset(state)
 
 
-def mutation_ready(digest: bytes) -> None:
-    """Publish the exact replacement digest before entering atomic commit."""
+def mutation_ready(digest: bytes, baseline: ExpectedIdentity = None) -> None:
+    """Persist the replacement digest and pre-mutation baseline before commit."""
     reporter = _REPORTER.get()
     if reporter is not None:
-        reporter(digest)
+        reporter(digest, baseline)
 
 
 def mutation_warning(detail: str) -> None:

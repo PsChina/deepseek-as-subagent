@@ -188,7 +188,7 @@ def write_windows(
         os.close(descriptor)
         descriptor = -1
         assert replacement.digest is not None
-        mutation_ready(replacement.digest)
+        mutation_ready(replacement.digest, baseline)
         file_io._validate_target(
             file_io._win_current_info(parent, relative.name), baseline
         )

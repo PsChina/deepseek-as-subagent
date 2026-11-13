@@ -141,3 +141,23 @@ requires additional isolation outside this Task Contract implementation.
 
 Contract-bound Bash remains disabled, so `commands_run` is empty. Raw shell
 commands and tool output are not retained in the handoff.
+
+## Mutation recovery
+
+Every new durable mutation intent stores the intended file SHA-256 and, when
+available, the pre-mutation baseline: either that the target did not exist or
+the previous file SHA-256. The recovery query reports one of three states:
+
+- `committed`: the current file matches the intended replacement digest.
+- `not_committed`: the target is still absent as expected, or its content still
+  matches the recorded pre-mutation baseline.
+- `uncertain`: the current file matches neither state, cannot be read safely,
+  or belongs to a legacy journal record without baseline evidence.
+
+The acknowledgement endpoint removes only `committed` and `not_committed`
+records. An `uncertain` record remains blocked for manual inspection. Legacy
+version-1 records remain readable; they can be acknowledged only when the
+current file matches the recorded replacement digest. Batch acknowledgement
+validates every requested record before beginning deletion. If storage fails
+during deletion, the result is explicitly uncertain; query recovery again
+before retrying rather than assuming the batch was rolled back.

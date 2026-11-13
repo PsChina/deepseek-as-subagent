@@ -11,6 +11,7 @@ from .execution_lock import (
     acquire_workspace_lease,
 )
 from .transaction_journal import (
+    JournalAcknowledgementOutcomeUncertain,
     TransactionJournalError,
     acknowledge,
     pending_records,
@@ -61,6 +62,10 @@ def acknowledge_with_lease(
     try:
         try:
             removed = acknowledge(config, transaction_ids)
+        except JournalAcknowledgementOutcomeUncertain:
+            raise TransactionRecoveryError(
+                "transaction acknowledgement outcome is uncertain; call get_deepseek_recovery before retrying"
+            ) from None
         except TransactionJournalError:
             raise TransactionRecoveryError(
                 "transaction acknowledgement failed safely"
