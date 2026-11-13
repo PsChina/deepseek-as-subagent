@@ -130,6 +130,23 @@ class HandoffTests(unittest.TestCase):
         self.assertTrue(any("outside the effective tool set" in risk
                             for risk in report["verification"]["risks"]))
 
+    def test_handoff_rejects_duplicate_transaction_ids(self):
+        result = self._result()
+        result["mutations"].append(dict(result["mutations"][0]))
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["mutation_integrity"], "not_verifiable")
+        self.assertEqual(report["verification_status"], "partial")
+        self.assertTrue(any("duplicate mutation transaction" in risk
+                            for risk in report["verification"]["risks"]))
+
+    def test_handoff_rejects_missing_transaction_ids(self):
+        result = self._result()
+        result["mutations"][0].pop("transaction_id")
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["mutation_integrity"], "not_verifiable")
+        self.assertTrue(any("transaction identity is missing" in risk
+                            for risk in report["verification"]["risks"]))
+
     def test_policy_violation_is_reported_as_failed(self):
         result = self._result()
         result["mutations"][0]["path"] = "private/secret.py"
