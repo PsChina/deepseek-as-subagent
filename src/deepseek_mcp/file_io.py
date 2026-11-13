@@ -26,7 +26,7 @@ from .posix_atomic_commit import (
     commit as _commit_posix_file,
     discard as _discard_posix_file,
 )
-from .safety import resolve_safe_path
+from .safety import resolve_safe_path, validate_windows_path_parts
 from .policy_enforcement import enforce_current_file_policy
 from . import windows_atomic_commit
 from .transaction_report import mutation_ready, mutation_warning
@@ -51,12 +51,8 @@ def _location(workspace: Path, label: str) -> tuple[Path, Path]:
     if not relative.parts:
         raise ToolInputError("write target is not a regular file")
     if os.name == "nt":
-        _validate_windows_parts(relative)
+        validate_windows_path_parts(relative)
     return root, relative
-def _validate_windows_parts(relative: Path) -> None:
-    for part in relative.parts:
-        if ":" in part or part.rstrip(" .") != part:
-            raise ToolInputError("Windows path contains an unsafe component")
 def _directory_flags() -> int:
     return (
         os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
@@ -197,6 +193,7 @@ def _finish_posix_commit(
                 parent, temporary, target, baseline, replacement
             )
         except MutationCommittedWarning as warning:
+            state.committed = True
             detail = str(warning)
             state.warnings.append(detail)
             mutation_warning(detail)
