@@ -18,7 +18,7 @@ from .file_io import (
 )
 from .file_identity import bounded_integer
 from .safe_regex import RegexPattern, SafeRegexError, compile_safe_regex
-from .resource_budget import MutationBudget, ResourceBudgetExceeded, apply_mutation
+from .resource_budget import MutationBudget, ResourceBudgetExceeded, apply_mutation, MUTATION_TOOL_NAMES, ensure_mutation_budget_for_tool
 from .safety import SandboxViolation
 from .policy_enforcement import check_tool_access
 from .tool_schemas import build_tool_schemas
@@ -485,6 +485,7 @@ def execute_tool(
     if getattr(config, "effective_policy", None) is not None and (denied := check_tool_access(config.effective_policy, name, args, config.workspace)): return denied
     if name not in config.allowed_tools:
         return f"ERROR: tool '{name}' is not allowed by configuration"
+    if name in MUTATION_TOOL_NAMES: mutation_budget = ensure_mutation_budget_for_tool(mutation_budget, config)
     if name == "Bash":
         kwargs = {"lease_fd": execution_lease_fd}
         if max_bash_timeout is not None:
