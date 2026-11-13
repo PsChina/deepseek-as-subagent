@@ -93,47 +93,67 @@ def _verify_mutations(contract: dict, mutations: object, bash_executions: object
 
 
 
-def _verify_workspace_evidence(
-    mutations: object, evidence: object,
-) -> tuple[str, list[str]]:
-    """Cross-check the final host readback against the last mutation per path."""
-    if not isinstance(mutations, list) or not isinstance(evidence, list):
-        return "not_verifiable", ["workspace readback evidence is unavailable"]
+def _last_mutation_digests(mutations: list) -> dict[str, object] | None:
     latest: dict[str, object] = {}
     for record in mutations:
         if not isinstance(record, dict) or not isinstance(record.get("path"), str):
-            return "not_verifiable", ["workspace mutation paths are incomplete"]
+            return None
         latest[record["path"]] = record.get("sha256")
+    return latest
+
+
+def _observation_state(item: dict, expected: object) -> str:
+    if item.get("expected_sha256") != expected:
+        return "failed"
+    status, observed = item.get("status"), item.get("observed_sha256")
+    if status == "not_verifiable" and observed is None:
+        return "not_verifiable"
+    if not isinstance(observed, str) or _SHA256.fullmatch(observed) is None:
+        return "invalid"
+    if status == "matched" and observed == expected:
+        return "matched"
+    if status == "changed" and observed != expected:
+        return "changed"
+    return "invalid"
+
+
+def _reconcile_readback(
+    latest: dict[str, object], evidence: list,
+) -> tuple[dict[str, str], str | None]:
+    observed: dict[str, str] = {}
+    for item in evidence:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or path not in latest or path in observed:
+            return observed, "unexpected or duplicate workspace evidence path"
+        state = _observation_state(item, latest[path])
+        if state == "failed":
+            return observed, "workspace readback digest differs from mutation record"
+        if state == "invalid":
+            return observed, "workspace readback observation is invalid"
+        observed[path] = state
+    return observed, None
+
+
+def _verify_workspace_evidence(
+    mutations: object, evidence: object,
+) -> tuple[str, list[str]]:
+    """Cross-check final file readback without claiming cryptographic attestation."""
+    if not isinstance(mutations, list) or not isinstance(evidence, list):
+        return "not_verifiable", ["workspace readback evidence is unavailable"]
+    latest = _last_mutation_digests(mutations)
+    if latest is None:
+        return "not_verifiable", ["workspace mutation paths are incomplete"]
     if not latest:
         return ("not_applicable", []) if not evidence else (
             "not_verifiable", ["unexpected workspace readback evidence"]
         )
-
-    observations: dict[str, str] = {}
-    for item in evidence:
-        if not isinstance(item, dict):
-            return "not_verifiable", ["malformed workspace readback evidence"]
-        path = item.get("path")
-        if not isinstance(path, str) or path not in latest or path in observations:
-            return "not_verifiable", ["unexpected or duplicate workspace evidence path"]
-        expected, observed, status = (
-            item.get("expected_sha256"), item.get("observed_sha256"),
-            item.get("status"),
-        )
-        if expected != latest[path]:
-            return "failed", ["workspace readback digest differs from mutation record"]
-        if status == "matched" and observed == expected and isinstance(observed, str) and _SHA256.fullmatch(observed):
-            observations[path] = "matched"
-        elif status == "changed" and isinstance(observed, str) and _SHA256.fullmatch(observed) and observed != expected:
-            observations[path] = "changed"
-        elif status == "not_verifiable" and observed is None:
-            observations[path] = "not_verifiable"
-        else:
-            return "not_verifiable", ["workspace readback observation is invalid"]
+    observations, error = _reconcile_readback(latest, evidence)
+    if error:
+        return ("failed" if "differs" in error else "not_verifiable"), [error]
     if len(observations) != len(latest):
         return "not_verifiable", ["workspace readback is incomplete"]
     if "changed" in observations.values():
-        return "changed", ["workspace file differs from the last committed digest"]
+        return "changed", ["workspace file differs from last committed digest"]
     if "not_verifiable" in observations.values():
         return "not_verifiable", ["one or more workspace files could not be checked"]
     return "matched", []
