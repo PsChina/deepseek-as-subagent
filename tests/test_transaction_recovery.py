@@ -259,7 +259,7 @@ class TransactionRecoveryTests(unittest.TestCase):
             patch.object(
                 tool_child,
                 "record_intent",
-                side_effect=lambda *_args: calls.append("journal"),
+                side_effect=lambda *_args, **_kwargs: calls.append("journal"),
             ),
             patch.object(
                 tool_child,
