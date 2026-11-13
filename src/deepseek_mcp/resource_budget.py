@@ -37,23 +37,6 @@ class MutationBudget:
                 f"mutation budget exceeds the effective maximum of {maximum} bytes"
             )
 
-    def validate(self, maximum: int = MAX_MUTATION_BYTES_PER_RUN) -> None:
-        """Reject malformed or expanded budgets before any side effect."""
-        if (
-            isinstance(self.limit, bool)
-            or not isinstance(self.limit, int)
-            or isinstance(self.used, bool)
-            or not isinstance(self.used, int)
-            or self.limit < 0
-            or self.used < 0
-            or self.used > self.limit
-        ):
-            raise ValueError("mutation budget is invalid")
-        if self.limit > maximum:
-            raise ValueError(
-                f"mutation budget exceeds the effective maximum of {maximum} bytes"
-            )
-
     @contextmanager
     def reserve(self, byte_count: int) -> Iterator[None]:
         if byte_count < 0 or byte_count > self.limit - self.used:
