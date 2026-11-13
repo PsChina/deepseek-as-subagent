@@ -78,9 +78,42 @@ def _verify_mutations(contract: dict, mutations: object, bash_executions: object
     return policy_status, integrity_status, risks
 
 
-def verify_execution_record(contract: dict, mutations: object, bash_executions: object = 0) -> dict:
+
+def _resource_limit_status(observed: object, maximum: object, label: str) -> tuple[str, str | None]:
+    valid_maximum = not isinstance(maximum, bool) and isinstance(maximum, int) and maximum >= 1
+    valid_observed = not isinstance(observed, bool) and isinstance(observed, int) and observed >= 0
+    if not valid_maximum or not valid_observed:
+        return "not_verifiable", f"{label} evidence is missing or invalid"
+    if observed > maximum:
+        return "failed", f"{label} exceeded the task contract limit"
+    return "passed", None
+
+
+def _verify_resource_limits(
+    contract: dict, tool_calls: object, mutation_bytes_reserved: object
+) -> tuple[str, list[str]]:
+    tool_status, tool_risk = _resource_limit_status(
+        tool_calls, contract.get("max_tool_calls"), "tool call count"
+    )
+    byte_status, byte_risk = _resource_limit_status(
+        mutation_bytes_reserved, contract.get("max_mutation_bytes"),
+        "reserved mutation bytes",
+    )
+    statuses = (tool_status, byte_status)
+    overall = next(
+        status for status in ("failed", "not_verifiable", "passed")
+        if status in statuses
+    )
+    return overall, [risk for risk in (tool_risk, byte_risk) if risk is not None]
+
+
+def verify_execution_record(contract: dict, mutations: object, bash_executions: object = 0, tool_calls: object = None, mutation_bytes_reserved: object = None) -> dict:
     """Verify path-policy compliance and mutation evidence; never infer test success."""
     policy_status, integrity_status, risks = _verify_mutations(contract, mutations, bash_executions)
+    resource_status, resource_risks = _verify_resource_limits(
+        contract, tool_calls, mutation_bytes_reserved
+    )
+    risks.extend(resource_risks)
     checks = [{"name": name, "status": "not_run", "evidence": None}
               for name in _string_items(contract.get("success_checks"))]
     semantic = [{"constraint": name, "status": "not_verified"}
@@ -94,15 +127,16 @@ def verify_execution_record(contract: dict, mutations: object, bash_executions: 
     if outputs:
         risks.append("expected outputs have not been independently validated")
     risks.append("functional correctness has not been independently verified")
-    if policy_status == "failed":
+    if policy_status == "failed" or resource_status == "failed":
         overall = "failed"
-    elif policy_status != "passed" or integrity_status in {"failed", "uncertain", "not_verifiable"} or checks or semantic or outputs:
+    elif policy_status != "passed" or resource_status != "passed" or integrity_status in {"failed", "uncertain", "not_verifiable"} or checks or semantic or outputs:
         overall = "partial"
     else:
         overall = "policy_verified"
     return {
         "policy_compliance": policy_status,
         "mutation_integrity": integrity_status,
+        "resource_compliance": resource_status,
         "success_checks": checks,
         "semantic_constraints": semantic,
         "expected_outputs": outputs,
