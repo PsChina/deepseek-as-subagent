@@ -187,6 +187,22 @@ def _verify_resource_limits(
     return overall, [risk for risk in (tool_risk, byte_risk) if risk is not None]
 
 
+def _overall_verification_status(
+    policy: str, resources: str, workspace: str, integrity: str,
+    checks: list, semantic: list, outputs: list,
+) -> str:
+    if policy == "failed" or resources == "failed" or workspace == "failed":
+        return "failed"
+    if (
+        policy != "passed" or resources != "passed"
+        or workspace in {"changed", "not_verifiable"}
+        or integrity in {"failed", "uncertain", "not_verifiable"}
+        or checks or semantic or outputs
+    ):
+        return "partial"
+    return "policy_verified"
+
+
 def verify_execution_record(contract: dict, mutations: object, bash_executions: object = 0, tool_calls: object = None, mutation_bytes_reserved: object = None, workspace_evidence: object = None) -> dict:
     """Verify path-policy compliance and mutation evidence; never infer test success."""
     policy_status, integrity_status, risks = _verify_mutations(contract, mutations, bash_executions)
@@ -209,12 +225,10 @@ def verify_execution_record(contract: dict, mutations: object, bash_executions: 
     if outputs:
         risks.append("expected outputs have not been independently validated")
     risks.append("functional correctness has not been independently verified")
-    if policy_status == "failed" or resource_status == "failed" or workspace_status == "failed":
-        overall = "failed"
-    elif policy_status != "passed" or resource_status != "passed" or workspace_status in {"changed", "not_verifiable"} or integrity_status in {"failed", "uncertain", "not_verifiable"} or checks or semantic or outputs:
-        overall = "partial"
-    else:
-        overall = "policy_verified"
+    overall = _overall_verification_status(
+        policy_status, resource_status, workspace_status, integrity_status,
+        checks, semantic, outputs,
+    )
     return {
         "policy_compliance": policy_status,
         "mutation_integrity": integrity_status,
