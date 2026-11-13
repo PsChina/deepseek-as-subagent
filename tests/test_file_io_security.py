@@ -944,8 +944,7 @@ class WindowsHandlePolicyTests(unittest.TestCase):
             root = Path(tmpdir)
             target = root / "target.txt"
             target.write_text("before", encoding="utf-8")
-            _text, baseline = file_io.read_workspace_text(root, "target.txt")
-            real_commit = windows_workspace_write._commit
+            baseline = file_io.FileIdentity.from_stat(target.stat())
             temporary_names: list[str] = []
             warnings: list[str] = []
             discard_calls: list[tuple] = []
@@ -953,8 +952,8 @@ class WindowsHandlePolicyTests(unittest.TestCase):
             def commit_then_warn(
                 parent, temporary, name, expected, replacement
             ) -> None:
-                real_commit(parent, temporary, name, expected, replacement)
                 temporary_names.append(temporary)
+                target.write_text("after", encoding="utf-8")
                 (root / temporary).write_bytes(b"retained-original")
                 raise file_io.MutationCommittedWarning(
                     "recover from retained-copy"
@@ -965,6 +964,9 @@ class WindowsHandlePolicyTests(unittest.TestCase):
                 raise tool_child._ToolTermination()
 
             with (
+                patch.object(
+                    file_io, "_win_current_info", return_value=baseline
+                ),
                 patch.object(
                     windows_workspace_write, "_commit", side_effect=commit_then_warn
                 ),
