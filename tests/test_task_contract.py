@@ -1,9 +1,10 @@
-"from __future__ import annotations
+from __future__ import annotations
 
 import os
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -195,6 +196,62 @@ class TaskContractTests(unittest.TestCase):
         self.assertEqual(readonly.allowed_tools, ["Read"])
 
 
+    def test_child_budget_cannot_exceed_global_hard_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "tool mutation budget is invalid"):
+            child_budget({"limit": MAX_MUTATION_BYTES_PER_RUN + 1, "used": 0})
+
+    def test_tool_child_rejects_budget_above_task_contract_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            contract = TaskContract.from_dict({
+                "permissions": {"tools": ["Write"], "write_paths": ["src/**"]},
+                "limits": {"max_mutation_bytes": 8},
+            })
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            config = Config(
+                "", root, allowed_tools=list(policy.allowed_tools),
+                effective_policy=policy,
+            )
+            payload = {
+                "name": "Write",
+                "arguments": {"path": "src/new.py", "content": "123456789"},
+                "config": _config_payload(config),
+                "mutation_budget": {"limit": 9, "used": 0},
+                "max_bash_timeout": 10,
+                "transaction_id": "a" * 32,
+            }
+            with patch.dict(os.environ, {}, clear=False):
+                with self.assertRaisesRegex(ValueError, "exceeds the task contract limit"):
+                    execute_child_payload(payload, None)
+            self.assertFalse((root / "src" / "new.py").exists())
+
+    def test_tool_child_enforces_contract_budget_before_file_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            contract = TaskContract.from_dict({
+                "permissions": {"tools": ["Write"], "write_paths": ["src/**"]},
+                "limits": {"max_mutation_bytes": 8},
+            })
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            config = Config(
+                "", root, allowed_tools=list(policy.allowed_tools),
+                effective_policy=policy,
+            )
+            payload = {
+                "name": "Write",
+                "arguments": {"path": "src/new.py", "content": "123456789"},
+                "config": _config_payload(config),
+                "mutation_budget": {"limit": 8, "used": 0},
+                "max_bash_timeout": 10,
+                "transaction_id": "b" * 32,
+            }
+            with patch.dict(os.environ, {}, clear=False):
+                with self.assertRaises(ResourceBudgetExceeded):
+                    execute_child_payload(payload, None)
+            self.assertFalse((root / "src" / "new.py").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
-"
