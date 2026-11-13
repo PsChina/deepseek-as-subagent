@@ -96,8 +96,13 @@ def _target_fields(tool: object, path: object) -> tuple[str, str]:
         raise TransactionJournalError("journal mutation target is invalid")
     if not isinstance(path, str) or not path:
         raise TransactionJournalError("journal mutation target is invalid")
-    if Path(path).is_absolute() or ".." in Path(path).parts:
-        raise TransactionJournalError("journal mutation path is not relative")
+    relative = Path(path)
+    if (
+        not relative.parts or relative.is_absolute() or ".." in relative.parts
+        or relative.as_posix() != path
+        or any(":" in part or part.rstrip(" .") != part for part in relative.parts)
+    ):
+        raise TransactionJournalError("journal mutation path is not canonical and relative")
     return tool, path
 
 
