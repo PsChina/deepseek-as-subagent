@@ -169,17 +169,17 @@ def _persist_mutation_ready(
             canonical_path=current_mutation_path(),
         )
     except JournalUpdatePublishedWarning:
-        _write_mutation_ready(digest)
+        _write_mutation_ready(digest, current_mutation_path())
         raise
     _write_mutation_ready(digest)
 
 
-def _write_mutation_ready(digest: bytes) -> None:
+def _write_mutation_ready(digest: bytes, canonical_path: str | None = None) -> None:
+    payload = {"kind": "mutation_ready", "sha256": digest.hex()}
+    if canonical_path is not None:
+        payload["path"] = canonical_path
     _write_bytes(
-        json.dumps(
-            {"kind": "mutation_ready", "sha256": digest.hex()},
-            separators=(",", ":"),
-        ).encode("ascii") + b"\n"
+        json.dumps(payload, separators=(",", ":")).encode("ascii") + b"\n"
     )
 
 
