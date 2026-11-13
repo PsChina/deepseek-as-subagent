@@ -23,6 +23,7 @@ from .transaction_records import (
     _TOOLS,
     _StoredRecord,
     TransactionJournalError,
+    _target_fields,
     _decode_record,
     _encode_record,
     _validate_warning,
@@ -34,22 +35,17 @@ MAX_RECORDS, MAX_RECORD_BYTES = 128, 64 * 1024
 _RECORD_NAME = re.compile(r"([0-9a-f]{32})\.json")
 _TEMP_NAME = re.compile(r"\.([0-9a-f]{32})\.json\.tmp")
 
-
 class JournalUpdatePublishedWarning(TransactionJournalError):
     pass
-
 
 class JournalAcknowledgementOutcomeUncertain(TransactionJournalError):
     pass
 
-
 def _encode(record: _StoredRecord) -> bytes:
     return _encode_record(record, MAX_RECORD_BYTES)
 
-
 def _decode(data: bytes) -> _StoredRecord:
     return _decode_record(data, MAX_RECORD_BYTES)
-
 
 def _transaction_id(value: object) -> str:
     if not isinstance(value, str) or _ID.fullmatch(value) is None:
@@ -67,6 +63,16 @@ def _workspace_identity(config) -> str:
     except (OSError, RuntimeError, ValueError) as error:
         raise TransactionJournalError("configured workspace identity changed") from error
     return token
+def _canonical_target(tool: str, path: str) -> str:
+    _checked_tool, checked_path = _target_fields(tool, path)
+    try:
+        enforce_current_file_policy(checked_path)
+    except SandboxViolation as error:
+        raise TransactionJournalError(
+            "journal mutation path is outside task contract scope"
+        ) from error
+    return checked_path
+
 def _relative_target(config, arguments: object) -> str:
     if not isinstance(arguments, dict) or not isinstance(arguments.get("path"), str):
         raise TransactionJournalError("mutation arguments require a path")
@@ -378,15 +384,19 @@ def _baseline_fields(baseline: object) -> tuple[str, str | None]:
 
 def record_intent(
     config, transaction_id: str, tool: str, arguments: dict, digest: bytes | str,
-    baseline: object = None,
+    baseline: object = None, canonical_path: str | None = None,
 ) -> dict[str, object]:
     identity = _workspace_identity(config)
     identifier = _transaction_id(transaction_id)
     if tool not in _TOOLS:
         raise TransactionJournalError("journal tool is not a mutation tool")
     baseline_state, baseline_sha256 = _baseline_fields(baseline)
+    path = (
+        _relative_target(config, arguments)
+        if canonical_path is None else _canonical_target(tool, canonical_path)
+    )
     record = _StoredRecord(
-        identifier, identity, tool, _relative_target(config, arguments), _digest(digest),
+        identifier, identity, tool, path, _digest(digest),
         (), 2, baseline_state, baseline_sha256,
     )
     encoded = _encode(record)
