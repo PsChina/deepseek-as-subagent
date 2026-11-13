@@ -14,24 +14,21 @@ _WRITE_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 
 @lru_cache(maxsize=8192)
 def path_matches_pattern(relative_path: str, pattern: str) -> bool:
-    path_parts = tuple(part for part in relative_path.split("/") if part)
-    pattern_parts = tuple(pattern.split("/"))
-
-    @lru_cache(maxsize=None)
-    def match(path_index: int, pattern_index: int) -> bool:
-        if pattern_index == len(pattern_parts):
-            return path_index == len(path_parts)
-        segment = pattern_parts[pattern_index]
+    path_parts = tuple(part.casefold() for part in relative_path.split("/") if part)
+    pattern_parts = tuple(part.casefold() for part in pattern.split("/"))
+    previous = [False] * (len(path_parts) + 1)
+    previous[0] = True
+    for segment in pattern_parts:
+        current = [False] * (len(path_parts) + 1)
         if segment == "**":
-            return match(path_index, pattern_index + 1) or (
-                path_index < len(path_parts) and match(path_index + 1, pattern_index)
-            )
-        return (
-            path_index < len(path_parts)
-            and fnmatchcase(path_parts[path_index], segment)
-            and match(path_index + 1, pattern_index + 1)
-        )
-    return match(0, 0)
+            current[0] = previous[0]
+            for index in range(1, len(path_parts) + 1):
+                current[index] = previous[index] or current[index - 1]
+        else:
+            for index in range(1, len(path_parts) + 1):
+                current[index] = previous[index - 1] and fnmatchcase(path_parts[index - 1], segment)
+        previous = current
+    return previous[-1]
 
 
 def path_is_denied(relative_path: str, deny_paths: tuple[str, ...]) -> bool:

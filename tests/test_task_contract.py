@@ -10,7 +10,7 @@ from deepseek_mcp.execution_profile import CODING_PROFILE, READONLY_PROFILE
 from deepseek_mcp.policy_engine import EffectivePolicy, compile_task_policy
 from deepseek_mcp.resource_budget import MutationBudget
 from deepseek_mcp.policy_enforcement import path_is_allowed, path_matches_pattern
-from deepseek_mcp.task_contract import TaskContract
+from deepseek_mcp.task_contract import DEFAULT_DENY_PATHS, TaskContract
 from deepseek_mcp.tool_child import _config as child_config
 from deepseek_mcp.tool_process import _config_payload, execute_in_subprocess
 from deepseek_mcp.tools import execute_tool
@@ -56,6 +56,8 @@ class TaskContractTests(unittest.TestCase):
         self.assertTrue(path_matches_pattern("src/app.py", "src/**/*.py"))
         self.assertFalse(path_matches_pattern("docs/readme.md", "src/**/*.py"))
         self.assertFalse(path_is_allowed("src/.env.local", ("src/**",), (".env*", "**/.env*")))
+        self.assertFalse(path_is_allowed("src/.ENV.local", ("src/**",), (".env*", "**/.env*")))
+        self.assertFalse(path_is_allowed(".aws/credentials", ("**/*",), DEFAULT_DENY_PATHS))
 
     def test_policy_round_trips_through_isolated_tool_process_config(self) -> None:
         contract = TaskContract.from_dict({

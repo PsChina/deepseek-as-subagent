@@ -10,13 +10,19 @@ CONTRACT_VERSION = 1
 MAX_CONTRACT_BYTES = 32 * 1024
 MAX_LIST_ITEMS = 128
 MAX_TEXT_CHARS = 2_048
+MAX_PATH_PATTERN_CHARS = 256
+MAX_PATH_PATTERN_SEGMENTS = 64
 KNOWN_TOOLS = frozenset({"Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"})
 MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 READ_ONLY_INTENTS = frozenset({"readonly_scan", "audit", "review"})
 VALID_INTENTS = frozenset({"implement", *READ_ONLY_INTENTS})
 DEFAULT_DENY_PATHS = (
-    ".env*", "**/.env*", "secrets/**", "**/secrets/**",
-    "**/*.key", "**/*.pem", "**/*.token",
+    ".env*", "**/.env*", ".npmrc", "**/.npmrc", ".pypirc", "**/.pypirc",
+    ".netrc", "**/.netrc", ".git-credentials", "**/.git-credentials",
+    "credentials", "**/credentials", "**/credentials.*", "secrets/**", "**/secrets/**",
+    "**/.ssh/**", "**/.aws/**", "**/.azure/**", "**/.gnupg/**", "**/.kube/**",
+    "**/.docker/config.json", "**/id_rsa*", "**/id_ed25519*",
+    "**/*.key", "**/*.pem", "**/*.token", "**/*.p12", "**/*.pfx",
 )
 
 
@@ -45,6 +51,8 @@ def _string_list(value: object, label: str) -> tuple[str, ...]:
 def validate_path_patterns(value: object, label: str) -> tuple[str, ...]:
     patterns = _string_list(value, label)
     for pattern in patterns:
+        if len(pattern) > MAX_PATH_PATTERN_CHARS or len(pattern.split("/")) > MAX_PATH_PATTERN_SEGMENTS:
+            raise ValueError(f"{label} contains an overlong path pattern")
         if pattern.startswith("/") or "\\" in pattern or ":" in pattern or any(
             part in {"", ".", ".."} for part in pattern.split("/")
         ):
