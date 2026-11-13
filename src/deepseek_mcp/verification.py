@@ -15,36 +15,49 @@ def _string_items(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def _verify_mutation(item: object, allowed_tools: set[str], read_paths: tuple[str, ...], write_paths: tuple[str, ...], deny_paths: tuple[str, ...]) -> tuple[str, str, list[str]]:
+def _verify_mutation_policy(
+    path: object, tool: object, allowed_tools: set[str],
+    read_paths: tuple[str, ...], write_paths: tuple[str, ...],
+    deny_paths: tuple[str, ...],
+) -> tuple[str, list[str]]:
+    if not isinstance(tool, str) or tool not in _MUTATION_TOOLS or tool not in allowed_tools:
+        return "failed", ["mutation record contains an operation outside the effective tool set"]
+    if not isinstance(path, str) or not path:
+        return "not_verifiable", ["mutation path is missing"]
+    if not path_is_allowed(path, write_paths, deny_paths):
+        return "failed", [f"mutation path is outside the effective write scope: {path}"]
+    if tool in {"Edit", "NotebookEdit"} and not path_is_allowed(path, read_paths, deny_paths):
+        return "failed", [f"edit path is outside the effective read scope: {path}"]
+    return "passed", []
+
+
+def _verify_mutation_integrity(
+    path: object, status: object, digest: object,
+) -> tuple[str, list[str]]:
+    label = path if isinstance(path, str) and path else "unknown path"
+    if status != "committed":
+        return "uncertain", [f"mutation outcome is uncertain: {label}"]
+    if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        return "not_verifiable", [f"mutation digest is missing or invalid: {label}"]
+    return "verified_at_commit", []
+
+
+def _verify_mutation(
+    item: object, allowed_tools: set[str], read_paths: tuple[str, ...],
+    write_paths: tuple[str, ...], deny_paths: tuple[str, ...],
+) -> tuple[str, str, list[str]]:
     if not isinstance(item, dict):
         return "failed", "failed", ["malformed mutation record"]
     path, tool, status, digest = (
         item.get("path"), item.get("tool"), item.get("status"), item.get("sha256")
     )
-    policy_status, integrity_status = "passed", "not_applicable"
-    risks: list[str] = []
-    if not isinstance(tool, str) or tool not in _MUTATION_TOOLS or tool not in allowed_tools:
-        policy_status = "failed"
-        risks.append("mutation record contains an operation outside the effective tool set")
-    if not isinstance(path, str) or not path:
-        policy_status = "not_verifiable" if policy_status == "passed" else policy_status
-        integrity_status = "not_verifiable"
-        risks.append("mutation path is missing")
-    elif not path_is_allowed(path, write_paths, deny_paths):
-        policy_status = "failed"
-        risks.append(f"mutation path is outside the effective write scope: {path}")
-    elif tool in {"Edit", "NotebookEdit"} and not path_is_allowed(path, read_paths, deny_paths):
-        policy_status = "failed"
-        risks.append(f"edit path is outside the effective read scope: {path}")
-    if status != "committed":
-        integrity_status = "uncertain"
-        risks.append(f"mutation outcome is uncertain: {path or 'unknown path'}")
-    elif not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
-        integrity_status = "not_verifiable"
-        risks.append(f"mutation digest is missing or invalid: {path or 'unknown path'}")
-    else:
-        integrity_status = "verified_at_commit"
-    return policy_status, integrity_status, risks
+    policy_status, policy_risks = _verify_mutation_policy(
+        path, tool, allowed_tools, read_paths, write_paths, deny_paths
+    )
+    integrity_status, integrity_risks = _verify_mutation_integrity(
+        path, status, digest
+    )
+    return policy_status, integrity_status, policy_risks + integrity_risks
 
 
 def _verify_mutations(contract: dict, mutations: object, bash_executions: object) -> tuple[str, str, list[str]]:
