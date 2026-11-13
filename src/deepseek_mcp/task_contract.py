@@ -74,7 +74,11 @@ def _bounded_integer(value: object, label: str, maximum: int) -> int:
 def _scalar_text_size(value: object) -> int | None:
     if isinstance(value, str):
         return len(value)
-    if value is None or isinstance(value, (bool, int)):
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        if value.bit_length() > 64:
+            raise ValueError("task contract contains an oversized integer")
         return 0
     if isinstance(value, float):
         if not math.isfinite(value):
