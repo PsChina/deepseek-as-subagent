@@ -187,7 +187,7 @@ def _write_mutation_ready(digest: bytes) -> None:
         json.dumps(
             {"kind": "mutation_ready", "sha256": digest.hex()},
             separators=(",", ":"),
-        ).encode("ascii") + b"\\n"
+        ).encode("ascii") + b"\n"
     )
 
 
@@ -210,7 +210,7 @@ def _write_mutation_warning(detail: str) -> None:
         json.dumps(
             {"kind": "mutation_warning", "detail": detail},
             separators=(",", ":"), ensure_ascii=True,
-        ).encode("utf-8") + b"\\n"
+        ).encode("utf-8") + b"\n"
     )
 
 
