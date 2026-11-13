@@ -32,7 +32,7 @@ from .safety import resolve_safe_path
 from .hard_deadline import Deadline, remaining as deadline_remaining
 from .lease_inheritance import ChildLeaseAnchor
 from .parent_liveness import ParentLiveness, close_parent_liveness
-from .resource_budget import MutationBudget, ResourceBudgetExceeded
+from .resource_budget import MutationBudget, ResourceBudgetExceeded, MUTATION_TOOL_NAMES, ensure_mutation_budget_for_tool
 from .mutation_outcome import MutationRecord, mutation_record
 from .tool_child import MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES
 from .tool_cleanup import cleanup_tool_artifacts
@@ -456,6 +456,7 @@ def execute_in_subprocess(
     remaining = deadline_remaining(deadline)
     if remaining <= 0:
         raise AgentLoopError("run time budget exceeded")
+    if name in MUTATION_TOOL_NAMES: budget = ensure_mutation_budget_for_tool(budget, config)
     active = _launch_tool_call(
         config, name, arguments, budget, max_bash_timeout, lease_fd, remaining
     )
