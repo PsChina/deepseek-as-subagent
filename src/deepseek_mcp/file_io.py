@@ -27,6 +27,7 @@ from .posix_atomic_commit import (
     discard as _discard_posix_file,
 )
 from .safety import resolve_safe_path
+from .policy_enforcement import enforce_current_file_policy
 from . import windows_atomic_commit
 from .transaction_report import mutation_ready, mutation_warning
 from .workspace_guard import require_workspace_identity, require_workspace_stat
@@ -46,6 +47,7 @@ def _location(workspace: Path, label: str) -> tuple[Path, Path]:
     root = workspace.resolve()
     absolute = resolve_safe_path(label, root)
     relative = absolute.relative_to(root)
+    enforce_current_file_policy(relative.as_posix())
     if not relative.parts:
         raise ToolInputError("write target is not a regular file")
     if os.name == "nt":
@@ -206,7 +208,6 @@ def _finish_posix_commit(
             state.warnings.append(detail)
             mutation_warning(detail)
 
-
 def _discard_owned_posix_temp(
     parent: int, temporary: str, replacement: FileIdentity | None,
 ) -> None:
@@ -217,7 +218,6 @@ def _discard_owned_posix_temp(
         _discard_posix_file(parent, temporary, replacement)
     except OSError:
         pass
-
 
 def _write_posix(
     root: Path, relative: Path, data: bytes, expected: ExpectedIdentity
