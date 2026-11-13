@@ -5,11 +5,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from deepseek_mcp.agent_loop import AgentLoopError, _validate_tool_batch
 from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
 from deepseek_mcp.execution_profile import CODING_PROFILE, READONLY_PROFILE
 from deepseek_mcp.policy_engine import EffectivePolicy, compile_task_policy
-from deepseek_mcp.resource_budget import MutationBudget
+from deepseek_mcp.resource_budget import MutationBudget, ResourceBudgetExceeded
 from deepseek_mcp.policy_enforcement import path_is_allowed, path_matches_pattern
 from deepseek_mcp.task_contract import DEFAULT_DENY_PATHS, TaskContract
 from deepseek_mcp.tool_child import _config as child_config
@@ -51,6 +53,18 @@ class TaskContractTests(unittest.TestCase):
         policy = compile_task_policy(TaskContract.from_dict({}), DEFAULT_ALLOWED_TOOLS)
         self.assertNotIn("Bash", policy.allowed_tools)
         self.assertFalse(set(policy.allowed_tools).intersection({"Write", "Edit", "NotebookEdit"}))
+
+    def test_contract_limits_cannot_exceed_global_budgets(self) -> None:
+        with self.assertRaisesRegex(ValueError, "max_tool_calls"):
+            TaskContract.from_dict({"limits": {"max_tool_calls": 129}})
+        contract = TaskContract.from_dict({"limits": {"max_tool_calls": 2, "max_mutation_bytes": 1024}})
+        policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+        state = SimpleNamespace(tool_calls=2, config=SimpleNamespace(effective_policy=policy))
+        with self.assertRaises(AgentLoopError):
+            _validate_tool_batch(state, [object()])
+        with self.assertRaises(ResourceBudgetExceeded):
+            with MutationBudget(limit=policy.max_mutation_bytes).reserve(1025):
+                pass
 
     def test_path_globs_support_recursive_double_star_and_deny_precedence(self) -> None:
         self.assertTrue(path_matches_pattern("src/nested/app.py", "src/**/*.py"))
@@ -110,6 +124,36 @@ class TaskContractTests(unittest.TestCase):
             policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
             config = Config("", root, allowed_tools=list(policy.allowed_tools), effective_policy=policy)
             result = execute_in_subprocess(config, "Read", {"path": "private/secret.txt"}, MutationBudget(), 10, None, None, time.monotonic() + 5)
+        self.assertIn("outside the task contract read scope", result)
+
+    def test_notebook_edit_obeys_write_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "private").mkdir()
+            contract = TaskContract.from_dict({"permissions": {"tools": ["NotebookEdit"], "write_paths": ["src/**"]}})
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            config = Config("", root, allowed_tools=list(policy.allowed_tools), effective_policy=policy)
+            result = execute_tool("NotebookEdit", {"path": "private/new.ipynb", "edit_mode": "insert", "new_source": "x=1"}, config)
+            self.assertIn("outside the task contract write scope", result)
+            self.assertFalse((root / "private" / "new.ipynb").exists())
+
+    def test_read_scope_checks_resolved_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "private").mkdir()
+            secret = root / "private" / "secret.txt"
+            secret.write_text("secret", encoding="utf-8")
+            alias = root / "src" / "alias.txt"
+            try:
+                alias.symlink_to(secret)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation is unavailable on this platform")
+            contract = TaskContract.from_dict({"permissions": {"tools": ["Read"], "read_paths": ["src/**"]}})
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            config = Config("", root, allowed_tools=list(policy.allowed_tools), effective_policy=policy)
+            result = execute_tool("Read", {"path": "src/alias.txt"}, config)
         self.assertIn("outside the task contract read scope", result)
 
     def test_glob_and_grep_do_not_disclose_out_of_scope_files(self) -> None:

@@ -49,8 +49,9 @@ tool-process boundary, and checks it again at dispatch time.
   User-provided patterns can add restrictions but cannot remove built-ins.
 - Resource limits can lower, never raise, process-wide hard limits.
 - Patterns are workspace-relative, slash-separated globs. `**` matches zero
-  or more path segments. Built-in deny rules are case-insensitive; allowed-path
-  matching follows platform filesystem case semantics. Absolute paths, parent traversal, backslashes, and
+  or more path segments. Built-in deny rules are always case-insensitive;
+  allowed-path matching is case-insensitive on Windows and case-sensitive on
+  POSIX to avoid broadening scopes on case-sensitive filesystems. Absolute paths, parent traversal, backslashes, and
   overlong patterns are rejected. Built-in denies cover common environment,
   package-manager, SSH, cloud, Kubernetes, Docker, and private-key credentials.
 
