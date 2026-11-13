@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import json
 from typing import Callable, Iterator
 
 from .file_identity import ExpectedIdentity
@@ -53,6 +54,31 @@ def mutation_ready(
 def current_mutation_path() -> str | None:
     """Return the canonical path bound to the active mutation-ready callback."""
     return _CANONICAL_PATH.get()
+
+
+def mutation_evidence(raw: bytes) -> tuple[bytes | None, str | None]:
+    """Decode the digest and canonical path from the child mutation event."""
+    for line in raw.splitlines():
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("kind") != "mutation_ready":
+            continue
+        digest = payload.get("sha256")
+        if not isinstance(digest, str) or len(digest) != 64:
+            continue
+        try:
+            decoded = bytes.fromhex(digest)
+        except ValueError:
+            continue
+        if len(decoded) != 32:
+            continue
+        path = payload.get("path")
+        if "path" in payload and not isinstance(path, str):
+            path = ""
+        return decoded, path
+    return None, None
 
 
 def mutation_warning(detail: str) -> None:
