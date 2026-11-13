@@ -84,6 +84,29 @@ class TransactionRecoveryTests(unittest.TestCase):
         self.assertEqual(removed, [transaction_id])
         self.assertEqual(remaining, [])
 
+    def test_acknowledgement_refuses_modified_file_and_preserves_journal(self) -> None:
+        transaction_id = self._record()
+        (self.workspace / "target.txt").write_text("changed", encoding="utf-8")
+
+        with self.assertRaisesRegex(TransactionJournalError, "does not match"):
+            acknowledge_with_lease(self.config, [transaction_id], self.locks)
+
+        pending = query_with_lease(self.config, self.locks)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["transaction_id"], transaction_id)
+        self.assertEqual(pending[0]["status"], "uncertain")
+
+    def test_acknowledgement_refuses_missing_file_and_preserves_journal(self) -> None:
+        transaction_id = self._record()
+        (self.workspace / "target.txt").unlink()
+
+        with self.assertRaisesRegex(TransactionJournalError, "does not match"):
+            acknowledge_with_lease(self.config, [transaction_id], self.locks)
+
+        pending = query_with_lease(self.config, self.locks)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["status"], "uncertain")
+
     def test_recovery_operations_are_busy_during_active_workspace_lease(self) -> None:
         lease = acquire_workspace_lease(self.workspace, self.locks)
         try:
