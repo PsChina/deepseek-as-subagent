@@ -68,6 +68,14 @@ class MutationAccumulator:
         )
 
 
+def _valid_mutation_path(path: object) -> bool:
+    if not isinstance(path, str) or not path or path.startswith("/") or "\\" in path:
+        return False
+    if len(path) > 1 and path[0].isascii() and path[0].isalpha() and path[1] == ":":
+        return False
+    return all(part not in {"", ".", ".."} for part in path.split("/"))
+
+
 def mutation_record(
     transaction_id: str,
     tool: str,
@@ -78,11 +86,7 @@ def mutation_record(
 ) -> MutationRecord:
     if status not in {"committed", "uncertain"}:
         raise ValueError("invalid mutation status")
-    if path is not None and (
-        not isinstance(path, str) or not path or path.startswith("/")
-        or "\\" in path or (len(path) > 1 and path[0].isalpha() and path[1] == ":")
-        or any(part in {"", ".", ".."} for part in path.split("/"))
-    ):
+    if path is not None and not _valid_mutation_path(path):
         raise ValueError("invalid mutation path")
     if sha256 is not None and (not isinstance(sha256, str) or _SHA256.fullmatch(sha256) is None):
         raise ValueError("invalid mutation SHA-256")
