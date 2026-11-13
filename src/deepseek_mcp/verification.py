@@ -23,7 +23,7 @@ def _verify_mutation(item: object, allowed_tools: set[str], read_paths: tuple[st
     )
     policy_status, integrity_status = "passed", "not_applicable"
     risks: list[str] = []
-    if tool not in _MUTATION_TOOLS or tool not in allowed_tools:
+    if not isinstance(tool, str) or tool not in _MUTATION_TOOLS or tool not in allowed_tools:
         policy_status = "failed"
         risks.append("mutation record contains an operation outside the effective tool set")
     if not isinstance(path, str) or not path:
