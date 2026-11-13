@@ -236,7 +236,9 @@ def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[s
             relative = target.relative_to(config.workspace.resolve()).as_posix()
             if canonical_path is not None and relative != canonical_path:
                 return "uncertain", relative, digest.hex()
-            _text, identity = read_workspace_text(config.workspace, label)
+            _text, identity = read_workspace_text(
+                config.workspace, label, require_canonical=canonical_path is not None
+            )
     except Exception:
         return "uncertain", relative, digest.hex()
     return ("committed" if identity.digest == digest else "uncertain", relative, digest.hex())
