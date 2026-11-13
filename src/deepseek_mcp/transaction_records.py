@@ -100,7 +100,6 @@ def _target_fields(tool: object, path: object) -> tuple[str, str]:
     if (
         not relative.parts or relative.is_absolute() or ".." in relative.parts
         or relative.as_posix() != path
-        or any(":" in part or part.rstrip(" .") != part for part in relative.parts)
     ):
         raise TransactionJournalError("journal mutation path is not canonical and relative")
     return tool, path
