@@ -4,7 +4,6 @@ import os
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,11 +18,7 @@ from deepseek_mcp.resource_budget import (
 )
 from deepseek_mcp.policy_enforcement import path_is_allowed, path_matches_pattern
 from deepseek_mcp.task_contract import DEFAULT_DENY_PATHS, TaskContract
-from deepseek_mcp.tool_child import (
-    _budget as child_budget,
-    _config as child_config,
-    _execute as execute_child_payload,
-)
+from deepseek_mcp.tool_child import _config as child_config
 from deepseek_mcp.tool_process import _config_payload, execute_in_subprocess
 from deepseek_mcp.tools import execute_tool
 
@@ -196,11 +191,18 @@ class TaskContractTests(unittest.TestCase):
         self.assertEqual(readonly.allowed_tools, ["Read"])
 
 
-    def test_child_budget_cannot_exceed_global_hard_limit(self) -> None:
-        with self.assertRaisesRegex(ValueError, "tool mutation budget is invalid"):
-            child_budget({"limit": MAX_MUTATION_BYTES_PER_RUN + 1, "used": 0})
+    def test_dispatcher_rejects_budget_above_global_hard_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = Config("", root, allowed_tools=["Write"])
+            with self.assertRaises(ResourceBudgetExceeded):
+                execute_tool(
+                    "Write", {"path": "new.py", "content": "x"}, config,
+                    mutation_budget=MutationBudget(limit=MAX_MUTATION_BYTES_PER_RUN + 1),
+                )
+            self.assertFalse((root / "new.py").exists())
 
-    def test_tool_child_rejects_budget_above_task_contract_limit(self) -> None:
+    def test_subprocess_rejects_budget_above_task_contract_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "src").mkdir()
@@ -213,20 +215,15 @@ class TaskContractTests(unittest.TestCase):
                 "", root, allowed_tools=list(policy.allowed_tools),
                 effective_policy=policy,
             )
-            payload = {
-                "name": "Write",
-                "arguments": {"path": "src/new.py", "content": "123456789"},
-                "config": _config_payload(config),
-                "mutation_budget": {"limit": 9, "used": 0},
-                "max_bash_timeout": 10,
-                "transaction_id": "a" * 32,
-            }
-            with patch.dict(os.environ, {}, clear=False):
-                with self.assertRaisesRegex(ValueError, "exceeds the task contract limit"):
-                    execute_child_payload(payload, None)
+            with self.assertRaises(ResourceBudgetExceeded):
+                execute_in_subprocess(
+                    config, "Write",
+                    {"path": "src/new.py", "content": "123456789"},
+                    MutationBudget(limit=9), 10, None, None, time.monotonic() + 5,
+                )
             self.assertFalse((root / "src" / "new.py").exists())
 
-    def test_tool_child_enforces_contract_budget_before_file_mutation(self) -> None:
+    def test_dispatcher_applies_contract_budget_when_caller_omits_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "src").mkdir()
@@ -239,17 +236,29 @@ class TaskContractTests(unittest.TestCase):
                 "", root, allowed_tools=list(policy.allowed_tools),
                 effective_policy=policy,
             )
-            payload = {
-                "name": "Write",
-                "arguments": {"path": "src/new.py", "content": "123456789"},
-                "config": _config_payload(config),
-                "mutation_budget": {"limit": 8, "used": 0},
-                "max_bash_timeout": 10,
-                "transaction_id": "b" * 32,
-            }
-            with patch.dict(os.environ, {}, clear=False):
-                with self.assertRaises(ResourceBudgetExceeded):
-                    execute_child_payload(payload, None)
+            with self.assertRaises(ResourceBudgetExceeded):
+                execute_tool("Write", {"path": "src/new.py", "content": "123456789"}, config)
+            self.assertFalse((root / "src" / "new.py").exists())
+
+    def test_subprocess_enforces_contract_budget_before_file_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            contract = TaskContract.from_dict({
+                "permissions": {"tools": ["Write"], "write_paths": ["src/**"]},
+                "limits": {"max_mutation_bytes": 8},
+            })
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            config = Config(
+                "", root, allowed_tools=list(policy.allowed_tools),
+                effective_policy=policy,
+            )
+            with self.assertRaises(ResourceBudgetExceeded):
+                execute_in_subprocess(
+                    config, "Write",
+                    {"path": "src/new.py", "content": "123456789"},
+                    MutationBudget(limit=8), 10, None, None, time.monotonic() + 5,
+                )
             self.assertFalse((root / "src" / "new.py").exists())
 
 
