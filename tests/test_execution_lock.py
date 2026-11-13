@@ -107,6 +107,7 @@ class WorkspaceExecutionLeaseTests(unittest.TestCase):
             workers - 1,
         )
         self.assertEqual(outcomes.count("error"), 0)
+        self.assertLessEqual(outcomes.count("failed_closed"), 1)
 
     def test_same_workspace_is_exclusive_across_processes(self) -> None:
         process, release = self._start_holder()
