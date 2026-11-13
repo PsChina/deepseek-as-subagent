@@ -14,6 +14,7 @@ from . import posix_atomic_commit, windows_atomic_commit, windows_file_io
 from .file_io import read_workspace_text
 from .file_identity import FileIdentity, MissingFile, WorkspaceFileNotFound
 from .safety import SandboxViolation, resolve_safe_path
+from .policy_enforcement import enforce_current_file_policy
 from .transaction_records import (
     MAX_WARNING_BYTES,
     _DIGEST,
@@ -73,6 +74,7 @@ def _relative_target(config, arguments: object) -> str:
         root = config.workspace.resolve()
         target = resolve_safe_path(arguments["path"], root)
         relative = target.relative_to(root)
+        enforce_current_file_policy(relative.as_posix())
     except (OSError, RuntimeError, ValueError, SandboxViolation) as error:
         raise TransactionJournalError("mutation path is outside the workspace") from error
     if not relative.parts:
