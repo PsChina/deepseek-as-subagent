@@ -30,8 +30,8 @@ from .workspace_guard import bind_workspace_identity, require_workspace_identity
 
 JOURNAL_DIRECTORY = Path.home() / ".deepseek-mcp" / "transactions"
 MAX_RECORDS, MAX_RECORD_BYTES = 128, 64 * 1024
-_RECORD_NAME = re.compile(r"([0-9a-f]{32})\\.json")
-_TEMP_NAME = re.compile(r"\\.([0-9a-f]{32})\\.json\\.tmp")
+_RECORD_NAME = re.compile(r"([0-9a-f]{32})\.json")
+_TEMP_NAME = re.compile(r"\.([0-9a-f]{32})\.json\.tmp")
 
 
 class JournalUpdatePublishedWarning(TransactionJournalError):
