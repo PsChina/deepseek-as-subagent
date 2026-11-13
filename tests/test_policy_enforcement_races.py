@@ -43,7 +43,10 @@ class PolicyResolutionRaceTests(unittest.TestCase):
             )
             # The dispatcher sees an in-scope symlink target. Simulate an
             # attacker swapping it before file_io resolves the path to open.
-            with patch.object(file_io, "resolve_safe_path", return_value=secret):
+            with patch.object(
+                file_io, "resolve_safe_path",
+                return_value=root.resolve() / "private" / "secret.txt",
+            ):
                 result = execute_tool("Read", {"path": "src/alias.txt"}, config)
 
         self.assertIn("outside the task contract read scope", result)
@@ -79,7 +82,8 @@ class PolicyResolutionRaceTests(unittest.TestCase):
             # Simulate the alias being redirected to a private workspace path
             # between the early dispatcher check and the atomic writer.
             with patch.object(
-                file_io, "resolve_safe_path", return_value=secret_target
+                file_io, "resolve_safe_path",
+                return_value=root.resolve() / "private" / "new.txt"
             ):
                 result = execute_tool(
                     "Write", {"path": "src/alias/new.txt", "content": "blocked"},
