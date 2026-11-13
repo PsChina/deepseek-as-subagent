@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -11,6 +13,40 @@ from .safety import SandboxViolation, resolve_safe_path
 
 _READ_TOOLS = frozenset({"Read", "Glob", "Grep"})
 _WRITE_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
+_ACTIVE_FILE_POLICY: ContextVar[tuple[EffectivePolicy, str] | None] = ContextVar(
+    "deepseek_active_file_policy", default=None
+)
+
+
+@contextmanager
+def bind_file_policy(policy: EffectivePolicy | None, tool_name: str):
+    token = _ACTIVE_FILE_POLICY.set(
+        (policy, tool_name) if policy is not None else None
+    )
+    try:
+        yield
+    finally:
+        _ACTIVE_FILE_POLICY.reset(token)
+
+
+def enforce_current_file_policy(relative_path: str) -> None:
+    binding = _ACTIVE_FILE_POLICY.get()
+    if binding is None:
+        return
+    policy, tool_name = binding
+    if tool_name == "Read":
+        scopes = (("read", policy.read_paths),)
+    elif tool_name == "Write":
+        scopes = (("write", policy.write_paths),)
+    elif tool_name in _WRITE_TOOLS:
+        scopes = (("read", policy.read_paths), ("write", policy.write_paths))
+    else:
+        return
+    for operation, allowed in scopes:
+        if not path_is_allowed(relative_path, allowed, policy.deny_paths):
+            raise SandboxViolation(
+                f"path is outside the task contract {operation} scope"
+            )
 
 
 @lru_cache(maxsize=8192)
