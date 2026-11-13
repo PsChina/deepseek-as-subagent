@@ -18,7 +18,7 @@ def _digest(content: str) -> str:
 
 
 class WorkspaceEvidenceTests(unittest.TestCase):
-    def _config(self, root: Path) -> Config:
+    def _policy(self):
         contract = TaskContract.from_dict({
             "permissions": {
                 "tools": ["Read", "Write"],
@@ -26,7 +26,10 @@ class WorkspaceEvidenceTests(unittest.TestCase):
                 "write_paths": ["src/**"],
             }
         })
-        policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+        return compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+
+    def _config(self, root: Path) -> Config:
+        policy = self._policy()
         return Config(
             "", root, allowed_tools=list(policy.allowed_tools),
             effective_policy=policy,
@@ -89,7 +92,7 @@ class WorkspaceEvidenceTests(unittest.TestCase):
             self.assertNotIn("observed_sha256", evidence[0])
 
     def test_handoff_evidence_digest_must_match_mutation_record(self) -> None:
-        contract = self._config(Path.cwd()).effective_policy.to_dict()
+        contract = self._policy().to_dict()
         record = self._record("expected")
         evidence = [{
             "path": "src/file.txt", "expected_sha256": _digest("other"),
@@ -100,7 +103,7 @@ class WorkspaceEvidenceTests(unittest.TestCase):
         self.assertEqual(result["overall_status"], "failed")
 
     def test_duplicate_or_missing_readback_cannot_be_passed(self) -> None:
-        contract = self._config(Path.cwd()).effective_policy.to_dict()
+        contract = self._policy().to_dict()
         record = self._record("expected")
         checked = {
             "path": "src/file.txt",
