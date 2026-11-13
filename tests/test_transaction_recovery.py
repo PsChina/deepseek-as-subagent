@@ -216,7 +216,9 @@ class TransactionRecoveryTests(unittest.TestCase):
                 raise OSError("injected journal delete failure")
             return original_delete(store, name, version)
 
-        with patch.object(store_type, "delete", side_effect=fail_second_delete):
+        with patch.object(
+            store_type, "delete", autospec=True, side_effect=fail_second_delete
+        ):
             with self.assertRaisesRegex(TransactionRecoveryError, "outcome is uncertain"):
                 acknowledge_with_lease(self.config, [first, second], self.locks)
 
