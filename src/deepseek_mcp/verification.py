@@ -92,6 +92,53 @@ def _verify_mutations(contract: dict, mutations: object, bash_executions: object
 
 
 
+
+def _verify_workspace_evidence(
+    mutations: object, evidence: object,
+) -> tuple[str, list[str]]:
+    """Cross-check the final host readback against the last mutation per path."""
+    if not isinstance(mutations, list) or not isinstance(evidence, list):
+        return "not_verifiable", ["workspace readback evidence is unavailable"]
+    latest: dict[str, object] = {}
+    for record in mutations:
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            return "not_verifiable", ["workspace mutation paths are incomplete"]
+        latest[record["path"]] = record.get("sha256")
+    if not latest:
+        return ("not_applicable", []) if not evidence else (
+            "not_verifiable", ["unexpected workspace readback evidence"]
+        )
+
+    observations: dict[str, str] = {}
+    for item in evidence:
+        if not isinstance(item, dict):
+            return "not_verifiable", ["malformed workspace readback evidence"]
+        path = item.get("path")
+        if not isinstance(path, str) or path not in latest or path in observations:
+            return "not_verifiable", ["unexpected or duplicate workspace evidence path"]
+        expected, observed, status = (
+            item.get("expected_sha256"), item.get("observed_sha256"),
+            item.get("status"),
+        )
+        if expected != latest[path]:
+            return "failed", ["workspace readback digest differs from mutation record"]
+        if status == "matched" and observed == expected and isinstance(observed, str) and _SHA256.fullmatch(observed):
+            observations[path] = "matched"
+        elif status == "changed" and isinstance(observed, str) and _SHA256.fullmatch(observed) and observed != expected:
+            observations[path] = "changed"
+        elif status == "not_verifiable" and observed is None:
+            observations[path] = "not_verifiable"
+        else:
+            return "not_verifiable", ["workspace readback observation is invalid"]
+    if len(observations) != len(latest):
+        return "not_verifiable", ["workspace readback is incomplete"]
+    if "changed" in observations.values():
+        return "changed", ["workspace file differs from the last committed digest"]
+    if "not_verifiable" in observations.values():
+        return "not_verifiable", ["one or more workspace files could not be checked"]
+    return "matched", []
+
+
 def _resource_limit_status(observed: object, maximum: object, label: str) -> tuple[str, str | None]:
     valid_maximum = not isinstance(maximum, bool) and isinstance(maximum, int) and maximum >= 1
     valid_observed = not isinstance(observed, bool) and isinstance(observed, int) and observed >= 0
@@ -120,13 +167,15 @@ def _verify_resource_limits(
     return overall, [risk for risk in (tool_risk, byte_risk) if risk is not None]
 
 
-def verify_execution_record(contract: dict, mutations: object, bash_executions: object = 0, tool_calls: object = None, mutation_bytes_reserved: object = None) -> dict:
+def verify_execution_record(contract: dict, mutations: object, bash_executions: object = 0, tool_calls: object = None, mutation_bytes_reserved: object = None, workspace_evidence: object = None) -> dict:
     """Verify path-policy compliance and mutation evidence; never infer test success."""
     policy_status, integrity_status, risks = _verify_mutations(contract, mutations, bash_executions)
     resource_status, resource_risks = _verify_resource_limits(
         contract, tool_calls, mutation_bytes_reserved
     )
     risks.extend(resource_risks)
+    workspace_status, workspace_risks = _verify_workspace_evidence(mutations, workspace_evidence)
+    risks.extend(workspace_risks)
     checks = [{"name": name, "status": "not_run", "evidence": None}
               for name in _string_items(contract.get("success_checks"))]
     semantic = [{"constraint": name, "status": "not_verified"}
@@ -140,15 +189,16 @@ def verify_execution_record(contract: dict, mutations: object, bash_executions: 
     if outputs:
         risks.append("expected outputs have not been independently validated")
     risks.append("functional correctness has not been independently verified")
-    if policy_status == "failed" or resource_status == "failed":
+    if policy_status == "failed" or resource_status == "failed" or workspace_status == "failed":
         overall = "failed"
-    elif policy_status != "passed" or resource_status != "passed" or integrity_status in {"failed", "uncertain", "not_verifiable"} or checks or semantic or outputs:
+    elif policy_status != "passed" or resource_status != "passed" or workspace_status in {"changed", "not_verifiable"} or integrity_status in {"failed", "uncertain", "not_verifiable"} or checks or semantic or outputs:
         overall = "partial"
     else:
         overall = "policy_verified"
     return {
         "policy_compliance": policy_status,
         "mutation_integrity": integrity_status,
+        "workspace_readback": workspace_status,
         "resource_compliance": resource_status,
         "success_checks": checks,
         "semantic_constraints": semantic,
