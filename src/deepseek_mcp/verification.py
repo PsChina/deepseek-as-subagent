@@ -6,6 +6,7 @@ import re
 from .policy_enforcement import path_is_allowed
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_TX_ID = re.compile(r"^[0-9a-f]{32}$")
 _MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 
 
@@ -60,6 +61,18 @@ def _verify_mutation(
     return policy_status, integrity_status, policy_risks + integrity_risks
 
 
+def _verify_transaction_ids(mutations: list) -> tuple[str, list[str]]:
+    seen: set[str] = set()
+    for item in mutations:
+        transaction_id = item.get("transaction_id") if isinstance(item, dict) else None
+        if not isinstance(transaction_id, str) or _TX_ID.fullmatch(transaction_id) is None:
+            return "not_verifiable", ["mutation transaction identity is missing or invalid"]
+        if transaction_id in seen:
+            return "not_verifiable", ["duplicate mutation transaction identity"]
+        seen.add(transaction_id)
+    return "passed", []
+
+
 def _verify_mutations(contract: dict, mutations: object, bash_executions: object) -> tuple[str, str, list[str]]:
     if not isinstance(mutations, list):
         return "not_verifiable", "not_verifiable", ["mutation record list is invalid"]
@@ -78,7 +91,12 @@ def _verify_mutations(contract: dict, mutations: object, bash_executions: object
     else:
         policy_statuses = ["failed" if bash_executions else "passed"]
         risks = []
+    transaction_status, transaction_risks = _verify_transaction_ids(mutations)
+    policy_statuses.append(transaction_status)
+    risks.extend(transaction_risks)
     integrity_statuses: list[str] = []
+    if transaction_status != "passed":
+        integrity_statuses.append("not_verifiable")
     for item in mutations:
         policy, integrity, item_risks = _verify_mutation(item, allowed_tools, read_paths, write_paths, deny_paths)
         policy_statuses.append(policy)
