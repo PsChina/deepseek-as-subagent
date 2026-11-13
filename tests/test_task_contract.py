@@ -73,6 +73,8 @@ class TaskContractTests(unittest.TestCase):
         self.assertFalse(path_is_allowed("src/.env.local", ("src/**",), (".env*", "**/.env*")))
         self.assertFalse(path_is_allowed("src/.ENV.local", ("src/**",), (".env*", "**/.env*")))
         self.assertFalse(path_is_allowed(".aws/credentials", ("**/*",), DEFAULT_DENY_PATHS))
+        for unsafe in ("/etc/passwd", "../outside", "src/../outside", "C:/secret", "src\\secret"):
+            self.assertFalse(path_is_allowed(unsafe, ("**/*",), ()))
         self.assertFalse(path_is_allowed("src/.ENV.local", ("src/**",), DEFAULT_DENY_PATHS))
         if os.name != "nt":
             self.assertFalse(path_is_allowed("SRC/app.py", ("src/**",), ()))

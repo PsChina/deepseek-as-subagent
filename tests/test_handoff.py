@@ -50,6 +50,12 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(report["verification"]["semantic_constraints"][0]["status"], "not_verified")
         self.assertEqual(report["verification"]["functional_correctness"], "not_independently_verified")
 
+    def test_absolute_changed_file_path_fails_policy_verification(self):
+        result = self._result()
+        result["mutations"][0]["path"] = "/etc/passwd"
+        report = build_handoff(result)
+        self.assertEqual(report["verification"]["policy_compliance"], "failed")
+
     def test_bash_execution_under_contract_is_reported_as_policy_failure(self):
         result = self._result()
         result["bash"]["calls"] = 1

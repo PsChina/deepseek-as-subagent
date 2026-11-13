@@ -39,7 +39,12 @@ def path_is_denied(relative_path: str, deny_paths: tuple[str, ...]) -> bool:
     return any(path_matches_pattern(relative_path, pattern, case_sensitive=False) for pattern in deny_paths)
 
 
+def _is_normalized_relative_path(relative_path: str) -> bool:
+    return bool(relative_path) and not relative_path.startswith(("/", "\\")) and "\\" not in relative_path and not (len(relative_path) > 1 and relative_path[0].isalpha() and relative_path[1] == ":") and all(part not in {"", ".", ".."} for part in relative_path.split("/"))
+
+
 def path_is_allowed(relative_path: str, allowed_paths: tuple[str, ...], deny_paths: tuple[str, ...]) -> bool:
+    if not _is_normalized_relative_path(relative_path): return False
     return not path_is_denied(relative_path, deny_paths) and any(
         path_matches_pattern(relative_path, pattern, case_sensitive=os.name != "nt")
         for pattern in allowed_paths
