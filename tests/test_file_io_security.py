@@ -19,6 +19,7 @@ import deepseek_mcp.transaction_report as transaction_report
 import deepseek_mcp.tools as tools
 import deepseek_mcp.workspace_walk as workspace_walk
 from deepseek_mcp import windows_file_io
+from deepseek_mcp.safety import SandboxViolation
 from deepseek_mcp.tools import (
     _execute_edit,
     _execute_glob,
@@ -159,6 +160,44 @@ class WorkspaceFileRaceTests(unittest.TestCase):
 
             self.assertNotIn(".git/config", glob_result)
             self.assertTrue(grep_result.startswith("ERROR:"), grep_result)
+
+    @unittest.skipIf(os.name == "nt", "deterministic symlink swap uses POSIX semantics")
+    def test_canonical_workspace_read_rejects_symlink_alias_and_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            source = workspace / "src"
+            private = workspace / "private"
+            source.mkdir()
+            private.mkdir()
+            secret = private / "secret.txt"
+            secret.write_text("secret-marker", encoding="utf-8")
+            alias = source / "alias.txt"
+            alias.symlink_to(secret)
+
+            with self.assertRaises(SandboxViolation):
+                file_io.read_workspace_text(
+                    workspace, "src/alias.txt", require_canonical=True
+                )
+
+            alias.unlink()
+            actual = source / "actual.txt"
+            actual.write_text("safe", encoding="utf-8")
+            real_resolve = file_io.resolve_safe_path
+
+            def swap_after_resolve(label: str, root: Path) -> Path:
+                resolved = real_resolve(label, root)
+                actual.unlink()
+                actual.symlink_to(secret)
+                return resolved
+
+            with patch.object(
+                file_io, "resolve_safe_path", side_effect=swap_after_resolve
+            ):
+                with self.assertRaises(OSError):
+                    file_io.read_workspace_text(
+                        workspace, "src/actual.txt", require_canonical=True
+                    )
+            self.assertEqual(secret.read_text(encoding="utf-8"), "secret-marker")
 
     @unittest.skipIf(os.name == "nt", "deterministic symlink swap uses POSIX semantics")
     def test_ancestor_swap_never_reads_or_writes_outside_workspace(self) -> None:
