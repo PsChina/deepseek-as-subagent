@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import unittest
-from types import SimpleNamespace
 
-from deepseek_mcp.bash_outcome import record_bash_result
+from deepseek_mcp.bash_outcome import BashOutcome, record_bash_result
 from deepseek_mcp.handoff import build_handoff
 from deepseek_mcp.mutation_outcome import MutationAccumulator, mutation_record
 from deepseek_mcp.result_format import format_sync_result
@@ -69,23 +68,18 @@ class HandoffTests(unittest.TestCase):
 
 
     def test_denied_bash_attempt_is_not_misreported_as_execution(self):
-        state = SimpleNamespace(
-            bash_calls=0,
-            bash_executions=0,
-            last_bash_status=None,
-            bash_failures=[],
-        )
+        state = BashOutcome()
         record_bash_result(
             state,
             "ERROR: tool 'Bash' is not allowed by the task contract",
             0,
         )
-        self.assertEqual(state.bash_calls, 1)
-        self.assertEqual(state.bash_executions, 0)
+        self.assertEqual(state.attempts, 1)
+        self.assertEqual(state.executed_calls, 0)
 
         result = self._result()
-        result["bash"]["calls"] = state.bash_calls
-        result["bash"]["executed_calls"] = state.bash_executions
+        result["bash"]["calls"] = state.attempts
+        result["bash"]["executed_calls"] = state.executed_calls
         report = build_handoff(result)
         self.assertEqual(report["bash_summary"]["calls"], 1)
         self.assertEqual(report["bash_summary"]["executed_calls"], 0)
