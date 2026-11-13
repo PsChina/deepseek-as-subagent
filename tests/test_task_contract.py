@@ -191,6 +191,44 @@ class TaskContractTests(unittest.TestCase):
         self.assertEqual(readonly.allowed_tools, ["Read"])
 
 
+    def test_edit_operations_require_both_read_and_write_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            target = root / "src" / "app.py"
+            target.write_text("secret = 1", encoding="utf-8")
+            contract = TaskContract.from_dict({
+                "permissions": {
+                    "tools": ["Read", "Write", "Edit", "NotebookEdit"],
+                    "read_paths": ["tests/**"],
+                    "write_paths": ["src/**"],
+                }
+            })
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            config = Config(
+                "", root, allowed_tools=list(policy.allowed_tools),
+                effective_policy=policy,
+            )
+            edit_result = execute_tool(
+                "Edit",
+                {"path": "src/app.py", "old_string": "secret = 1", "new_string": "secret = 2"},
+                config,
+            )
+            notebook_result = execute_tool(
+                "NotebookEdit",
+                {"path": "src/notebook.ipynb", "edit_mode": "insert", "new_source": "x=1"},
+                config,
+            )
+            write_result = execute_tool(
+                "Write", {"path": "src/new.py", "content": "x = 1"}, config,
+            )
+            self.assertIn("outside the task contract read scope", edit_result)
+            self.assertIn("outside the task contract read scope", notebook_result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "secret = 1")
+            self.assertFalse((root / "src" / "notebook.ipynb").exists())
+            self.assertTrue(write_result.startswith("OK: wrote"))
+
     def test_dispatcher_rejects_budget_above_global_hard_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
