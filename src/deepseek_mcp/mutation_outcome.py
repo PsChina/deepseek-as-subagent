@@ -80,7 +80,7 @@ def mutation_record(
         raise ValueError("invalid mutation status")
     if path is not None and (
         not isinstance(path, str) or not path or path.startswith("/")
-        or "\\" in path or ":" in path or any(part in {"", ".", ".."} for part in path.split("/"))
+        or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/"))
     ):
         raise ValueError("invalid mutation path")
     if sha256 is not None and (not isinstance(sha256, str) or _SHA256.fullmatch(sha256) is None):

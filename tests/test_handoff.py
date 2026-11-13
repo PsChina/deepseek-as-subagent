@@ -65,6 +65,10 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(report["verification"]["policy_compliance"], "failed")
         self.assertEqual(report["verification_status"], "failed")
 
+    def test_mutation_record_accepts_valid_posix_colon_filename(self):
+        record = mutation_record("d" * 32, "Write", "committed", path="src/name:variant.py", sha256="e" * 64)
+        self.assertEqual(record.as_dict()["path"], "src/name:variant.py")
+
     def test_legacy_results_do_not_change_format(self):
         self.assertIsNone(build_handoff({"final_message": "legacy"}))
         formatted = format_sync_result({"final_message": "legacy", "turns_used": 1, "tool_calls": 0, "tokens": {"total": 1}, "duration_seconds": 1, "bash": {}})

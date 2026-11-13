@@ -234,6 +234,7 @@ def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[s
     if digest is None or name not in {"Write", "Edit", "NotebookEdit"}: return None
     label = arguments.get("path")
     if not isinstance(label, str) or not label: return "uncertain", None, digest.hex()
+    relative = None
     try:
         assert config.expected_workspace_identity is not None
         with bind_workspace_identity(config.expected_workspace_identity):
@@ -241,7 +242,7 @@ def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[s
             relative = target.relative_to(config.workspace.resolve()).as_posix()
             _text, identity = read_workspace_text(config.workspace, label)
     except Exception:
-        return "uncertain", None, digest.hex()
+        return "uncertain", relative, digest.hex()
     return ("committed" if identity.digest == digest else "uncertain", relative, digest.hex())
 
 
