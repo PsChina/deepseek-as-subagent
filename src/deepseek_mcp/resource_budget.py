@@ -8,6 +8,7 @@ from typing import Callable, Iterator
 MAX_TOOL_CALLS_PER_TURN = 32
 MAX_TOOL_CALLS_PER_RUN = 128
 MAX_MUTATION_BYTES_PER_RUN = 64 * 1024 * 1024
+MUTATION_TOOL_NAMES = frozenset({"Write", "Edit", "NotebookEdit"})
 
 
 class ResourceBudgetExceeded(RuntimeError):
@@ -36,6 +37,23 @@ class MutationBudget:
                 f"mutation budget exceeds the effective maximum of {maximum} bytes"
             )
 
+    def validate(self, maximum: int = MAX_MUTATION_BYTES_PER_RUN) -> None:
+        """Reject malformed or expanded budgets before any side effect."""
+        if (
+            isinstance(self.limit, bool)
+            or not isinstance(self.limit, int)
+            or isinstance(self.used, bool)
+            or not isinstance(self.used, int)
+            or self.limit < 0
+            or self.used < 0
+            or self.used > self.limit
+        ):
+            raise ValueError("mutation budget is invalid")
+        if self.limit > maximum:
+            raise ValueError(
+                f"mutation budget exceeds the effective maximum of {maximum} bytes"
+            )
+
     @contextmanager
     def reserve(self, byte_count: int) -> Iterator[None]:
         if byte_count < 0 or byte_count > self.limit - self.used:
@@ -47,6 +65,18 @@ class MutationBudget:
         # os.replace() and then fail during directory fsync, so success cannot
         # be inferred from the exception boundary.
         yield
+
+
+def coerce_mutation_budget(
+    budget: MutationBudget | None, maximum: int
+) -> tuple[MutationBudget, str | None]:
+    """Create or validate a mutation budget against the active hard ceiling."""
+    selected = budget if budget is not None else MutationBudget(limit=maximum)
+    try:
+        selected.validate(maximum)
+    except (AttributeError, ValueError) as error:
+        return selected, str(error)
+    return selected, None
 
 
 def apply_mutation(
