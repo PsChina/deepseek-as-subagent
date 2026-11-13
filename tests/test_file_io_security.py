@@ -671,6 +671,9 @@ class WorkspaceFileRaceTests(unittest.TestCase):
                 os.kill(os.getpid(), signal.SIGTERM)
                 raise file_io.MutationCommittedWarning("recover from retained-copy")
 
+            previous_mask = signal.pthread_sigmask(
+                signal.SIG_UNBLOCK, {signal.SIGTERM}
+            )
             previous = signal.signal(signal.SIGTERM, tool_child._terminate_tool)
             try:
                 with (
@@ -690,6 +693,7 @@ class WorkspaceFileRaceTests(unittest.TestCase):
                     )
             finally:
                 signal.signal(signal.SIGTERM, previous)
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
             self.assertEqual(target.read_text(encoding="utf-8"), "after")
             self.assertIn("recover from retained-copy", warnings)
