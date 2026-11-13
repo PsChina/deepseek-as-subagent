@@ -19,7 +19,7 @@ from .transaction_journal import (
     append_warning,
     record_intent,
 )
-from .transaction_report import bind_reporter
+from .transaction_report import bind_reporter, current_mutation_path
 from .workspace_guard import bind_workspace_identity
 
 # A 5 MB valid mutation can expand to 30 MB when every byte needs a six-byte
@@ -164,7 +164,10 @@ def _persist_mutation_ready(
     digest: bytes, baseline,
 ) -> None:
     try:
-        record_intent(config, transaction_id, name, arguments, digest, baseline)
+        record_intent(
+            config, transaction_id, name, arguments, digest, baseline,
+            canonical_path=current_mutation_path(),
+        )
     except JournalUpdatePublishedWarning:
         _write_mutation_ready(digest)
         raise
