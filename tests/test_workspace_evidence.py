@@ -108,6 +108,29 @@ class WorkspaceEvidenceTests(unittest.TestCase):
             self.assertEqual(evidence[0]["status"], "not_verifiable")
             self.assertNotIn("observed_sha256", evidence[0])
 
+    def test_readback_cannot_hash_protected_control_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / ".git" / "config").write_text("credential-marker", encoding="utf-8")
+            contract = TaskContract.from_dict({
+                "permissions": {
+                    "tools": ["Read", "Write"],
+                    "read_paths": ["**/*"],
+                    "write_paths": ["**/*"],
+                }
+            })
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            cfg = Config(
+                "", root, allowed_tools=list(policy.allowed_tools),
+                effective_policy=policy,
+            )
+            evidence = collect_workspace_evidence(
+                cfg, [self._record("credential-marker", path=".git/config")]
+            )
+            self.assertEqual(evidence[0]["status"], "not_verifiable")
+            self.assertNotIn("observed_sha256", evidence[0])
+
     def test_handoff_evidence_digest_must_match_mutation_record(self) -> None:
         contract = self._policy().to_dict()
         record = self._record("expected")
