@@ -950,6 +950,24 @@ class WindowsHandlePolicyTests(unittest.TestCase):
 
         close.assert_called_once_with(19)
 
+    def test_child_open_rejects_parent_rename_between_handle_checks(self) -> None:
+        # The target can match the NEW parent while the parent itself moved
+        # after the first identity snapshot. Such an operation must fail.
+        paths = [
+            r"c:\workspace\before",
+            r"c:\workspace\after",
+            r"c:\workspace\after\file.txt",
+        ]
+        with (
+            patch.object(file_io, "_win_final_path", side_effect=paths),
+            patch.object(file_io, "_win_open_path", return_value=19),
+            patch.object(file_io, "_win_validate_handle"),
+            patch.object(file_io, "_win_close") as close,
+        ):
+            with self.assertRaisesRegex(file_io.ToolInputError, "identity changed"):
+                file_io._win_open_child(7, "file.txt", 1, 3, directory=False)
+        close.assert_called_once_with(19)
+
     def test_windows_path_rejects_streams_and_ambiguous_suffixes(self) -> None:
         for label in ("name:stream", "name.", "name "):
             with self.subTest(label=label):
