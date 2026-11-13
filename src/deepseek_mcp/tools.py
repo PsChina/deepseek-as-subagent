@@ -443,8 +443,7 @@ def _format_grep_result(results: list[str], pattern: str, truncated: bool) -> st
             return f"Search results incomplete for pattern: {pattern}"
         return f"No matches found for pattern: {pattern}"
     header = f"Found {len(results)} match(es)"
-    if truncated:
-        header += " (results incomplete)"
+    header += " (results incomplete)" if truncated else ""
     return _truncate(header + ":\n" + "\n".join(results))
 def _execute_grep(args: dict, workspace: Path, policy=None) -> str:
     """正则搜索文件内容。args: {pattern: str, path?: str, glob?: str, max_matches?: int}"""
