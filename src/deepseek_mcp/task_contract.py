@@ -21,8 +21,12 @@ DEFAULT_DENY_PATHS = (
     ".netrc", "**/.netrc", ".git-credentials", "**/.git-credentials",
     "credentials", "**/credentials", "**/credentials.*", "secrets/**", "**/secrets/**",
     "**/.ssh/**", "**/.aws/**", "**/.azure/**", "**/.gnupg/**", "**/.kube/**",
-    "**/.docker/config.json", "**/id_rsa*", "**/id_ed25519*",
+    "**/.docker/config.json", "**/.config/gcloud/**", "**/.config/gh/**",
+    "**/.config/containers/auth.json", "**/.terraform.d/credentials.tfrc.json",
+    "**/terraform.rc", "**/.cargo/credentials*", "**/.npm/_auth*",
+    "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*", "**/id_dsa*",
     "**/*.key", "**/*.pem", "**/*.token", "**/*.p12", "**/*.pfx",
+    "**/*.tfstate", "**/*.tfstate.*", "**/*.p8", "**/*.jks", "**/*.keystore",
 )
 
 
