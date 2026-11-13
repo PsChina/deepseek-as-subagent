@@ -6,10 +6,12 @@ not proof that the filesystem will remain unchanged.
 from __future__ import annotations
 
 import re
+import os
+from pathlib import Path
 
-from .file_io import read_workspace_text
+from . import file_io
 from .policy_enforcement import path_is_allowed
-from .workspace_guard import bind_workspace_identity
+from .workspace_guard import bind_workspace_identity, require_workspace_identity
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -27,7 +29,18 @@ def _readback_one(config, path: str, record: dict) -> dict:
         return result
     try:
         with bind_workspace_identity(config.expected_workspace_identity):
-            _, identity = read_workspace_text(config.workspace, path)
+            root = config.workspace.resolve()
+            require_workspace_identity(root)
+            relative = Path(path)
+            if os.name == "nt":
+                file_io._validate_windows_parts(relative)
+                _, identity = file_io._read_windows(
+                    root, relative, strict_utf8=False, reject_binary=False
+                )
+            else:
+                _, identity = file_io._read_posix(
+                    root, relative, strict_utf8=False, reject_binary=False
+                )
         actual = identity.digest.hex() if identity.digest is not None else None
     except Exception:
         # Missing, unsafe or concurrently replaced paths require review.
