@@ -14,14 +14,32 @@ from .workspace_guard import bind_workspace_identity
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
-def collect_workspace_evidence(config, mutations: list[dict]) -> list[dict]:
-    """Re-read the last committed version of each changed path via safe file I/O.
+def _readback_one(config, path: str, record: dict) -> dict:
+    policy = config.effective_policy
+    expected = record.get("sha256")
+    result = {"path": path, "expected_sha256": expected, "status": "not_verifiable"}
+    if (
+        record.get("status") != "committed"
+        or not isinstance(expected, str)
+        or _SHA256.fullmatch(expected) is None
+        or not path_is_allowed(path, policy.write_paths, policy.deny_paths)
+    ):
+        return result
+    try:
+        with bind_workspace_identity(config.expected_workspace_identity):
+            _, identity = read_workspace_text(config.workspace, path)
+        actual = identity.digest.hex() if identity.digest is not None else None
+    except Exception:
+        # Missing, unsafe or concurrently replaced paths require review.
+        return result
+    result["observed_sha256"] = actual
+    result["status"] = "matched" if actual == expected else "changed"
+    return result
 
-    Earlier versions of a repeatedly edited file are not compared with its
-    final contents. An invalid or inaccessible path is never read.
-    """
-    policy = getattr(config, "effective_policy", None)
-    if policy is None:
+
+def collect_workspace_evidence(config, mutations: list[dict]) -> list[dict]:
+    """Observe the last recorded version of each file without returning content."""
+    if getattr(config, "effective_policy", None) is None:
         return []
     latest: dict[str, dict] = {}
     for item in mutations:
@@ -30,29 +48,4 @@ def collect_workspace_evidence(config, mutations: list[dict]) -> list[dict]:
         path = item.get("path")
         if isinstance(path, str) and path:
             latest[path] = item
-
-    evidence = []
-    for path, record in latest.items():
-        expected = record.get("sha256")
-        observation = {"path": path, "expected_sha256": expected, "status": "not_verifiable"}
-        if (
-            record.get("status") != "committed"
-            or not isinstance(expected, str)
-            or _SHA256.fullmatch(expected) is None
-            or not path_is_allowed(path, policy.write_paths, policy.deny_paths)
-        ):
-            evidence.append(observation)
-            continue
-        try:
-            with bind_workspace_identity(config.expected_workspace_identity):
-                _, identity = read_workspace_text(config.workspace, path)
-            actual = identity.digest.hex() if identity.digest is not None else None
-        except Exception:
-            # Missing, inaccessible, concurrently replaced or otherwise unsafe
-            # file states require review. Do not include filesystem error text.
-            evidence.append(observation)
-            continue
-        observation["observed_sha256"] = actual
-        observation["status"] = "matched" if actual == expected else "changed"
-        evidence.append(observation)
-    return evidence
+    return [_readback_one(config, path, record) for path, record in latest.items()]
