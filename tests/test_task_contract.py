@@ -34,6 +34,13 @@ class TaskContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "workspace-relative"):
             TaskContract.from_dict({"permissions": {"read_paths": ["../outside"]}})
 
+    def test_deeply_nested_contract_is_rejected_as_validation_error(self) -> None:
+        nested: object = []
+        for _ in range(1200):
+            nested = [nested]
+        with self.assertRaisesRegex(ValueError, "bounded JSON-compatible"):
+            TaskContract.from_dict({"permissions": {"read_paths": nested}})
+
     def test_mutation_requires_explicit_write_paths(self) -> None:
         with self.assertRaisesRegex(ValueError, "explicit permissions.write_paths"):
             TaskContract.from_dict({"permissions": {"tools": ["Read", "Write"]}})
