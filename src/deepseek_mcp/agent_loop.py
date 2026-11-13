@@ -93,8 +93,7 @@ class _AgentState:
     last_request_bytes: int = 0
     tool_calls: int = 0
     empty_final_attempts: int = 0
-    bash_calls: int = 0
-    bash_executions: int = 0
+    bash_calls: int = 0; bash_executions: int = 0
     last_bash_status: str | None = None
     bash_failures: list[dict] = field(default_factory=list)
     mutation_budget: MutationBudget = field(default_factory=MutationBudget)
@@ -324,8 +323,7 @@ def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
         },
         "tool_calls": state.tool_calls,
         "bash": {
-            "calls": state.bash_calls,
-            "executed_calls": state.bash_executions,
+            "calls": state.bash_calls, "executed_calls": state.bash_executions,
             "failure_count": len(state.bash_failures),
             "last_status": state.last_bash_status,
             "failures": list(state.bash_failures),
