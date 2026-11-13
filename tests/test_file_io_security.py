@@ -7,6 +7,7 @@ import stat
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -654,11 +655,8 @@ class WorkspaceFileRaceTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "after")
             self.assertEqual(list(workspace.glob(".deepseek-mcp-*")), [])
 
-    @unittest.skipUnless(
-        os.name == "posix" and hasattr(signal, "pthread_sigmask"),
-        "POSIX signal masking is required",
-    )
-    def test_pending_sigterm_keeps_post_commit_recovery_warning(self) -> None:
+    @unittest.skipIf(os.name == "nt", "POSIX atomic commit is required")
+    def test_deferred_termination_keeps_post_commit_recovery_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             target = workspace / "target.txt"
@@ -668,32 +666,31 @@ class WorkspaceFileRaceTests(unittest.TestCase):
 
             def commit_then_warn(*args) -> None:
                 real_commit(*args)
-                os.kill(os.getpid(), signal.SIGTERM)
                 raise file_io.MutationCommittedWarning("recover from retained-copy")
 
-            previous_mask = signal.pthread_sigmask(
-                signal.SIG_UNBLOCK, {signal.SIGTERM}
-            )
-            previous = signal.signal(signal.SIGTERM, tool_child._terminate_tool)
-            try:
-                with (
-                    transaction_report.bind_reporter(lambda _digest: None, warnings.append),
-                    patch.object(
-                        file_io, "_commit_posix_file", side_effect=commit_then_warn
-                    ),
-                    self.assertRaises(tool_child._ToolTermination),
-                ):
-                    _execute_edit(
-                        {
-                            "path": "target.txt",
-                            "old_string": "before",
-                            "new_string": "after",
-                        },
-                        workspace,
-                    )
-            finally:
-                signal.signal(signal.SIGTERM, previous)
-                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            @contextmanager
+            def terminate_after_commit():
+                yield
+                raise tool_child._ToolTermination()
+
+            with (
+                transaction_report.bind_reporter(lambda _digest: None, warnings.append),
+                patch.object(
+                    file_io, "_commit_posix_file", side_effect=commit_then_warn
+                ),
+                patch.object(
+                    file_io, "_defer_posix_termination", terminate_after_commit
+                ),
+                self.assertRaises(tool_child._ToolTermination),
+            ):
+                _execute_edit(
+                    {
+                        "path": "target.txt",
+                        "old_string": "before",
+                        "new_string": "after",
+                    },
+                    workspace,
+                )
 
             self.assertEqual(target.read_text(encoding="utf-8"), "after")
             self.assertIn("recover from retained-copy", warnings)
