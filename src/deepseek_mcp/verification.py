@@ -15,7 +15,7 @@ def _string_items(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def _verify_mutation(item: object, allowed_tools: set[str], write_paths: tuple[str, ...], deny_paths: tuple[str, ...]) -> tuple[str, str, list[str]]:
+def _verify_mutation(item: object, allowed_tools: set[str], read_paths: tuple[str, ...], write_paths: tuple[str, ...], deny_paths: tuple[str, ...]) -> tuple[str, str, list[str]]:
     if not isinstance(item, dict):
         return "failed", "failed", ["malformed mutation record"]
     path, tool, status, digest = (
@@ -33,6 +33,9 @@ def _verify_mutation(item: object, allowed_tools: set[str], write_paths: tuple[s
     elif not path_is_allowed(path, write_paths, deny_paths):
         policy_status = "failed"
         risks.append(f"mutation path is outside the effective write scope: {path}")
+    elif tool in {"Edit", "NotebookEdit"} and not path_is_allowed(path, read_paths, deny_paths):
+        policy_status = "failed"
+        risks.append(f"edit path is outside the effective read scope: {path}")
     if status != "committed":
         integrity_status = "uncertain"
         risks.append(f"mutation outcome is uncertain: {path or 'unknown path'}")
@@ -47,6 +50,7 @@ def _verify_mutation(item: object, allowed_tools: set[str], write_paths: tuple[s
 def _verify_mutations(contract: dict, mutations: object, bash_executions: object) -> tuple[str, str, list[str]]:
     if not isinstance(mutations, list):
         return "not_verifiable", "not_verifiable", ["mutation record list is invalid"]
+    read_paths = tuple(_string_items(contract.get("read_paths")))
     write_paths = tuple(_string_items(contract.get("write_paths")))
     deny_paths = tuple(_string_items(contract.get("deny_paths")))
     allowed_tools = set(_string_items(contract.get("allowed_tools")))
@@ -63,7 +67,7 @@ def _verify_mutations(contract: dict, mutations: object, bash_executions: object
         risks = []
     integrity_statuses: list[str] = []
     for item in mutations:
-        policy, integrity, item_risks = _verify_mutation(item, allowed_tools, write_paths, deny_paths)
+        policy, integrity, item_risks = _verify_mutation(item, allowed_tools, read_paths, write_paths, deny_paths)
         policy_statuses.append(policy)
         integrity_statuses.append(integrity)
         risks.extend(item_risks)
