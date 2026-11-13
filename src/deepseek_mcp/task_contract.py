@@ -72,9 +72,10 @@ def _bounded_integer(value: object, label: str, maximum: int) -> int:
 
 
 def _check_json_shape(value: object, max_depth: int = 64, max_nodes: int = 10_000) -> None:
-    """Reject excessive nesting and non-JSON values without recursive traversal."""
+    """Reject excessive nesting, size and non-JSON values before serialization."""
     stack = [(value, 0)]
     visited = 0
+    text_chars = 0
     while stack:
         current, depth = stack.pop()
         visited += 1
@@ -82,7 +83,12 @@ def _check_json_shape(value: object, max_depth: int = 64, max_nodes: int = 10_00
             raise ValueError("task contract exceeds the maximum JSON node count")
         if depth > max_depth:
             raise ValueError("task contract exceeds the maximum JSON nesting depth")
-        if current is None or isinstance(current, (str, bool, int)):
+        if isinstance(current, str):
+            text_chars += len(current)
+            if text_chars > MAX_CONTRACT_BYTES:
+                raise ValueError("task contract exceeds the maximum text size")
+            continue
+        if current is None or isinstance(current, (bool, int)):
             continue
         if isinstance(current, float):
             import math
@@ -90,12 +96,19 @@ def _check_json_shape(value: object, max_depth: int = 64, max_nodes: int = 10_00
                 raise ValueError("task contract contains a non-finite number")
             continue
         if isinstance(current, list):
+            if visited + len(stack) + len(current) > max_nodes:
+                raise ValueError("task contract exceeds the maximum JSON node count")
             stack.extend((item, depth + 1) for item in current)
             continue
         if isinstance(current, dict):
+            if visited + len(stack) + len(current) > max_nodes:
+                raise ValueError("task contract exceeds the maximum JSON node count")
             for key, item in current.items():
                 if not isinstance(key, str):
                     raise ValueError("task contract object keys must be strings")
+                text_chars += len(key)
+                if text_chars > MAX_CONTRACT_BYTES:
+                    raise ValueError("task contract exceeds the maximum text size")
                 stack.append((item, depth + 1))
             continue
         raise ValueError("task contract contains a non-JSON value")
