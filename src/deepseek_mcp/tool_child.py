@@ -171,7 +171,7 @@ def _persist_mutation_ready(
     except JournalUpdatePublishedWarning:
         _write_mutation_ready(digest, current_mutation_path())
         raise
-    _write_mutation_ready(digest)
+    _write_mutation_ready(digest, current_mutation_path())
 
 
 def _write_mutation_ready(digest: bytes, canonical_path: str | None = None) -> None:
