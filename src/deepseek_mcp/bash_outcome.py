@@ -7,6 +7,7 @@ from typing import Protocol
 
 class BashOutcomeSink(Protocol):
     bash_calls: int
+    bash_executions: int
     last_bash_status: str | None
     bash_failures: list[dict]
 
@@ -16,6 +17,7 @@ def record_bash_result(state: BashOutcomeSink, output: str, turn: int) -> None:
     state.bash_calls += 1
     match = re.fullmatch(r"\[exit (-?\d+)\]", output.partition("\n")[0])
     if match is not None:
+        state.bash_executions += 1
         exit_code = int(match.group(1))
         status = "success" if exit_code == 0 else "nonzero_exit"
     else:
