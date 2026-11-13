@@ -49,6 +49,11 @@ class TaskContractTests(unittest.TestCase):
                 "permissions": {"read_paths": ["src/**"] * 10_001}
             })
 
+    def test_float_payloads_fail_cleanly_without_unhandled_name_errors(self) -> None:
+        for value in (1.25, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                TaskContract.from_dict({"limits": {"max_tool_calls": value}})
+
     def test_deeply_nested_contract_is_rejected_as_validation_error(self) -> None:
         nested: object = []
         for _ in range(1200):
