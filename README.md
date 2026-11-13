@@ -58,6 +58,20 @@ credential-isolated, but it is not an OS sandbox.
        Host verifies the conclusion
 ```
 
+### Contract-bound delegation
+
+Optional Task Contracts add per-delegation tool permissions, workspace-relative
+read/write scopes, and bounded tool-call and mutation budgets through four
+explicit contract-aware entrypoints. When a contract is supplied, Bash is
+disabled; file scopes are checked at dispatch and again after canonical path
+resolution. Built-in secret-path denials cannot be removed by caller rules.
+
+Contract-bound results include a structured handoff with policy checks,
+resource accounting, mutation digests, and host-observed workspace readback.
+This is evidence for review, not proof of functional correctness or an
+OS-level sandbox. See [Task Contracts](docs/task-contract.md) for the schema,
+entrypoints, enforcement model, and limitations.
+
 ## Quick start
 
 ```bash
