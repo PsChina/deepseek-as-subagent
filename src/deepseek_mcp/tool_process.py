@@ -192,9 +192,10 @@ def _decode(raw: bytes, budget: MutationBudget) -> str:
         raise AgentLoopError("tool process failed")
     if isinstance(used, bool) or not isinstance(used, int):
         raise AgentLoopError("tool process returned an invalid budget")
-    if not budget.used <= used <= budget.limit:
-        raise AgentLoopError("tool process returned an invalid budget")
-    budget.used = used
+    try:
+        budget.advance_to(used)
+    except ValueError:
+        raise AgentLoopError("tool process returned an invalid budget") from None
     return result
 
 
