@@ -184,6 +184,21 @@ def resolve_safe_path(rel_or_abs: str, workspace: Path) -> Path:
     return abs_path
 
 
+def require_canonical_relative_path(label: str, workspace: Path, resolved: Path) -> None:
+    """Reject symlink or reparse-point redirection for already-canonical paths."""
+    raw = Path(label)
+    if not raw.parts or raw.is_absolute() or ".." in raw.parts or raw.as_posix() != label:
+        raise SandboxViolation("canonical workspace path is not normalized")
+    root = workspace.resolve()
+    try:
+        lexical = (root / raw).absolute().relative_to(root)
+        actual = resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        raise SandboxViolation("canonical workspace path is outside workspace") from None
+    if lexical.as_posix() != actual.as_posix():
+        raise SandboxViolation("canonical workspace path was redirected")
+
+
 def _tokenize(command: str) -> list[str]:
     """安全分词。命令引号不闭合时 shlex 会抛错；回退到 split。"""
     try:
