@@ -1,6 +1,6 @@
 # Task Contract — Code-Level Security Review
 
-Reviewed: 2026-11-13  
+Reviewed: 2026-11-13; updated: 2026-11-14  
 Scope: PR #38, `feat/task-contract-policy-engine`  
 Status: **review in progress; not a certification or a third-party penetration test**
 
@@ -34,6 +34,7 @@ Status: **review in progress; not a certification or a third-party penetration t
 
 - CI #323 passed all nine Ubuntu/macOS/Windows × Python 3.10–3.12 jobs for the pre-hardlink-hardening revision `23535e47`.
 - **CI #336 passed all 9/9 jobs on source revision `14469f1853a17686ff673541e278652788c656af`.** Each job ran 620 tests; platform-specific skips were 19 on Ubuntu, 18 on macOS, and 115 on Windows. All nine dependency-audit steps reported `No known vulnerabilities found`.
+- **CI #337 passed all 9/9 jobs on documentation revision `8d57a225f0867ce7c559baeb06c53e232e5d8c1f`.** Runtime source was unchanged from the tested hard-link fix in CI #336.
 - The 620-test suite includes contract JSON edge cases, local scripted OpenAI-compatible provider E2E tests using real provider and tool subprocesses, file commits, denied access, mutation budgets, structured handoff, and hard-link regressions for Read/Grep.
 - Opt-in real-API smoke test: `tests/test_live_deepseek_api.py`. It requires `DEEPSEEK_LIVE_TEST=1` and an independently configured `DEEPSEEK_API_KEY`; PR CI intentionally does not supply a credential. **A live production API result has not been recorded.**
 - The security review remains a code-level review, not an independent third-party penetration test. Keep live provider validation and a separate maintainer review as merge gates.
