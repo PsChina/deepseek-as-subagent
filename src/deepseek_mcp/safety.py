@@ -8,6 +8,8 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
+from .file_identity import ToolInputError
+
 _VCS_DIRECTORY_NAMES = frozenset({".git", ".hg", ".svn"})
 _AGENT_CONTROL_DIRECTORY_NAMES = frozenset(
     {".agents", ".claude", ".codex", ".deepseek-mcp"}
@@ -48,6 +50,13 @@ def is_protected_host_path(path: Path) -> bool:
     ):
         return True
     return candidate.name.casefold() in _AGENT_CONTROL_FILE_NAMES
+
+
+def validate_windows_path_parts(relative: Path) -> None:
+    """Reject Windows device/stream and trailing-dot/space path components."""
+    for part in relative.parts:
+        if ":" in part or part.rstrip(" .") != part:
+            raise ToolInputError("Windows path contains an unsafe component")
 
 
 def is_unsafe_workspace_root(path: Path) -> bool:
@@ -173,6 +182,24 @@ def resolve_safe_path(rel_or_abs: str, workspace: Path) -> Path:
         raise SandboxViolation("path targets protected host or VCS control state")
 
     return abs_path
+
+
+def require_canonical_relative_path(label: str, workspace: Path, resolved: Path) -> None:
+    """Reject symlink or reparse-point redirection for already-canonical paths."""
+    raw = Path(label)
+    if (
+        not raw.parts or raw.is_absolute() or ".." in raw.parts
+        or raw.as_posix() != label
+    ):
+        raise SandboxViolation("canonical workspace path is not normalized")
+    root = workspace
+    try:
+        lexical = (root / raw).absolute().relative_to(root)
+        actual = resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        raise SandboxViolation("canonical workspace path is outside workspace") from None
+    if lexical.as_posix() != actual.as_posix():
+        raise SandboxViolation("canonical workspace path was redirected")
 
 
 def _tokenize(command: str) -> list[str]:

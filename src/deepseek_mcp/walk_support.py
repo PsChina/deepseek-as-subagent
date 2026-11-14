@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 from typing import Iterator, Any
 
-from .file_io import ToolInputError
+from .file_identity import ToolInputError, validate_readable_file
 from . import windows_walk
 
 _RACE_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ELOOP})
@@ -78,22 +78,15 @@ def read_open_entry(descriptor: int, max_bytes: int) -> bytes:
     try:
         before = os.fstat(descriptor)
         before_change = windows_walk.descriptor_change_time(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise ToolInputError("workspace entry is not a regular file")
+        validate_readable_file(before)
         if before.st_size > max_bytes:
             raise WorkspaceEntryTooLarge(f"file exceeds {max_bytes} bytes")
         os.lseek(descriptor, 0, os.SEEK_SET)
         data = read_descriptor(descriptor, max_bytes)
         after = os.fstat(descriptor)
         after_change = windows_walk.descriptor_change_time(descriptor)
-        fields = (
-            "st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns"
-        )
-        if (
-            len(data) != before.st_size
-            or before_change != after_change
-            or any(getattr(before, name) != getattr(after, name) for name in fields)
-        ):
+        validate_readable_file(after, previous=before)
+        if len(data) != before.st_size or before_change != after_change:
             raise ToolInputError("workspace entry changed while reading")
         return data
     except WorkspaceEntryTooLarge:

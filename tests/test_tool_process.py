@@ -14,7 +14,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from deepseek_mcp import transaction_journal
-from deepseek_mcp.config import Config
+from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
+from deepseek_mcp.policy_engine import compile_task_policy
+from deepseek_mcp.task_contract import TaskContract
 from deepseek_mcp.file_identity import ToolInputError
 from deepseek_mcp.provider_retry import (
     AgentLoopCancelled,
@@ -24,7 +26,9 @@ from deepseek_mcp.provider_retry import (
 from deepseek_mcp.job_manager import DeepSeekJobManager, JobError
 from deepseek_mcp.resource_budget import MutationBudget
 from deepseek_mcp.tool_cleanup import cleanup_tool_artifacts
-from deepseek_mcp.tool_process import _encoded_request, _environment, execute_in_subprocess
+from deepseek_mcp.tool_process import (
+    _encoded_request, _environment, _mutation_details, execute_in_subprocess,
+)
 from deepseek_mcp.transaction_recovery import (
     TransactionRecoveryError,
     acknowledge_with_lease,
@@ -113,6 +117,48 @@ class ToolProcessTests(unittest.TestCase):
             workspace,
             allowed_tools=["Read", "Write"],
         )
+
+    def test_parent_readback_uses_canonical_path_and_detects_retargeting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir).resolve()
+            source = workspace / "src"
+            source.mkdir()
+            actual = source / "actual.txt"
+            actual.write_text("after", encoding="utf-8")
+            alias = source / "alias.txt"
+            alias.write_text("before", encoding="utf-8")
+            contract = TaskContract.from_dict({
+                "permissions": {
+                    "tools": ["Write"],
+                    "write_paths": ["src/**"],
+                }
+            })
+            policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+            config = Config(
+                "", workspace, allowed_tools=list(policy.allowed_tools),
+                effective_policy=policy,
+            )
+            digest = hashlib.sha256(b"after").hexdigest()
+            raw = json.dumps({
+                "kind": "mutation_ready", "sha256": digest,
+                "path": "src/actual.txt",
+            }).encode("utf-8")
+
+            details = _mutation_details(
+                config, "Write", {"path": "src/alias.txt"}, raw
+            )
+            self.assertEqual(details, ("committed", "src/actual.txt", digest))
+
+            actual.unlink()
+            try:
+                actual.symlink_to(alias)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            details = _mutation_details(
+                config, "Write", {"path": "src/alias.txt"}, raw
+            )
+            self.assertEqual(details[0], "uncertain")
+            self.assertEqual(details[1], "src/alias.txt")
 
     def test_real_write_runs_in_child_and_returns_mutation_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

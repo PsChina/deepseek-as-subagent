@@ -23,6 +23,10 @@ EXPECTED_TOOLS = {
     "get_deepseek_result",
     "get_deepseek_recovery",
     "acknowledge_deepseek_mutations",
+    "delegate_to_deepseek_with_contract",
+    "delegate_to_deepseek_readonly_with_contract",
+    "start_deepseek_with_contract",
+    "start_deepseek_readonly_with_contract",
 }
 
 

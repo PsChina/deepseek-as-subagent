@@ -1,100 +1,52 @@
 """Durable, private intent journal for kill-safe workspace mutations."""
 from __future__ import annotations
-import hashlib, json, os, re, stat
+
+import hashlib
+import os
+import re
+import stat
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterator
+
 from . import posix_atomic_commit, windows_atomic_commit, windows_file_io
 from .file_io import read_workspace_text
+from .file_identity import FileIdentity, MissingFile, WorkspaceFileNotFound
 from .safety import SandboxViolation, resolve_safe_path
+from .policy_enforcement import enforce_current_file_policy
+from .transaction_records import (
+    MAX_WARNING_BYTES,
+    _DIGEST,
+    _IDENTITY,
+    _ID,
+    _TOOLS,
+    _StoredRecord,
+    TransactionJournalError,
+    _target_fields,
+    _decode_record,
+    _encode_record,
+    _validate_warning,
+)
 from .workspace_guard import bind_workspace_identity, require_workspace_identity
+
 JOURNAL_DIRECTORY = Path.home() / ".deepseek-mcp" / "transactions"
-MAX_RECORDS, MAX_RECORD_BYTES, MAX_WARNING_BYTES = 128, 64 * 1024, 4096
-_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
-_ID, _DIGEST, _IDENTITY = re.compile(r"[0-9a-f]{32}"), re.compile(r"[0-9a-f]{64}"), re.compile(r"(?:[0-9a-f]{2}){1,4096}")
-_RECORD_NAME, _TEMP_NAME = re.compile(r"([0-9a-f]{32})\.json"), re.compile(r"\.([0-9a-f]{32})\.json\.tmp")
-_KEYS = frozenset({"version", "transaction_id", "workspace_identity", "tool", "path", "sha256", "warnings"})
-class TransactionJournalError(RuntimeError): pass
-class JournalUpdatePublishedWarning(TransactionJournalError): pass
-@dataclass(frozen=True)
-class _StoredRecord:
-    transaction_id: str
-    workspace_identity: str
-    tool: str
-    path: str
-    sha256: str
-    warnings: tuple[str, ...] = ()
-    def storage_payload(self) -> dict[str, object]:
-        return {"version": 1, "transaction_id": self.transaction_id,
-            "workspace_identity": self.workspace_identity, "tool": self.tool,
-            "path": self.path, "sha256": self.sha256, "warnings": list(self.warnings)}
-    def public_payload(self, status: str) -> dict[str, object]:
-        return {"transaction_id": self.transaction_id, "tool": self.tool,
-            "path": self.path, "sha256": self.sha256, "status": status,
-            "warnings": list(self.warnings)}
-def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, item in pairs:
-        if key in value:
-            raise TransactionJournalError("journal record contains a duplicate key")
-        value[key] = item
-    return value
-def _reject_constant(_value: str) -> None:
-    raise ValueError("non-finite JSON number")
-def _utf8_size(value: str, label: str) -> int:
-    try:
-        return len(value.encode("utf-8", "strict"))
-    except UnicodeEncodeError:
-        raise TransactionJournalError(f"{label} must be valid Unicode") from None
-def _validate_warning(value: object) -> str:
-    if not isinstance(value, str):
-        raise TransactionJournalError("journal warning must be a string")
-    if _utf8_size(value, "journal warning") > MAX_WARNING_BYTES:
-        raise TransactionJournalError("journal warning exceeds 4096 UTF-8 bytes")
-    return value
-def _matched(value: object, pattern: re.Pattern[str], message: str) -> str:
-    if not isinstance(value, str) or pattern.fullmatch(value) is None:
-        raise TransactionJournalError(message)
-    return value
-def _target_fields(tool: object, path: object) -> tuple[str, str]:
-    if tool not in _TOOLS or not isinstance(tool, str) or not isinstance(path, str) or not path:
-        raise TransactionJournalError("journal mutation target is invalid")
-    if Path(path).is_absolute() or ".." in Path(path).parts:
-        raise TransactionJournalError("journal mutation path is not relative")
-    return tool, path
-def _validate_stored(value: object) -> _StoredRecord:
-    if not isinstance(value, dict) or set(value) != _KEYS or type(value.get("version")) is not int or value.get("version") != 1:
-        raise TransactionJournalError("journal record has an invalid schema")
-    transaction_id = _matched(value.get("transaction_id"), _ID, "journal transaction id is invalid")
-    identity = _matched(value.get("workspace_identity"), _IDENTITY, "journal workspace identity is invalid")
-    tool, path = _target_fields(value.get("tool"), value.get("path"))
-    digest = _matched(value.get("sha256"), _DIGEST, "journal mutation digest is invalid")
-    warnings = value.get("warnings")
-    if not isinstance(warnings, list):
-        raise TransactionJournalError("journal warnings are invalid")
-    checked = tuple(_validate_warning(item) for item in warnings)
-    return _StoredRecord(transaction_id, identity, tool, path, digest, checked)
+MAX_RECORDS, MAX_RECORD_BYTES = 128, 64 * 1024
+_RECORD_NAME = re.compile(r"([0-9a-f]{32})\.json")
+_TEMP_NAME = re.compile(r"\.([0-9a-f]{32})\.json\.tmp")
+
+class JournalUpdatePublishedWarning(TransactionJournalError):
+    pass
+
+class JournalAcknowledgementOutcomeUncertain(TransactionJournalError):
+    pass
+
 def _encode(record: _StoredRecord) -> bytes:
-    try:
-        encoded = json.dumps(record.storage_payload(), separators=(",", ":"),
-            ensure_ascii=True, allow_nan=False).encode("ascii")
-    except (TypeError, ValueError, UnicodeEncodeError) as error:
-        raise TransactionJournalError("journal record cannot be encoded") from error
-    if len(encoded) > MAX_RECORD_BYTES:
-        raise TransactionJournalError("journal record exceeds 64 KiB")
-    return encoded
+    return _encode_record(record, MAX_RECORD_BYTES)
+
 def _decode(data: bytes) -> _StoredRecord:
-    if len(data) > MAX_RECORD_BYTES:
-        raise TransactionJournalError("journal record exceeds 64 KiB")
-    try:
-        text = data.decode("utf-8", "strict")
-        value = json.loads(
-            text, object_pairs_hook=_strict_object, parse_constant=_reject_constant,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-        raise TransactionJournalError("journal record is not strict UTF-8 JSON") from None
-    return _validate_stored(value)
+    return _decode_record(data, MAX_RECORD_BYTES)
+
 def _transaction_id(value: object) -> str:
     if not isinstance(value, str) or _ID.fullmatch(value) is None:
         raise TransactionJournalError("transaction id must be 32 lowercase hex characters")
@@ -111,6 +63,16 @@ def _workspace_identity(config) -> str:
     except (OSError, RuntimeError, ValueError) as error:
         raise TransactionJournalError("configured workspace identity changed") from error
     return token
+def _canonical_target(tool: str, path: str) -> str:
+    _checked_tool, checked_path = _target_fields(tool, path)
+    try:
+        enforce_current_file_policy(checked_path)
+    except SandboxViolation as error:
+        raise TransactionJournalError(
+            "journal mutation path is outside task contract scope"
+        ) from error
+    return checked_path
+
 def _relative_target(config, arguments: object) -> str:
     if not isinstance(arguments, dict) or not isinstance(arguments.get("path"), str):
         raise TransactionJournalError("mutation arguments require a path")
@@ -411,15 +373,30 @@ def _store(identity: str) -> Iterator[_PosixStore | _WindowsStore]:
         raise
     except (OSError, windows_file_io.WindowsPathError) as error:
         raise TransactionJournalError(f"journal storage operation failed: {error}") from error
+def _baseline_fields(baseline: object) -> tuple[str, str | None]:
+    if isinstance(baseline, MissingFile):
+        return "missing", None
+    if isinstance(baseline, FileIdentity) and baseline.digest is not None:
+        if len(baseline.digest) == hashlib.sha256().digest_size:
+            return "present", baseline.digest.hex()
+    return "unknown", None
+
 def record_intent(
     config, transaction_id: str, tool: str, arguments: dict, digest: bytes | str,
+    baseline: object = None, canonical_path: str | None = None,
 ) -> dict[str, object]:
     identity = _workspace_identity(config)
     identifier = _transaction_id(transaction_id)
     if tool not in _TOOLS:
         raise TransactionJournalError("journal tool is not a mutation tool")
+    baseline_state, baseline_sha256 = _baseline_fields(baseline)
+    path = _canonical_target(
+        tool,
+        _relative_target(config, arguments) if canonical_path is None else canonical_path,
+    )
     record = _StoredRecord(
-        identifier, identity, tool, _relative_target(config, arguments), _digest(digest),
+        identifier, identity, tool, path, _digest(digest),
+        (), 2, baseline_state, baseline_sha256,
     )
     encoded = _encode(record)
     with _store(identity) as store:
@@ -450,10 +427,21 @@ def append_warning(config, transaction_id: str, warning: str) -> dict[str, objec
 def _classify(config, record: _StoredRecord) -> dict[str, object]:
     try:
         with bind_workspace_identity(record.workspace_identity):
-            _text, current = read_workspace_text(config.workspace, record.path)
-        status = "committed" if current.digest is not None and current.digest.hex() == record.sha256 else "uncertain"
+            _text, current = read_workspace_text(
+                config.workspace, record.path, require_canonical=True
+            )
+    except WorkspaceFileNotFound:
+        status = "not_committed" if record.baseline_state == "missing" else "uncertain"
     except (OSError, RuntimeError, ValueError, SandboxViolation):
         status = "uncertain"
+    else:
+        current_digest = current.digest.hex() if current.digest is not None else None
+        if current_digest == record.sha256:
+            status = "committed"
+        elif record.baseline_state == "present" and current_digest == record.baseline_sha256:
+            status = "not_committed"
+        else:
+            status = "uncertain"
     return record.public_payload(status)
 def pending_records(config) -> list[dict[str, object]]:
     identity = _workspace_identity(config)
@@ -481,15 +469,30 @@ def _ack_ids(ids) -> list[str]:
 def acknowledge(config, ids) -> list[str]:
     identity = _workspace_identity(config)
     identifiers = _ack_ids(ids)
-    removed: list[str] = []
-    with _store(identity) as store:
-        for identifier in identifiers:
-            existing = store.read(_name(identifier))
-            if existing is None:
-                continue
-            record = _decode(existing[0])
-            if record.workspace_identity != identity:
-                continue
-            store.delete(_name(identifier), existing[1])
-            removed.append(identifier)
-    return removed
+    entries = []
+    deleting = False
+    try:
+        with _store(identity) as store:
+            for identifier in identifiers:
+                existing = store.read(_name(identifier))
+                if existing is None:
+                    continue
+                record = _decode(existing[0])
+                if record.workspace_identity != identity:
+                    continue
+                if _classify(config, record)["status"] not in {"committed", "not_committed"}:
+                    raise TransactionJournalError("cannot acknowledge a mutation whose current file matches neither its committed nor original baseline state")
+                entries.append((identifier, existing[1]))
+            deleting = bool(entries)
+            for identifier, version in entries:
+                store.delete(_name(identifier), version)
+    except JournalAcknowledgementOutcomeUncertain:
+        raise
+    except (TransactionJournalError, OSError) as error:
+        if deleting:
+            raise JournalAcknowledgementOutcomeUncertain(
+                "journal acknowledgement may be partially published; re-query recovery before retrying"
+            ) from error
+        raise
+    return [identifier for identifier, _version in entries]
+

@@ -14,10 +14,14 @@ from unittest.mock import patch
 import deepseek_mcp.file_io as file_io
 import deepseek_mcp.posix_atomic_commit as posix_atomic_commit
 import deepseek_mcp.tool_child as tool_child
+import deepseek_mcp.windows_workspace_write as windows_workspace_write
 import deepseek_mcp.transaction_report as transaction_report
 import deepseek_mcp.tools as tools
 import deepseek_mcp.workspace_walk as workspace_walk
+from deepseek_mcp import walk_support
+from deepseek_mcp.file_identity import ToolInputError
 from deepseek_mcp import windows_file_io
+from deepseek_mcp.safety import SandboxViolation
 from deepseek_mcp.tools import (
     _execute_edit,
     _execute_glob,
@@ -67,6 +71,101 @@ class WorkspaceFileRaceTests(unittest.TestCase):
         self.assertFalse(watchdog.is_alive())
         self.assertIn(signal.SIGTERM, inherited[0])
         self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), before)
+
+    def test_read_rejects_hard_link_to_file_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "outside-secret.txt"
+            outside.write_text("external-secret-marker", encoding="utf-8")
+            alias = workspace / "apparently-safe.txt"
+            try:
+                os.link(outside, alias)
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            result = _execute_read({"path": "apparently-safe.txt"}, workspace)
+            self.assertTrue(result.startswith("ERROR:"), result)
+            self.assertNotIn("external-secret-marker", result)
+
+    def test_grep_rejects_hard_link_to_file_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "outside-secret.txt"
+            outside.write_text("external-secret-marker", encoding="utf-8")
+            alias = workspace / "apparently-safe.txt"
+            try:
+                os.link(outside, alias)
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            result = _execute_grep(
+                {"pattern": "external-secret-marker"}, workspace
+            )
+            self.assertTrue(result.startswith("ERROR:"), result)
+            self.assertNotIn("external-secret-marker", result)
+            self.assertNotIn("apparently-safe.txt:1:", result)
+
+    def test_read_rejects_hard_link_created_during_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "input.txt"
+            source.write_text("safe-content", encoding="utf-8")
+            outside = root / "outside-alias.txt"
+            try:
+                os.link(source, outside)
+                outside.unlink()
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            original_read = file_io._read_descriptor
+
+            def create_link_after_read(fd: int) -> bytes:
+                content = original_read(fd)
+                os.link(source, outside)
+                return content
+
+            with patch.object(
+                file_io, "_read_descriptor", side_effect=create_link_after_read
+            ):
+                result = _execute_read({"path": "input.txt"}, workspace)
+            self.assertTrue(result.startswith("ERROR:"), result)
+            self.assertNotIn("safe-content", result)
+
+    def test_grep_descriptor_rechecks_hard_links_after_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "input.txt"
+            source.write_text("safe-content", encoding="utf-8")
+            outside = root / "outside-alias.txt"
+            try:
+                os.link(source, outside)
+                outside.unlink()
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            descriptor = os.open(source, os.O_RDONLY)
+            original_read = walk_support.read_descriptor
+
+            def create_link_after_read(fd: int, max_bytes: int) -> bytes:
+                content = original_read(fd, max_bytes)
+                os.link(source, outside)
+                return content
+
+            try:
+                with patch.object(
+                    walk_support, "read_descriptor",
+                    side_effect=create_link_after_read,
+                ):
+                    with self.assertRaisesRegex(
+                        ToolInputError, "multiple hard links"
+                    ):
+                        walk_support.read_open_entry(descriptor, 1024)
+            finally:
+                os.close(descriptor)
 
     def test_file_tools_cannot_access_vcs_control_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -142,6 +241,44 @@ class WorkspaceFileRaceTests(unittest.TestCase):
 
             self.assertNotIn(".git/config", glob_result)
             self.assertTrue(grep_result.startswith("ERROR:"), grep_result)
+
+    @unittest.skipIf(os.name == "nt", "deterministic symlink swap uses POSIX semantics")
+    def test_canonical_workspace_read_rejects_symlink_alias_and_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            source = workspace / "src"
+            private = workspace / "private"
+            source.mkdir()
+            private.mkdir()
+            secret = private / "secret.txt"
+            secret.write_text("secret-marker", encoding="utf-8")
+            alias = source / "alias.txt"
+            alias.symlink_to(secret)
+
+            with self.assertRaises(SandboxViolation):
+                file_io.read_workspace_text(
+                    workspace, "src/alias.txt", require_canonical=True
+                )
+
+            alias.unlink()
+            actual = source / "actual.txt"
+            actual.write_text("safe", encoding="utf-8")
+            real_resolve = file_io.resolve_safe_path
+
+            def swap_after_resolve(label: str, root: Path) -> Path:
+                resolved = real_resolve(label, root)
+                actual.unlink()
+                actual.symlink_to(secret)
+                return resolved
+
+            with patch.object(
+                file_io, "resolve_safe_path", side_effect=swap_after_resolve
+            ):
+                with self.assertRaises(OSError):
+                    file_io.read_workspace_text(
+                        workspace, "src/actual.txt", require_canonical=True
+                    )
+            self.assertEqual(secret.read_text(encoding="utf-8"), "secret-marker")
 
     @unittest.skipIf(os.name == "nt", "deterministic symlink swap uses POSIX semantics")
     def test_ancestor_swap_never_reads_or_writes_outside_workspace(self) -> None:
@@ -638,44 +775,62 @@ class WorkspaceFileRaceTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "after")
             self.assertEqual(list(workspace.glob(".deepseek-mcp-*")), [])
 
-    @unittest.skipUnless(
-        os.name == "posix" and hasattr(signal, "pthread_sigmask"),
-        "POSIX signal masking is required",
-    )
-    def test_pending_sigterm_keeps_post_commit_recovery_warning(self) -> None:
+    @unittest.skipIf(os.name == "nt", "POSIX atomic commit is required")
+    def test_post_commit_warning_interruption_preserves_retained_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             target = workspace / "target.txt"
             target.write_text("before", encoding="utf-8")
+            _text, baseline = file_io.read_workspace_text(workspace, "target.txt")
             real_commit = file_io._commit_posix_file
+            temporary_names: list[str] = []
             warnings: list[str] = []
+            discard_calls: list[tuple] = []
 
-            def commit_then_warn(*args) -> None:
-                real_commit(*args)
-                os.kill(os.getpid(), signal.SIGTERM)
-                raise file_io.MutationCommittedWarning("recover from retained-copy")
+            def commit_then_warn(
+                parent, temporary, name, expected, replacement
+            ) -> None:
+                real_commit(parent, temporary, name, expected, replacement)
+                temporary_names.append(temporary)
+                descriptor = os.open(
+                    temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    0o600, dir_fd=parent,
+                )
+                try:
+                    os.write(descriptor, b"retained-original")
+                finally:
+                    os.close(descriptor)
+                raise file_io.MutationCommittedWarning(
+                    "recover from retained-copy"
+                )
 
-            previous = signal.signal(signal.SIGTERM, tool_child._terminate_tool)
-            try:
-                with (
-                    transaction_report.bind_reporter(lambda _digest: None, warnings.append),
-                    patch.object(
-                        file_io, "_commit_posix_file", side_effect=commit_then_warn
-                    ),
-                    self.assertRaises(tool_child._ToolTermination),
-                ):
-                    _execute_edit(
-                        {
-                            "path": "target.txt",
-                            "old_string": "before",
-                            "new_string": "after",
-                        },
-                        workspace,
-                    )
-            finally:
-                signal.signal(signal.SIGTERM, previous)
+            def interrupt_warning(detail: str) -> None:
+                warnings.append(detail)
+                raise tool_child._ToolTermination()
+
+            with (
+                patch.object(
+                    file_io, "_commit_posix_file", side_effect=commit_then_warn
+                ),
+                patch.object(
+                    file_io, "mutation_warning", side_effect=interrupt_warning
+                ),
+                patch.object(
+                    file_io, "_discard_owned_posix_temp",
+                    side_effect=lambda *args: discard_calls.append(args),
+                ),
+                self.assertRaises(tool_child._ToolTermination),
+            ):
+                file_io._write_posix(
+                    workspace, Path("target.txt"), b"after", baseline
+                )
 
             self.assertEqual(target.read_text(encoding="utf-8"), "after")
+            self.assertEqual(discard_calls, [])
+            self.assertEqual(
+                (workspace / temporary_names[0]).read_bytes(),
+                b"retained-original",
+            )
             self.assertIn("recover from retained-copy", warnings)
 
     @unittest.skipIf(os.name == "nt", "directory fsync is POSIX-specific")
@@ -864,6 +1019,60 @@ class WindowsHandlePolicyTests(unittest.TestCase):
         close_descriptor.assert_not_called()
         close_handle.assert_called_once_with(17)
 
+    @unittest.skipUnless(os.name == "nt", "Windows atomic writer is required")
+    def test_committed_warning_interrupt_preserves_windows_recovery_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "target.txt"
+            target.write_text("before", encoding="utf-8")
+            baseline_stat = target.stat()
+            baseline = file_io.FileIdentity.from_stat(baseline_stat)
+            temporary_names: list[str] = []
+            warnings: list[str] = []
+            discard_calls: list[tuple] = []
+
+            def commit_then_warn(
+                parent, temporary, name, expected, replacement
+            ) -> None:
+                temporary_names.append(temporary)
+                target.write_text("after", encoding="utf-8")
+                (root / temporary).write_bytes(b"retained-original")
+                raise file_io.MutationCommittedWarning(
+                    "recover from retained-copy"
+                )
+
+            def interrupt_warning(detail: str) -> None:
+                warnings.append(detail)
+                raise tool_child._ToolTermination()
+
+            with (
+                patch.object(
+                    file_io, "_win_current_info", return_value=baseline_stat
+                ),
+                patch.object(
+                    windows_workspace_write, "_commit", side_effect=commit_then_warn
+                ),
+                patch.object(
+                    windows_workspace_write, "mutation_warning",
+                    side_effect=interrupt_warning,
+                ),
+                patch.object(
+                    windows_workspace_write, "_discard_if_version",
+                    side_effect=lambda *args: discard_calls.append(args),
+                ),
+                self.assertRaises(tool_child._ToolTermination),
+            ):
+                windows_workspace_write.write_windows(
+                    root, Path("target.txt"), b"after", baseline
+                )
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "after")
+            self.assertEqual(discard_calls, [])
+            self.assertEqual(
+                (root / temporary_names[0]).read_bytes(), b"retained-original"
+            )
+            self.assertIn("recover from retained-copy", warnings)
+
     def test_windows_write_rechecks_implicit_call_local_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -932,6 +1141,24 @@ class WindowsHandlePolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(file_io.ToolInputError, "identity changed"):
                 file_io._win_open_child(7, "secret", 1, 3, directory=False)
 
+        close.assert_called_once_with(19)
+
+    def test_child_open_rejects_parent_rename_between_handle_checks(self) -> None:
+        # The target can match the NEW parent while the parent itself moved
+        # after the first identity snapshot. Such an operation must fail.
+        paths = [
+            r"c:\workspace\before",
+            r"c:\workspace\after",
+            r"c:\workspace\after\file.txt",
+        ]
+        with (
+            patch.object(file_io, "_win_final_path", side_effect=paths),
+            patch.object(file_io, "_win_open_path", return_value=19),
+            patch.object(file_io, "_win_validate_handle"),
+            patch.object(file_io, "_win_close") as close,
+        ):
+            with self.assertRaisesRegex(file_io.ToolInputError, "identity changed"):
+                file_io._win_open_child(7, "file.txt", 1, 3, directory=False)
         close.assert_called_once_with(19)
 
     def test_windows_path_rejects_streams_and_ambiguous_suffixes(self) -> None:

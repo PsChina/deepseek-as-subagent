@@ -9,7 +9,6 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-
 from .file_identity import (
     ExpectedIdentity,
     FileIdentity,
@@ -20,19 +19,21 @@ from .file_identity import (
     WorkspaceFileNotFound,
     validate_target as _validate_target,
     write_baseline as _write_baseline,
+    validate_readable_file,
 )
 from .posix_atomic_commit import (
     commit as _commit_posix_file,
     discard as _discard_posix_file,
 )
-from .safety import resolve_safe_path
+from .safety import resolve_safe_path, validate_windows_path_parts as _validate_windows_parts
+from .safety import require_canonical_relative_path
+from .policy_enforcement import enforce_current_file_policy
 from . import windows_atomic_commit
 from .transaction_report import mutation_ready, mutation_warning
 from .workspace_guard import require_workspace_identity, require_workspace_stat
 MAX_TEXT_FILE_BYTES = 5_000_000
 _REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _DIRECTORY_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
-
 def _temporary_name() -> str:
     value = os.environ.get("DEEPSEEK_TOOL_TRANSACTION_ID", "")
     try:
@@ -40,20 +41,20 @@ def _temporary_name() -> str:
     except (ValueError, AttributeError):
         token = uuid.uuid4().hex
     return f".deepseek-mcp-{token}.tmp"
-def _location(workspace: Path, label: str) -> tuple[Path, Path]:
+def _location(
+    workspace: Path, label: str, *, require_canonical: bool = False
+) -> tuple[Path, Path]:
     require_workspace_identity(workspace)
     root = workspace.resolve()
     absolute = resolve_safe_path(label, root)
     relative = absolute.relative_to(root)
+    if require_canonical: require_canonical_relative_path(label, root, absolute)
+    enforce_current_file_policy(relative.as_posix())
     if not relative.parts:
         raise ToolInputError("write target is not a regular file")
     if os.name == "nt":
         _validate_windows_parts(relative)
     return root, relative
-def _validate_windows_parts(relative: Path) -> None:
-    for part in relative.parts:
-        if ":" in part or part.rstrip(" .") != part:
-            raise ToolInputError("Windows path contains an unsafe component")
 def _directory_flags() -> int:
     return (
         os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
@@ -106,17 +107,16 @@ def _decode(data: bytes, *, strict_utf8: bool, reject_binary: bool) -> str:
         return data.decode("utf-8", errors="strict" if strict_utf8 else "replace")
     except UnicodeDecodeError:
         raise ToolInputError("file is not valid UTF-8") from None
-
 def _checked_read(descriptor: int, *, strict_utf8: bool, reject_binary: bool) -> tuple[str, FileIdentity]:
-    before = FileIdentity.from_stat(os.fstat(descriptor))
-    if not stat.S_ISREG(before.mode):
-        raise ToolInputError("file is not a regular file")
+    initial_stat = os.fstat(descriptor)
+    validate_readable_file(initial_stat)
     data = _read_descriptor(descriptor)
-    if len(data) != before.size or FileIdentity.from_stat(os.fstat(descriptor)) != before:
+    final_stat = os.fstat(descriptor)
+    validate_readable_file(final_stat, previous=initial_stat)
+    if len(data) != initial_stat.st_size:
         raise ToolInputError("file changed while reading")
-    identity = FileIdentity.from_stat(os.fstat(descriptor), hashlib.sha256(data).digest())
+    identity = FileIdentity.from_stat(final_stat, hashlib.sha256(data).digest())
     return _decode(data, strict_utf8=strict_utf8, reject_binary=reject_binary), identity
-
 def _read_posix(
     root: Path, relative: Path, *, strict_utf8: bool, reject_binary: bool
 ) -> tuple[str, FileIdentity]:
@@ -143,8 +143,11 @@ def read_workspace_text(
     *,
     strict_utf8: bool = False,
     reject_binary: bool = False,
+    require_canonical: bool = False,
 ) -> tuple[str, FileIdentity]:
-    root, relative = _location(workspace, label)
+    root, relative = _location(
+        workspace, label, require_canonical=require_canonical
+    )
     if os.name == "nt":
         return _read_windows(
             root, relative, strict_utf8=strict_utf8, reject_binary=reject_binary
@@ -172,7 +175,6 @@ class _PosixCommitState:
     committed: bool = False
     warnings: list[str] = field(default_factory=list)
 
-
 @contextmanager
 def _defer_posix_termination():
     mask = getattr(signal, "pthread_sigmask", None)
@@ -185,7 +187,6 @@ def _defer_posix_termination():
     finally:
         mask(signal.SIG_SETMASK, previous)
 
-
 def _finish_posix_commit(
     parent: int, temporary: str, target: str, baseline,
     replacement: FileIdentity, state: _PosixCommitState,
@@ -196,6 +197,7 @@ def _finish_posix_commit(
                 parent, temporary, target, baseline, replacement
             )
         except MutationCommittedWarning as warning:
+            state.committed = True
             detail = str(warning)
             state.warnings.append(detail)
             mutation_warning(detail)
@@ -207,7 +209,6 @@ def _finish_posix_commit(
             state.warnings.append(detail)
             mutation_warning(detail)
 
-
 def _discard_owned_posix_temp(
     parent: int, temporary: str, replacement: FileIdentity | None,
 ) -> None:
@@ -218,7 +219,6 @@ def _discard_owned_posix_temp(
         _discard_posix_file(parent, temporary, replacement)
     except OSError:
         pass
-
 
 def _write_posix(
     root: Path, relative: Path, data: bytes, expected: ExpectedIdentity
@@ -244,7 +244,7 @@ def _write_posix(
         os.close(descriptor)
         descriptor = -1
         assert replacement.digest is not None
-        mutation_ready(replacement.digest)
+        mutation_ready(replacement.digest, baseline, relative.as_posix())
         _validate_target(_current_posix_info(parent, relative.name), baseline)
         _finish_posix_commit(
             parent, temporary, relative.name, baseline, replacement, state

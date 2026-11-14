@@ -159,6 +159,24 @@ def _commit(
     )
 
 
+def _cleanup_write(
+    parent: int, temporary: str, descriptor: int, created: bool,
+    replacement: FileIdentity | None,
+) -> None:
+    from . import file_io
+
+    with suppress(OSError):
+        if created and descriptor < 0 and replacement is not None:
+            _discard_if_version(parent, temporary, replacement)
+        elif descriptor >= 0 and created:
+            file_io._win_mark_delete(descriptor)
+    with suppress(OSError):
+        if descriptor >= 0:
+            os.close(descriptor)
+    with suppress(OSError):
+        file_io._win_close(parent)
+
+
 def write_windows(
     root: Path, relative: Path, data: bytes, expected: ExpectedIdentity
 ) -> None:
@@ -188,24 +206,16 @@ def write_windows(
         os.close(descriptor)
         descriptor = -1
         assert replacement.digest is not None
-        mutation_ready(replacement.digest)
+        mutation_ready(replacement.digest, baseline, relative.as_posix())
         file_io._validate_target(
             file_io._win_current_info(parent, relative.name), baseline
         )
         try:
             _commit(parent, temporary, relative.name, baseline, replacement)
         except MutationCommittedWarning as warning:
+            created = False
             mutation_warning(str(warning))
             raise
         created = False
     finally:
-        with suppress(OSError):
-            if created and descriptor < 0 and replacement is not None:
-                _discard_if_version(parent, temporary, replacement)
-            elif descriptor >= 0 and created:
-                file_io._win_mark_delete(descriptor)
-        with suppress(OSError):
-            if descriptor >= 0:
-                os.close(descriptor)
-        with suppress(OSError):
-            file_io._win_close(parent)
+        _cleanup_write(parent, temporary, descriptor, created, replacement)

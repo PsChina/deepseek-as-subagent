@@ -9,7 +9,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deepseek_mcp.config import Config
+from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
+from deepseek_mcp.policy_enforcement import bind_file_policy
+from deepseek_mcp.policy_engine import compile_task_policy
+from deepseek_mcp.task_contract import TaskContract
+from deepseek_mcp.transaction_report import (
+    bind_reporter, current_mutation_path, mutation_ready,
+)
 from deepseek_mcp import transaction_journal as journal
 from deepseek_mcp.transaction_journal import TransactionJournalError
 
@@ -83,6 +89,66 @@ class TransactionJournalTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(self._scope_directory().stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(record_path.stat().st_mode), 0o600)
             self.assertEqual(record_path.stat().st_nlink, 1)
+
+
+    def test_legacy_v1_record_remains_readable_and_acknowledgeable(self) -> None:
+        transaction_id = "4" * 32
+        (self.workspace / "target.txt").write_text("replacement", encoding="utf-8")
+        identity = self.config.expected_workspace_identity
+        legacy = journal._StoredRecord(
+            transaction_id, identity, "Write", "target.txt",
+            _sha256("replacement").hex(), version=1,
+        )
+        with journal._store(identity) as store:
+            store.write(journal._name(transaction_id), journal._encode(legacy), None)
+
+        pending = journal.pending_records(self.config)
+        self.assertEqual(pending[0]["status"], "committed")
+        self.assertEqual(journal.acknowledge(self.config, [transaction_id]), [transaction_id])
+
+    def test_corrupt_unhashable_tool_field_fails_closed(self) -> None:
+        payload = journal._StoredRecord(
+            "5" * 32, self.config.expected_workspace_identity,
+            "Write", "target.txt", _sha256("replacement").hex(),
+        ).storage_payload()
+        payload["tool"] = []
+        with self.assertRaises(TransactionJournalError):
+            journal._decode(json.dumps(payload).encode("utf-8"))
+
+    def test_deeply_nested_corrupt_record_fails_closed(self) -> None:
+        raw = b'{"nested":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+        with self.assertRaises(TransactionJournalError):
+            journal._decode(raw)
+
+    def test_record_intent_uses_and_rechecks_canonical_file_io_path(self) -> None:
+        contract = TaskContract.from_dict({
+            "permissions": {
+                "tools": ["Write"],
+                "write_paths": ["src/**"],
+            }
+        })
+        policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
+        config = Config(
+            "", self.workspace, allowed_tools=list(policy.allowed_tools),
+            effective_policy=policy,
+        )
+        records: list[dict[str, object]] = []
+
+        def persist(digest: bytes, baseline) -> None:
+            records.append(journal.record_intent(
+                config, "a" * 32, "Write", {"path": "src/alias.txt"},
+                digest, baseline, canonical_path=current_mutation_path(),
+            ))
+
+        with bind_file_policy(policy, "Write"), bind_reporter(persist):
+            mutation_ready(_sha256("replacement"), None, "src/actual.txt")
+            with self.assertRaises(TransactionJournalError):
+                mutation_ready(
+                    _sha256("replacement"), None, "private/secret.txt"
+                )
+
+        self.assertEqual(records[0]["path"], "src/actual.txt")
+        self.assertIsNone(current_mutation_path())
 
     def test_record_intent_is_idempotent_but_rejects_id_reuse(self) -> None:
         transaction_id = "b" * 32

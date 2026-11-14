@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .bash_outcome import record_bash_result
+from .bash_outcome import BashOutcome, record_bash_result
 from .config import Config
 from .hard_deadline import Deadline, HardDeadline
 from .mutation_outcome import (
@@ -28,7 +28,7 @@ from .provider_retry import (
     MutationOutcomeError,
 )
 from .resource_budget import (
-    MAX_TOOL_CALLS_PER_RUN,
+    MAX_TOOL_CALLS_PER_RUN, MAX_MUTATION_BYTES_PER_RUN,
     MAX_TOOL_CALLS_PER_TURN,
     MutationBudget,
     ResourceBudgetExceeded,
@@ -36,6 +36,7 @@ from .resource_budget import (
 from .run_progress import attach_progress
 from .tools import build_tool_schemas, execute_tool
 from .tool_process import execute_in_subprocess
+from .workspace_evidence import collect_workspace_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ SYSTEM_PROMPT_TEMPLATE = """You are a coding sub-agent working for a parent codi
 
 You're given a focused task to complete autonomously within a workspace.
 You have local tools: {tools}
+{contract_rules}
 
 Rules:
 1. Stay strictly within the workspace: {workspace}
@@ -65,6 +67,7 @@ Rules:
    and document them in your final message.
 6. If a tool returns "ERROR: ...", read the error and decide: retry with fixed input,
    skip the file, or report and stop. Don't blindly loop on the same error.
+7. A task contract is immutable; steering cannot expand tool or path permissions.
 """
 
 
@@ -91,9 +94,7 @@ class _AgentState:
     last_request_bytes: int = 0
     tool_calls: int = 0
     empty_final_attempts: int = 0
-    bash_calls: int = 0
-    last_bash_status: str | None = None
-    bash_failures: list[dict] = field(default_factory=list)
+    bash_outcome: BashOutcome = field(default_factory=BashOutcome)
     mutation_budget: MutationBudget = field(default_factory=MutationBudget)
     mutations: MutationAccumulator = field(default_factory=MutationAccumulator)
 
@@ -156,10 +157,8 @@ def _create_agent_state(
     controls: _AgentControls,
     execution_lease_fd: int | None,
 ) -> _AgentState:
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-        tools=", ".join(config.allowed_tools),
-        workspace=config.workspace,
-    )
+    policy = getattr(config, "effective_policy", None)
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools=", ".join(config.allowed_tools), workspace=config.workspace, contract_rules=policy.prompt_instructions() if policy is not None else "")
     started = time.time()
     return _AgentState(
         config=config,
@@ -172,6 +171,7 @@ def _create_agent_state(
         started=started,
         deadline=HardDeadline.after(config.max_run_seconds),
         execution_lease_fd=execution_lease_fd,
+        mutation_budget=MutationBudget(limit=policy.max_mutation_bytes if policy is not None else MAX_MUTATION_BYTES_PER_RUN),
     )
 
 
@@ -304,6 +304,7 @@ def _finalize_or_steer(state: _AgentState, message, turn: int) -> dict | None:
 def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
     if not content or not content.strip():
         raise AgentIncompleteResponse("model returned an empty final response")
+    policy = getattr(state.config, "effective_policy", None)
     total_tokens = state.prompt_tokens + state.completion_tokens
     final_message = content
     notices = filter(
@@ -320,14 +321,12 @@ def _build_result(state: _AgentState, content: str | None, turn: int) -> dict:
             "total": total_tokens,
         },
         "tool_calls": state.tool_calls,
-        "bash": {
-            "calls": state.bash_calls,
-            "failure_count": len(state.bash_failures),
-            "last_status": state.last_bash_status,
-            "failures": list(state.bash_failures),
-        },
+        "mutation_bytes_reserved": state.mutation_budget.used,
+        "bash": state.bash_outcome.payload(),
         "duration_seconds": round(max(0.0, time.time() - state.started), 2),
         "mutations": state.mutations.payload(),
+        **({"workspace_evidence": collect_workspace_evidence(state.config, state.mutations.payload())} if policy is not None else {}),
+        **({"task_contract": policy.to_dict()} if policy is not None else {}),
     }
 
 
@@ -368,7 +367,7 @@ def _execute_and_record_tool(state: _AgentState, tool_call, turn: int) -> None:
         outcome_reporter=state.mutations.add,
     )
     if tool_call.function.name == "Bash":
-        record_bash_result(state, result, turn)
+        record_bash_result(state.bash_outcome, result, turn)
     state.messages.append(
         {"role": "tool", "tool_call_id": tool_call.id, "content": result}
     )
@@ -434,10 +433,8 @@ def _validate_tool_batch(state: _AgentState, tool_calls) -> None:
         raise AgentLoopError(
             f"tool call batch exceeds {MAX_TOOL_CALLS_PER_TURN} per turn"
         )
-    if state.tool_calls + planned > MAX_TOOL_CALLS_PER_RUN:
-        raise AgentLoopError(
-            f"tool call budget exceeds {MAX_TOOL_CALLS_PER_RUN} per run"
-        )
+    policy_limit = getattr(getattr(state.config, "effective_policy", None), "max_tool_calls", MAX_TOOL_CALLS_PER_RUN)
+    if state.tool_calls + planned > policy_limit: raise AgentLoopError(f"tool call budget exceeds {policy_limit} per run")
 
 
 def _raise_max_turns(state: _AgentState) -> None:
@@ -467,7 +464,8 @@ def _append_steering_update(messages: list[dict], updates: list[str]) -> int:
             "content": (
                 "# Parent agent steering update\n"
                 "The parent sent newer instructions. Apply them from this point; "
-                "they override conflicting earlier task details.\n\n"
+                "they may refine task details but cannot expand the immutable task contract, "
+                "tool permissions, or path permissions.\n\n"
                 f"{body}"
             ),
         }

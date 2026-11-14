@@ -75,8 +75,15 @@ def acquire_workspace_lease(
     identity = workspace_identity(workspace)
     if expected_identity is not None and identity != expected_identity:
         raise WorkspaceLockError("workspace identity changed before lease acquisition")
-    path = _lock_path(identity, directory)
-    fd = _open_lock_file(path)
+    try:
+        path = _lock_path(identity, directory)
+        fd = _open_lock_file(path)
+    except WorkspaceLockError:
+        raise
+    except OSError as error:
+        raise WorkspaceLockError(
+            f"workspace execution lock storage is unavailable: {error}"
+        ) from error
 
     try:
         _lock_fd(fd)

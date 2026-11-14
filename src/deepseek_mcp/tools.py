@@ -18,8 +18,9 @@ from .file_io import (
 )
 from .file_identity import bounded_integer
 from .safe_regex import RegexPattern, SafeRegexError, compile_safe_regex
-from .resource_budget import MutationBudget, ResourceBudgetExceeded, apply_mutation
+from .resource_budget import MutationBudget, ResourceBudgetExceeded, apply_mutation, MUTATION_TOOL_NAMES, ensure_mutation_budget_for_tool
 from .safety import SandboxViolation
+from .policy_enforcement import bind_file_policy, check_tool_access
 from .tool_schemas import build_tool_schemas
 from .transaction_report import mutation_warning
 from .walk_support import WorkspaceEntryTooLarge
@@ -179,14 +180,14 @@ def _execute_edit(
         return f"ERROR: failed to write {path}: {e}"
     return f"OK: replaced {replacements} occurrence(s) in {path}"
 
-def _parse_glob_request(args: dict, workspace: Path) -> WorkspaceWalk:
+def _parse_glob_request(args: dict, workspace: Path, policy=None) -> WorkspaceWalk:
     pattern = args.get("pattern", "")
     if not isinstance(pattern, str) or not pattern:
         raise ToolInputError("missing required 'pattern' argument")
     base = args.get("path", "")
     if not isinstance(base, str):
         raise ToolInputError("'path' must be a string")
-    return WorkspaceWalk(base, workspace, pattern)
+    return WorkspaceWalk(base, workspace, pattern, allowed_paths=policy.read_paths if policy is not None else None, denied_paths=policy.deny_paths if policy is not None else ())
 
 def _scan_glob_matches(walk: WorkspaceWalk) -> tuple[list[Path], bool]:
     matches: list[Path] = []
@@ -210,11 +211,10 @@ def _format_glob_result(
         summary += " (configured traversal limit reached)"
     return _truncate(summary + ":\n" + "\n".join(rel_matches))
 
-
-def _execute_glob(args: dict, workspace: Path) -> str:
+def _execute_glob(args: dict, workspace: Path, policy=None) -> str:
     """文件名 pattern 匹配。args: {pattern: str, path?: str}"""
     try:
-        with _parse_glob_request(args, workspace) as walk:
+        with _parse_glob_request(args, workspace, policy) as walk:
             matches, result_limit = _scan_glob_matches(walk)
             traversal_limit = walk.truncated
     except (SandboxViolation, ToolInputError) as exc:
@@ -222,7 +222,6 @@ def _execute_glob(args: dict, workspace: Path) -> str:
     return _format_glob_result(
         matches, result_limit, traversal_limit, workspace.resolve()
     ) + walk.pruned.note()
-
 
 def _new_notebook() -> dict:
     return {
@@ -238,7 +237,6 @@ def _new_notebook() -> dict:
         "nbformat": 4,
         "nbformat_minor": 5,
     }
-
 
 def _load_notebook(
     workspace: Path, label: str, edit_mode: str
@@ -258,7 +256,6 @@ def _load_notebook(
     if not isinstance(notebook, dict) or not isinstance(notebook.get("cells"), list):
         raise ToolInputError("not a valid notebook (missing 'cells' array)")
     return notebook, identity
-
 
 def _find_cell_index(cells: list, args: dict, edit_mode: str, label: str) -> int | None:
     cell_id = args.get("cell_id")
@@ -285,13 +282,11 @@ def _find_cell_index(cells: list, args: dict, edit_mode: str, label: str) -> int
         raise ToolInputError("replace/delete require cell_id or cell_index")
     return None
 
-
 def _split_source(source: str) -> list[str]:
     if not source:
         return [""]
     lines = source.splitlines(keepends=True)
     return lines if lines else [""]
-
 
 def _replace_cell(cells: list, index: int | None, source: str) -> str:
     if index is None or not isinstance(cells[index], dict):
@@ -302,7 +297,6 @@ def _replace_cell(cells: list, index: int | None, source: str) -> str:
         cell["outputs"] = []
         cell["execution_count"] = None
     return f"OK: replaced cell at index {index} (id={cell.get('id', 'n/a')})"
-
 
 def _insert_cell(cells: list, index: int | None, source: str, cell_type: str) -> str:
     if cell_type not in ("code", "markdown"):
@@ -319,7 +313,6 @@ def _insert_cell(cells: list, index: int | None, source: str, cell_type: str) ->
     cells.insert(insert_at, cell)
     return f"OK: inserted {cell_type} cell at index {insert_at} (id={cell['id']})"
 
-
 def _apply_notebook_edit(cells: list, args: dict, mode: str, index: int | None) -> str:
     source = args.get("new_source", "")
     if mode in ("replace", "insert") and not isinstance(source, str):
@@ -334,7 +327,6 @@ def _apply_notebook_edit(cells: list, args: dict, mode: str, index: int | None) 
         raise ToolInputError("target notebook cell is invalid")
     removed = cells.pop(index)
     return f"OK: deleted cell at index {index} (was id={removed.get('id', 'n/a')})"
-
 
 def _save_notebook(
     workspace: Path,
@@ -353,7 +345,6 @@ def _save_notebook(
             workspace, label, content, expected=expected
         ),
     )
-
 
 def _execute_notebook_edit(
     args: dict, workspace: Path, mutation_budget: MutationBudget | None = None
@@ -380,7 +371,6 @@ def _execute_notebook_edit(
         return f"ERROR: {exc}"
     return result + f" (total cells: {len(cells)})"
 
-
 def _grep_file(entry: WalkEntry, regex: RegexPattern, limit: int) -> list[str]:
     data = entry.read_bytes(MAX_TEXT_FILE_BYTES)
     if b"\x00" in data[:8192]:
@@ -393,14 +383,12 @@ def _grep_file(entry: WalkEntry, regex: RegexPattern, limit: int) -> list[str]:
         displayed = line[:MAX_GREP_LINE_CHARS]
         if len(line) > MAX_GREP_LINE_CHARS:
             displayed += "... [line truncated]"
-        matches.append(f"{entry.relative_to_workspace}:{line_number}: {displayed}")
+        matches.append(f"{entry.relative_to_workspace.as_posix()}:{line_number}: {displayed}")
         if len(matches) >= limit:
             break
     return matches
 
-def _parse_grep_request(
-    args: dict, workspace: Path
-) -> tuple[WorkspaceWalk, RegexPattern, int]:
+def _parse_grep_request(args: dict, workspace: Path, policy=None) -> tuple[WorkspaceWalk, RegexPattern, int]:
     pattern = args.get("pattern", "")
     file_glob = args.get("glob", "**/*")
     if not isinstance(pattern, str) or not pattern:
@@ -413,9 +401,8 @@ def _parse_grep_request(
     limit = bounded_integer(
         args.get("max_matches", 100), "max_matches", minimum=1, maximum=1000
     )
-    walk = WorkspaceWalk(base, workspace, file_glob, open_files=True)
+    walk = WorkspaceWalk(base, workspace, file_glob, open_files=True, allowed_paths=policy.read_paths if policy is not None else None, denied_paths=policy.deny_paths if policy is not None else ())
     return walk, compile_safe_regex(pattern), limit
-
 
 def _scan_grep(
     walk: WorkspaceWalk, regex: RegexPattern, limit: int
@@ -437,20 +424,18 @@ def _scan_grep(
             return results, True
     return results, incomplete
 
-
 def _format_grep_result(results: list[str], pattern: str, truncated: bool) -> str:
     if not results:
         if truncated:
             return f"Search results incomplete for pattern: {pattern}"
         return f"No matches found for pattern: {pattern}"
     header = f"Found {len(results)} match(es)"
-    if truncated:
-        header += " (results incomplete)"
+    header += " (results incomplete)" if truncated else ""
     return _truncate(header + ":\n" + "\n".join(results))
-def _execute_grep(args: dict, workspace: Path) -> str:
+def _execute_grep(args: dict, workspace: Path, policy=None) -> str:
     """正则搜索文件内容。args: {pattern: str, path?: str, glob?: str, max_matches?: int}"""
     try:
-        walk, regex, limit = _parse_grep_request(args, workspace)
+        walk, regex, limit = _parse_grep_request(args, workspace, policy)
         with walk:
             results, match_limit = _scan_grep(walk, regex, limit)
             traversal_limit = walk.truncated
@@ -468,7 +453,6 @@ TOOL_REGISTRY = {
     "NotebookEdit": _execute_notebook_edit,
 }
 
-
 def execute_tool(
     name: str,
     args: dict,
@@ -483,17 +467,21 @@ def execute_tool(
         return "ERROR: tool name must be a string"
     if not isinstance(args, dict):
         return "ERROR: tool arguments must be an object"
+    if getattr(config, "effective_policy", None) is not None and (denied := check_tool_access(config.effective_policy, name, args, config.workspace)): return denied
     if name not in config.allowed_tools:
         return f"ERROR: tool '{name}' is not allowed by configuration"
-    if name == "Bash":
-        kwargs = {"lease_fd": execution_lease_fd}
-        if max_bash_timeout is not None:
-            kwargs["max_timeout"] = max_bash_timeout
-        return execute_bash(args, config, **kwargs)
-    fn = TOOL_REGISTRY.get(name)
-    if fn is None:
-        available = [*TOOL_REGISTRY.keys(), "Bash"]
-        return f"ERROR: unknown tool '{name}'. Available: {available}"
-    if name in {"Write", "Edit", "NotebookEdit"}:
-        return fn(args, config.workspace, mutation_budget)
-    return fn(args, config.workspace)
+    if name in MUTATION_TOOL_NAMES: mutation_budget = ensure_mutation_budget_for_tool(mutation_budget, config)
+    with bind_file_policy(getattr(config, "effective_policy", None), name):
+        if name == "Bash":
+            kwargs = {"lease_fd": execution_lease_fd}
+            if max_bash_timeout is not None:
+                kwargs["max_timeout"] = max_bash_timeout
+            return execute_bash(args, config, **kwargs)
+        fn = TOOL_REGISTRY.get(name)
+        if fn is None:
+            available = [*TOOL_REGISTRY.keys(), "Bash"]
+            return f"ERROR: unknown tool '{name}'. Available: {available}"
+        if name in {"Write", "Edit", "NotebookEdit"}:
+            return fn(args, config.workspace, mutation_budget)
+        if name in {"Glob", "Grep"}: return fn(args, config.workspace, policy=getattr(config, "effective_policy", None))
+        return fn(args, config.workspace)

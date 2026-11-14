@@ -28,12 +28,15 @@ from .provider_retry import (
 )
 from .file_identity import ToolInputError
 from .file_io import read_workspace_text
+from .policy_enforcement import bind_file_policy
+from .safety import resolve_safe_path
 from .hard_deadline import Deadline, remaining as deadline_remaining
 from .lease_inheritance import ChildLeaseAnchor
 from .parent_liveness import ParentLiveness, close_parent_liveness
-from .resource_budget import MutationBudget, ResourceBudgetExceeded
+from .resource_budget import MutationBudget, ResourceBudgetExceeded, MUTATION_TOOL_NAMES, ensure_mutation_budget_for_tool
 from .mutation_outcome import MutationRecord, mutation_record
 from .tool_child import MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES
+from .transaction_report import mutation_evidence
 from .tool_cleanup import cleanup_tool_artifacts
 from .workspace_guard import bind_workspace_identity, require_workspace_identity
 
@@ -74,6 +77,7 @@ def _config_payload(config) -> dict:
         "max_run_seconds": config.max_run_seconds,
         "delegation_capability": config.delegation_capability,
         "expected_workspace_identity": config.expected_workspace_identity,
+        "effective_policy": config.effective_policy.to_dict() if config.effective_policy is not None else None,
     }
 
 
@@ -190,23 +194,15 @@ def _decode(raw: bytes, budget: MutationBudget) -> str:
         raise AgentLoopError("tool process failed")
     if isinstance(used, bool) or not isinstance(used, int):
         raise AgentLoopError("tool process returned an invalid budget")
-    if not budget.used <= used <= budget.limit:
-        raise AgentLoopError("tool process returned an invalid budget")
-    budget.used = used
+    try:
+        budget.advance_to(used)
+    except ValueError:
+        raise AgentLoopError("tool process returned an invalid budget") from None
     return result
 
 
 def _mutation_digest(raw: bytes) -> bytes | None:
-    for line in raw.splitlines():
-        try:
-            payload = json.loads(line)
-            digest = payload.get("sha256")
-            if payload.get("kind") == "mutation_ready" and isinstance(digest, str):
-                if len(digest) == 64:
-                    return bytes.fromhex(digest)
-        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            continue
-    return None
+    return mutation_evidence(raw)[0]
 
 
 def _mutation_warning(raw: bytes) -> str | None:
@@ -227,20 +223,30 @@ def _mutation_warning(raw: bytes) -> str | None:
     return "; ".join(warnings) or None
 
 
-def _interrupted_mutation_state(config, name: str, arguments: dict, raw: bytes) -> str | None:
-    digest = _mutation_digest(raw)
-    if digest is None or name not in {"Write", "Edit", "NotebookEdit"}:
-        return None
-    label = arguments.get("path")
-    if not isinstance(label, str) or not label:
-        return "uncertain"
+def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[str, str | None, str] | None:
+    digest, canonical_path = mutation_evidence(raw)
+    if digest is None or name not in {"Write", "Edit", "NotebookEdit"}: return None
+    label = canonical_path if canonical_path is not None else arguments.get("path")
+    if not isinstance(label, str) or not label: return "uncertain", None, digest.hex()
+    relative = None
     try:
         assert config.expected_workspace_identity is not None
-        with bind_workspace_identity(config.expected_workspace_identity):
-            _text, identity = read_workspace_text(config.workspace, label)
+        with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(getattr(config, "effective_policy", None), name):
+            target = resolve_safe_path(label, config.workspace)
+            relative = target.relative_to(config.workspace.resolve()).as_posix()
+            if canonical_path is not None and relative != canonical_path:
+                return "uncertain", relative, digest.hex()
+            _text, identity = read_workspace_text(
+                config.workspace, label, require_canonical=canonical_path is not None
+            )
     except Exception:
-        return "uncertain"
-    return "committed" if identity.digest == digest else "uncertain"
+        return "uncertain", relative, digest.hex()
+    return ("committed" if identity.digest == digest else "uncertain", relative, digest.hex())
+
+
+def _interrupted_mutation_state(config, name: str, arguments: dict, raw: bytes) -> str | None:
+    details = _mutation_details(config, name, arguments, raw)
+    return details[0] if details is not None else None
 
 
 def _wait_for_tool(ready: threading.Event, cancel_signal, deadline: Deadline) -> None:
@@ -332,18 +338,15 @@ def _finish_interrupted_call(
     config, name: str, arguments: dict, output: bytes, transaction_id: str,
     outcome_reporter: Callable[[MutationRecord], None] | None,
 ) -> None:
-    mutation_state = _interrupted_mutation_state(
-        config, name, arguments, output
-    )
-    if mutation_state is not None:
+    details = _mutation_details(config, name, arguments, output)
+    if details is not None:
+        mutation_state, path, digest = details
         warning = _mutation_warning(output)
         if cleanup_error is not None:
             warning = "; ".join(
                 filter(None, (warning, f"cleanup failed: {cleanup_error}"))
             )
-        record = mutation_record(
-            transaction_id, name, mutation_state, warning
-        )
+        record = mutation_record(transaction_id, name, mutation_state, warning, path, digest)
         if outcome_reporter is not None:
             outcome_reporter(record)
         raise _interrupted_error(failure, record)
@@ -356,17 +359,16 @@ def _completed_mutation_record(
     active: _ActiveTool, config, name: str, arguments: dict,
     cleanup_ok: bool, cleanup_error: AgentLoopError | None,
 ) -> MutationRecord | None:
-    state = _interrupted_mutation_state(
-        config, name, arguments, active.state.output
-    )
-    if state is None:
+    details = _mutation_details(config, name, arguments, active.state.output)
+    if details is None:
         return None
+    state, path, digest = details
     warning = _mutation_warning(active.state.output)
     if cleanup_error is not None:
         warning = "; ".join(filter(None, (warning, f"cleanup failed: {cleanup_error}")))
     elif not cleanup_ok:
         warning = "; ".join(filter(None, (warning, "artifact cleanup failed")))
-    return mutation_record(active.transaction_id, name, state, warning)
+    return mutation_record(active.transaction_id, name, state, warning, path, digest)
 
 
 def _launch_tool_call(
@@ -452,6 +454,7 @@ def execute_in_subprocess(
     remaining = deadline_remaining(deadline)
     if remaining <= 0:
         raise AgentLoopError("run time budget exceeded")
+    if name in MUTATION_TOOL_NAMES: budget = ensure_mutation_budget_for_tool(budget, config)
     active = _launch_tool_call(
         config, name, arguments, budget, max_bash_timeout, lease_fd, remaining
     )
