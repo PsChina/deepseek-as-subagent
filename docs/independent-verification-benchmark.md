@@ -1,7 +1,7 @@
 # Independent verification and deterministic code-task benchmark
 
 This work is intentionally separated from Task Contract PR #38. Its initial
-base is \`feat/task-contract-policy-engine\`, not \`main\`. It must not be merged
+base is `feat/task-contract-policy-engine`, not `main`. It must not be merged
 ahead of the Task Contract dependency.
 
 ## Purpose
@@ -18,16 +18,16 @@ Three independent pieces of evidence must remain distinct:
 3. **Functional checks:** Explicitly approved tests actually executed and their
    outcomes were observed. **The general-purpose verifier does not run these.**
 
-The verifier returns \`artifact_verified\`, \`incomplete\`, \`failed\`, or
-\`invalid_plan\`; even \`artifact_verified\` is **not** a blanket declaration of
-functional correctness. Declared success checks remain \`not_run\`.
+The verifier returns `artifact_verified`, `incomplete`, `failed`, or
+`invalid_plan`; even `artifact_verified` is **not** a blanket declaration of
+functional correctness. Declared success checks remain `not_run`.
 
 ## API
 
 A trusted host creates a version-1 verification plan, independently of any
 model-authored output:
 
-\`\`\`python
+```python
 from deepseek_mcp.independent_verifier import verify_artifacts
 
 plan = {
@@ -40,10 +40,10 @@ plan = {
     "success_checks": ["python -m unittest discover"],
 }
 report = verify_artifacts(config, plan)
-\`\`\`
+```
 
 The test name above must also be declared in the Task Contract. It is a
-**label, not an executable command**: the verifier reports \`not_run\` and does
+**label, not an executable command**: the verifier reports `not_run` and does
 not invoke a shell, interpreter, or model-provided command.
 
 Plan validation enforces an exact schema, size limits, normalized relative
@@ -63,10 +63,10 @@ attestation is provided in this initial version.
 
 From a trusted development checkout or an ephemeral CI runner:
 
-\`\`\`sh
+```sh
 python scripts/run_contract_benchmark.py
 python -m unittest discover -s tests -p "test_independent_verifier.py" -v
-\`\`\`
+```
 
 The benchmark uses a localhost OpenAI-compatible scripted provider, the real
 agent loop, real isolated tool subprocesses, and the actual workspace mutation
@@ -86,7 +86,7 @@ and score aggregation on all nine OS/Python combinations.
 
 ### Metrics
 
-\`summarize_benchmark\` reports exact counts, fail-closed task success rate,
+`summarize_benchmark` reports exact counts, fail-closed task success rate,
 policy pass rate, total tool calls, median runtime, and p95 runtime. An incomplete
 or policy-unverified case is **never** counted as a successful task.
 
