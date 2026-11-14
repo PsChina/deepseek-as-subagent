@@ -29,6 +29,15 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
 
 
+def _unique_object(pairs: list[tuple[str, object]]) -> dict:
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("benchmark artifact contains duplicate JSON keys")
+        value[key] = item
+    return value
+
+
 def _read_artifact(path: Path) -> dict:
     if os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("verification job must not receive provider credentials")
@@ -36,7 +45,7 @@ def _read_artifact(path: Path) -> dict:
     if len(payload) > _MAX_ARTIFACT_BYTES:
         raise ValueError("benchmark artifact exceeds 20 MiB")
     try:
-        value = json.loads(payload)
+        value = json.loads(payload, object_pairs_hook=_unique_object)
     except (UnicodeError, ValueError, RecursionError):
         raise ValueError("benchmark artifact is invalid JSON") from None
     if not isinstance(value, dict) or set(value) != {
@@ -46,7 +55,16 @@ def _read_artifact(path: Path) -> dict:
         raise ValueError("benchmark artifact has an invalid schema")
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
         raise ValueError("unsupported benchmark artifact version")
-    if not isinstance(value["records"], list) or not 1 <= len(value["records"]) <= 10:
+    if (not isinstance(value["created_at"], str) or len(value["created_at"]) > 64
+            or not isinstance(value["provider"], str) or not value["provider"]
+            or len(value["provider"]) > 253
+            or not isinstance(value["model"], str) or not value["model"].strip()
+            or len(value["model"]) > 128):
+        raise ValueError("benchmark artifact metadata is invalid")
+    repeats = value["repeats_per_task"]
+    if type(repeats) is not int or not 1 <= repeats <= 5:
+        raise ValueError("benchmark repeat count is invalid")
+    if not isinstance(value["records"], list) or len(value["records"]) != 2 * repeats:
         raise ValueError("benchmark artifact has an invalid record count")
     return value
 
@@ -76,7 +94,7 @@ def _decode_record(raw: object) -> tuple[dict, bytes]:
             raise ValueError("benchmark metric is invalid")
     tokens = raw["tokens"]
     if (not isinstance(tokens, dict) or set(tokens) != {"prompt", "completion", "total"}
-            or any(type(tokens[name]) is not int or tokens[name] < 0 for name in tokens)):
+            or any(type(tokens[name]) is not int or not 0 <= tokens[name] <= 1_000_000_000 for name in tokens)):
         raise ValueError("benchmark token usage is invalid")
     encoded = raw["source_b64"]
     if not isinstance(encoded, str) or len(encoded) > 2 * 1024 * 1024:
