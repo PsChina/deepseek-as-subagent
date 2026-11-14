@@ -18,6 +18,9 @@ from unittest.mock import patch
 from deepseek_mcp.agent_loop import run_agent
 from deepseek_mcp.benchmark_metrics import summarize_benchmark
 from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
+from deepseek_mcp.file_io import read_workspace_text
+from deepseek_mcp.policy_enforcement import bind_file_policy
+from deepseek_mcp.workspace_guard import bind_workspace_identity
 from deepseek_mcp.handoff import build_handoff
 from deepseek_mcp.independent_verifier import verify_artifacts
 from deepseek_mcp.policy_engine import compile_task_policy
@@ -133,11 +136,15 @@ def _execute(case_id, initial, expected, old, new):
             artifact_ok = evidence["status"] == "artifact_verified"
             # Never execute model-written code if its bytes differ from the
             # trusted fixture. This is NOT an isolation mechanism for arbitrary code.
-            behavior_ok = (
-                _trusted_fixture_behavior(case_id, (
-                    workspace / "src" / "task.py"
-                ).read_text(encoding="utf-8")) if artifact_ok else False
-            )
+            behavior_ok = False
+            if artifact_ok:
+                with bind_workspace_identity(config.expected_workspace_identity):
+                    with bind_file_policy(policy, "Write"):
+                        source, identity = read_workspace_text(
+                            workspace, "src/task.py", require_canonical=True
+                        )
+                if identity.digest == bytes.fromhex(_sha(expected)):
+                    behavior_ok = _trusted_fixture_behavior(case_id, source)
             success = artifact_ok and behavior_ok and policy_ok and committed
             calls = result["tool_calls"]
         except Exception as error:
