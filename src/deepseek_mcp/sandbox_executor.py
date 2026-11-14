@@ -48,12 +48,26 @@ class SandboxSource:
     path: str
     sha256: str
 
+    def __post_init__(self) -> None:
+        _path(self.path)
+        _digest(self.sha256)
+
 
 @dataclass(frozen=True)
 class SandboxTestPlan:
     contract_sha256: str
     test_suite_sha256: str
     source_files: tuple[SandboxSource, ...]
+
+    def __post_init__(self) -> None:
+        _digest(self.contract_sha256)
+        _digest(self.test_suite_sha256)
+        if not isinstance(self.source_files, tuple) or not 1 <= len(self.source_files) <= _MAX_SOURCE_FILES:
+            raise ValueError("sandbox plan requires 1–128 source files")
+        paths = [item.path.casefold() for item in self.source_files
+                 if isinstance(item, SandboxSource)]
+        if len(paths) != len(self.source_files) or len(paths) != len(set(paths)):
+            raise ValueError("sandbox source paths must be unique SandboxSource values")
 
     @classmethod
     def from_dict(cls, raw: object) -> "SandboxTestPlan":
