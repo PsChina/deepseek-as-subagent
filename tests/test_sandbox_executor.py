@@ -152,7 +152,7 @@ class SandboxExecutorTests(unittest.TestCase):
         self.assertIn("dst=/tests,readonly", joined)
         self.assertNotIn("DEEPSEEK_API_KEY", joined)
         self.assertNotIn("bash", args)
-        self.assertEqual(args[-10:], ["python", "-I", "-B", "-m", "unittest",
+        self.assertEqual(args[-11:], ["python", "-I", "-B", "-m", "unittest",
                                       "discover", "-s", "/tests", "-p", "test_*.py", "-v"])
 
     def test_image_requires_immutable_digest_and_docker_is_fail_closed(self):
