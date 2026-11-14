@@ -104,7 +104,7 @@ jobs:
         env:
           DEEPSEEK_TEST_SANDBOX_IMAGE: ${{ inputs.sandbox_image }}
         run: |
-          python -c "import os,re,sys; value=os.environ['DEEPSEEK_TEST_SANDBOX_IMAGE']; sys.exit(0 if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}@sha256:[0-9a-f]{64}', value) else 1)"
+          python -c "import os,re,sys; value=os.environ['DEEPSEEK_TEST_SANDBOX_IMAGE']; sys.exit(0 if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:+-]{0,255}@sha256:[0-9a-f]{64}', value) else 1)"
           docker pull "$DEEPSEEK_TEST_SANDBOX_IMAGE"
 
       - name: Verify hidden tests (no provider credentials in this job)
