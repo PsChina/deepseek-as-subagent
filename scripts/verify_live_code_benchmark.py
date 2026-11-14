@@ -188,6 +188,13 @@ def main() -> int:
             raise ValueError("benchmark artifact contains a duplicate task run")
         seen.add(key)
         records.append(_run_record(item, source, image))
+    expected = {
+        (task_id, repeat)
+        for task_id in _SUITES
+        for repeat in range(1, artifact["repeats_per_task"] + 1)
+    }
+    if seen != expected:
+        raise ValueError("benchmark artifact is missing a task or repeat")
     summary = summarize_benchmark([
         {key: row[key] for key in (
             "id", "verdict", "policy_passed", "duration_ms", "tool_calls"
