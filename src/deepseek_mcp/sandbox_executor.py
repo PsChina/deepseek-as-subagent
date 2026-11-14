@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -203,11 +204,11 @@ def _docker_binary() -> str:
     return str(resolved)
 
 
-def _container_argv(docker: str, image: str, source: Path, tests: Path, cidfile: Path) -> list[str]:
+def _container_argv(docker: str, image: str, source: Path, tests: Path, cidfile: Path, name: str) -> list[str]:
     return [
-        docker, "run", "--rm", "--pull=never", "--init", "--cidfile", str(cidfile),
+        docker, "run", "--rm", "--pull=never", "--init", "--cidfile", str(cidfile), "--name", name,
         "--network=none", "--read-only", "--cap-drop=ALL",
-        "--security-opt=no-new-privileges=true", "--pids-limit=64",
+        "--security-opt=no-new-privileges=true", "--security-opt=seccomp=default", "--pids-limit=64",
         "--memory=512m", "--memory-swap=512m", "--cpus=1",
         "--user=65534:65534", "--ipc=none", "--stop-timeout=2",
         "--ulimit=core=0", "--ulimit=nofile=128:128",
@@ -216,7 +217,7 @@ def _container_argv(docker: str, image: str, source: Path, tests: Path, cidfile:
         "--mount", f"type=bind,src={tests},dst=/tests,readonly",
         "--workdir=/workspace", "--env=HOME=/tmp",
         "--env=TMPDIR=/tmp", "--env=PYTHONDONTWRITEBYTECODE=1",
-        image, "python", "-I", "-m", "unittest", "discover",
+        image, "python", "-I", "-B", "-m", "unittest", "discover",
         "-s", "/tests", "-p", "test_*.py", "-v",
     ]
 
@@ -234,12 +235,14 @@ def _drain_output(stream, state: dict, overflow: threading.Event) -> None:
             overflow.set()
 
 
-def _control_container(docker: str, cidfile: Path, env: dict[str, str]) -> None:
+def _control_container(docker: str, cidfile: Path, env: dict[str, str], name: str) -> None:
     try:
         container_id = cidfile.read_text(encoding="ascii").strip()
     except (OSError, UnicodeError):
-        return
-    if _CONTAINER_ID.fullmatch(container_id) is None:
+        container_id = name
+    if _CONTAINER_ID.fullmatch(container_id) is None and re.fullmatch(
+        r"deepseek-test-[0-9a-f]{32}", container_id
+    ) is None:
         return
     for action in ("kill", "rm"):
         args = [docker, action, "-f", container_id] if action == "rm" else [docker, action, container_id]
@@ -272,7 +275,11 @@ def _invoke_container(docker: str, image: str, source: Path, tests: Path,
     docker_home.mkdir()
     env = {"PATH": os.defpath, "HOME": str(docker_home),
            "DOCKER_CONFIG": str(docker_home)}
-    argv = _container_argv(docker, image, source, tests, cidfile)
+    if any("," in str(path) for path in (source, tests, cidfile)):
+        return {"status": "runner_error", "exit_code": None, "output": "",
+                "duration_ms": 0}
+    name = "deepseek-test-" + uuid.uuid4().hex
+    argv = _container_argv(docker, image, source, tests, cidfile, name)
     started = time.monotonic()
     try:
         process = subprocess.Popen(
@@ -298,7 +305,7 @@ def _invoke_container(docker: str, image: str, source: Path, tests: Path,
             break
         time.sleep(0.02)
     if timed_out or overflow.is_set():
-        _control_container(docker, cidfile, env)
+        _control_container(docker, cidfile, env, name)
         _stop_client(process)
     try:
         process.wait(timeout=3)
@@ -309,7 +316,8 @@ def _invoke_container(docker: str, image: str, source: Path, tests: Path,
     output = b"".join(state["chunks"]).decode("utf-8", errors="replace")
     elapsed = int((time.monotonic() - started) * 1000)
     status = "timed_out" if timed_out else "output_limit" if overflow.is_set() else (
-        "passed" if process.returncode == 0 else "failed"
+        "passed" if process.returncode == 0 else
+        "runner_error" if process.returncode in {125, 126, 127} else "failed"
     )
     return {"status": status, "exit_code": process.returncode,
             "output": output[:8192], "output_bytes_captured": state["size"],
