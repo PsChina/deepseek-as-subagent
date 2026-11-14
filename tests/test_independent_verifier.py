@@ -24,7 +24,7 @@ class IndependentVerifierTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
         (self.root / "src").mkdir()
-        (self.root / "src" / "output.py").write_text("good\n", encoding="utf-8")
+        (self.root / "src" / "output.py").write_bytes(b"good\n")
         (self.root / "src" / "guard.txt").write_text("keep", encoding="utf-8")
         contract = TaskContract.from_dict({
             "permissions": {
