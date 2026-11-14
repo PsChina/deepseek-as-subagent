@@ -25,3 +25,20 @@ class HiddenNormalizationTests(unittest.TestCase):
 
     def test_does_not_remove_internal_spaces(self):
         self.assertEqual(_candidate().slug("A B"), "a b")
+
+
+class SandboxBoundaryTests(unittest.TestCase):
+    def test_tests_run_as_non_root_without_provider_credentials(self):
+        import os
+        self.assertNotEqual(os.geteuid(), 0)
+        self.assertNotIn("DEEPSEEK_API_KEY", os.environ)
+
+    def test_workspace_mount_is_read_only(self):
+        with self.assertRaises(PermissionError):
+            with Path("/workspace/src/task.py").open("ab") as handle:
+                handle.write(b"tamper")
+
+    def test_container_has_no_outbound_network(self):
+        import socket
+        with self.assertRaises(OSError):
+            socket.create_connection(("1.1.1.1", 443), timeout=1)
