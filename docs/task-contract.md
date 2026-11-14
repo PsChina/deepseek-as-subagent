@@ -51,6 +51,7 @@ by the file-I/O resolver immediately before descriptor-based access or commit.
 - `deny_paths` always includes built-in credential and secret patterns.
   User-provided patterns can add restrictions but cannot remove built-ins.
 - Resource limits can lower, never raise, process-wide hard limits.
+- Read and Grep reject files with multiple hard links, even if all links appear to be within the workspace. Link count and file identity are checked before and after reading; copy a needed file to a normal single-link file rather than weakening this boundary.
 - Patterns are workspace-relative, slash-separated globs. `**` matches zero
   or more path segments. Built-in deny rules are always case-insensitive;
   allowed-path matching is case-insensitive on Windows and case-sensitive on
@@ -136,7 +137,9 @@ lease and recovery acknowledgement after uncertain mutations.
 
 POSIX file access uses directory descriptors and no-follow file opening;
 Windows uses handle checks, reparse-point rejection, and before/after path
-identity checks. The task scope remains bound through canonical file resolution,
+identity checks. Read and Grep additionally reject multiply-linked files and
+recheck link count and file identity after reading to detect changes during I/O.
+The task scope remains bound through canonical file resolution,
 parent-side mutation verification, and final workspace readback. Dedicated tests cover a Windows parent rename between handle
 observations and POSIX ancestor swapping. These measures do **not** provide
 a general OS-level sandbox or prove the absence of all adversarial concurrent
