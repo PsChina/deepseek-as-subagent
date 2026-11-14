@@ -29,11 +29,15 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
 
 
+class _DuplicateArtifactKey(ValueError):
+    pass
+
+
 def _unique_object(pairs: list[tuple[str, object]]) -> dict:
     value = {}
     for key, item in pairs:
         if key in value:
-            raise ValueError("benchmark artifact contains duplicate JSON keys")
+            raise _DuplicateArtifactKey("benchmark artifact contains duplicate JSON keys")
         value[key] = item
     return value
 
@@ -46,6 +50,8 @@ def _read_artifact(path: Path) -> dict:
         raise ValueError("benchmark artifact exceeds 20 MiB")
     try:
         value = json.loads(payload, object_pairs_hook=_unique_object)
+    except _DuplicateArtifactKey:
+        raise ValueError("benchmark artifact contains duplicate JSON keys") from None
     except (UnicodeError, ValueError, RecursionError):
         raise ValueError("benchmark artifact is invalid JSON") from None
     if not isinstance(value, dict) or set(value) != {
