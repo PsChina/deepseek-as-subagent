@@ -282,6 +282,44 @@ def _stop_client(process: subprocess.Popen) -> None:
             pass
 
 
+def _wait_container(process: subprocess.Popen, started: float,
+                    timeout_seconds: int, overflow: threading.Event) -> bool:
+    deadline = started + timeout_seconds
+    while process.poll() is None:
+        if overflow.is_set():
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _finish_container(docker: str, cidfile: Path, env: dict[str, str],
+                      name: str, process: subprocess.Popen, reader: threading.Thread,
+                      state: dict, overflow: threading.Event, timed_out: bool,
+                      started: float) -> dict:
+    if timed_out or overflow.is_set():
+        _control_container(docker, cidfile, env, name)
+        _stop_client(process)
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
+    reader.join(timeout=2)
+    if process.returncode not in (0, None) and not timed_out and not overflow.is_set():
+        _control_container(docker, cidfile, env, name)
+    output = b"".join(state["chunks"]).decode("utf-8", errors="replace")
+    elapsed = int((time.monotonic() - started) * 1000)
+    status = "timed_out" if timed_out else "output_limit" if overflow.is_set() else (
+        "passed" if process.returncode == 0 else
+        "runner_error" if process.returncode in {125, 126, 127} else "failed"
+    )
+    return {"status": status, "exit_code": process.returncode,
+            "output": output[:8192], "output_bytes_captured": state["size"],
+            "duration_ms": elapsed}
+
+
 def _invoke_container(docker: str, image: str, source: Path, tests: Path,
                       temp_root: Path, timeout_seconds: int) -> dict:
     cidfile = temp_root / "container.id"
@@ -309,34 +347,9 @@ def _invoke_container(docker: str, image: str, source: Path, tests: Path,
     reader = threading.Thread(target=_drain_output, args=(process.stdout, state, overflow),
                               daemon=True, name="sandbox-output-reader")
     reader.start()
-    deadline = started + timeout_seconds
-    timed_out = False
-    while process.poll() is None:
-        if overflow.is_set():
-            break
-        if time.monotonic() >= deadline:
-            timed_out = True
-            break
-        time.sleep(0.02)
-    if timed_out or overflow.is_set():
-        _control_container(docker, cidfile, env, name)
-        _stop_client(process)
-    try:
-        process.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=2)
-    reader.join(timeout=2)
-    output = b"".join(state["chunks"]).decode("utf-8", errors="replace")
-    elapsed = int((time.monotonic() - started) * 1000)
-    status = "timed_out" if timed_out else "output_limit" if overflow.is_set() else (
-        "passed" if process.returncode == 0 else
-        "runner_error" if process.returncode in {125, 126, 127} else "failed"
-    )
-    return {"status": status, "exit_code": process.returncode,
-            "output": output[:8192], "output_bytes_captured": state["size"],
-            "duration_ms": elapsed}
-
+    timed_out = _wait_container(process, started, timeout_seconds, overflow)
+    return _finish_container(docker, cidfile, env, name, process, reader,
+                             state, overflow, timed_out, started)
 
 def execute_sandboxed_tests(config, raw_plan: object, tests_directory: Path, *,
                             image: str, timeout_seconds: int = 120) -> dict:
