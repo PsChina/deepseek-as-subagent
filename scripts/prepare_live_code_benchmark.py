@@ -114,7 +114,12 @@ def _run_one(case: dict, repeat: int, key: str, model: str,
                     and handoff["verification"]["policy_compliance"] == "passed"
                     and handoff["verification"]["workspace_readback"] == "matched"
                     and result["bash"]["executed_calls"] == 0
-                    and any(item["status"] == "committed" for item in result["mutations"])
+                    and 1 <= result["tool_calls"] <= 8
+                    and bool(result["mutations"])
+                    and all(
+                        item["status"] == "committed" and item["path"] == "src/task.py"
+                        for item in result["mutations"]
+                    )
                     and {item["path"] for item in handoff["changed_files"]} == {"src/task.py"}
                 )
             except Exception as error:
