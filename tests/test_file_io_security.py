@@ -18,6 +18,8 @@ import deepseek_mcp.windows_workspace_write as windows_workspace_write
 import deepseek_mcp.transaction_report as transaction_report
 import deepseek_mcp.tools as tools
 import deepseek_mcp.workspace_walk as workspace_walk
+from deepseek_mcp import walk_support
+from deepseek_mcp.file_identity import ToolInputError
 from deepseek_mcp import windows_file_io
 from deepseek_mcp.safety import SandboxViolation
 from deepseek_mcp.tools import (
@@ -104,6 +106,34 @@ class WorkspaceFileRaceTests(unittest.TestCase):
             self.assertTrue(result.startswith("ERROR:"), result)
             self.assertNotIn("external-secret-marker", result)
             self.assertNotIn("apparently-safe.txt:1:", result)
+
+    def test_grep_descriptor_rechecks_hard_links_after_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "input.txt"
+            source.write_text("safe-content", encoding="utf-8")
+            outside = root / "outside-alias.txt"
+            descriptor = os.open(source, os.O_RDONLY)
+            original_read = walk_support.read_descriptor
+
+            def create_link_after_read(fd: int, max_bytes: int) -> bytes:
+                content = original_read(fd, max_bytes)
+                os.link(source, outside)
+                return content
+
+            try:
+                with patch.object(
+                    walk_support, "read_descriptor",
+                    side_effect=create_link_after_read,
+                ):
+                    with self.assertRaisesRegex(
+                        ToolInputError, "multiple hard links"
+                    ):
+                        walk_support.read_open_entry(descriptor, 1024)
+            finally:
+                os.close(descriptor)
 
     def test_file_tools_cannot_access_vcs_control_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
