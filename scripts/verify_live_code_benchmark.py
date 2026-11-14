@@ -164,7 +164,7 @@ def _run_record(raw: dict, source: bytes, image: str) -> dict:
         sandbox = {"status": "incomplete", "error_type": type(error).__name__,
                    "duration_ms": int((time.monotonic() - started) * 1000)}
     status = sandbox.get("status")
-    incomplete = status in {"not_run", "incomplete", "sandbox_unavailable",
+    incomplete = raw["agent_status"] != "completed" or status in {"not_run", "incomplete", "sandbox_unavailable",
                             "runner_error", "timed_out", "output_limit"}
     verdict = "passed" if raw["policy_passed"] and status == "passed" else (
         "incomplete" if incomplete else "failed"
