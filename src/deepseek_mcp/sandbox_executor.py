@@ -34,7 +34,7 @@ _MAX_TEST_BYTES = 8 * 1024 * 1024
 _MAX_TEST_FILE_BYTES = 1024 * 1024
 _MAX_OUTPUT_BYTES = 64 * 1024
 _MAX_TIMEOUT_SECONDS = 300
-_IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}@sha256:[0-9a-f]{64}\Z")
+_IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:+-]{0,255}@sha256:[0-9a-f]{64}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}\Z")
 
@@ -216,7 +216,7 @@ def _container_argv(docker: str, image: str, source: Path, tests: Path, cidfile:
         "--mount", f"type=bind,src={source},dst=/workspace,readonly",
         "--mount", f"type=bind,src={tests},dst=/tests,readonly",
         "--workdir=/workspace", "--env=HOME=/tmp",
-        "--env=TMPDIR=/tmp", "--env=PYTHONDONTWRITEBYTECODE=1",
+        "--env=TMPDIR=/tmp",
         image, "python", "-I", "-B", "-m", "unittest", "discover",
         "-s", "/tests", "-p", "test_*.py", "-v",
     ]
