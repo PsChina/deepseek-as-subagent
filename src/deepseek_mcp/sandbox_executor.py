@@ -124,7 +124,7 @@ def _read_test_files(root: Path) -> list[tuple[str, bytes]]:
         for name in names:
             target = parent / name
             if target.is_symlink() or not target.is_file() or target.suffix not in {".py", ".json", ".txt"}:
-                raise ValueError("hidden test suite contains an unsupported file")
+                raise ValueError("hidden test suite contains a symlink or unsupported file")
             relative = _path(target.relative_to(resolved).as_posix())
             info = target.stat(follow_symlinks=False)
             if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_TEST_FILE_BYTES:
