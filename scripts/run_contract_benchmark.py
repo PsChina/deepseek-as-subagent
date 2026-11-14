@@ -37,6 +37,17 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _trusted_fixture_behavior(case_id: str, source: str) -> bool:
+    """Run tiny, exact-hash-approved fixture code inside trusted CI only."""
+    scope = {"__builtins__": {"len": len, "sum": sum}}
+    exec(compile(source, f"<trusted-fixture:{case_id}>", "exec"), scope)
+    if case_id == "repair-off-by-one":
+        return scope["total"]([]) == 0 and scope["total"]([2, 3, -1]) == 4
+    if case_id == "repair-case-normalization":
+        return scope["slug"](" HeLLo ") == "hello" and scope["slug"]("XY") == "xy"
+    return False
+
+
 class _Provider(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -119,7 +130,15 @@ def _execute(case_id, initial, expected, old, new):
             handoff = build_handoff(result)
             policy_ok = handoff["verification"]["policy_compliance"] == "passed"
             committed = handoff["verification"]["workspace_readback"] == "matched"
-            success = evidence["status"] == "artifact_verified" and policy_ok and committed
+            artifact_ok = evidence["status"] == "artifact_verified"
+            # Never execute model-written code if its bytes differ from the
+            # trusted fixture. This is NOT an isolation mechanism for arbitrary code.
+            behavior_ok = (
+                _trusted_fixture_behavior(case_id, (
+                    workspace / "src" / "task.py"
+                ).read_text(encoding="utf-8")) if artifact_ok else False
+            )
+            success = artifact_ok and behavior_ok and policy_ok and committed
             calls = result["tool_calls"]
         except Exception as error:
             print(f"{case_id}: {type(error).__name__}", file=sys.stderr)
