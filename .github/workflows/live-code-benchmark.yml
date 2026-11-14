@@ -1,0 +1,114 @@
+name: Live DeepSeek Hidden-Test Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: DeepSeek model ID to evaluate
+        required: true
+        default: deepseek-chat
+        type: string
+      repeats:
+        description: Independent runs per task (1–5)
+        required: true
+        default: "2"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+      sandbox_image:
+        description: Prebuilt Linux Python image pinned as name@sha256:<64 hex>
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  model:
+    name: Credentialed model task preparation (no code execution)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install locked runtime
+        run: |
+          python -m pip install --only-binary=:all: --require-hashes -r requirements.lock
+          python -m pip install --no-deps --no-build-isolation .
+
+      - name: Run real DeepSeek tasks (does not execute generated code)
+        env:
+          DEEPSEEK_LIVE_CODE_BENCHMARK: "1"
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_LIVE_MODEL: ${{ inputs.model }}
+          DEEPSEEK_BENCHMARK_REPEATS: ${{ inputs.repeats }}
+          DEEPSEEK_BENCHMARK_ARTIFACT: ${{ runner.temp }}/benchmark-input.json
+        run: python scripts/prepare_live_code_benchmark.py
+
+      - name: Upload fixed-path source snapshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: live-code-benchmark-input
+          path: ${{ runner.temp }}/benchmark-input.json
+          if-no-files-found: error
+          retention-days: 1
+
+  verify:
+    name: No-secret isolated hidden-test execution
+    needs: model
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted hidden tests and verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install locked verifier runtime
+        run: |
+          python -m pip install --only-binary=:all: --require-hashes -r requirements.lock
+          python -m pip install --no-deps --no-build-isolation .
+
+      - name: Download model output artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: live-code-benchmark-input
+          path: ${{ runner.temp }}/benchmark-artifact
+
+      - name: Pull the exact preapproved sandbox image
+        env:
+          DEEPSEEK_TEST_SANDBOX_IMAGE: ${{ inputs.sandbox_image }}
+        run: |
+          python -c "import os,re,sys; value=os.environ['DEEPSEEK_TEST_SANDBOX_IMAGE']; sys.exit(0 if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:+-]{0,255}@sha256:[0-9a-f]{64}', value) else 1)"
+          docker pull "$DEEPSEEK_TEST_SANDBOX_IMAGE"
+
+      - name: Verify hidden tests (no provider credentials in this job)
+        env:
+          DEEPSEEK_TEST_SANDBOX_IMAGE: ${{ inputs.sandbox_image }}
+          DEEPSEEK_BENCHMARK_ARTIFACT: ${{ runner.temp }}/benchmark-artifact/benchmark-input.json
+        run: python scripts/verify_live_code_benchmark.py
