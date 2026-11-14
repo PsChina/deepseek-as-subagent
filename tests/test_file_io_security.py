@@ -107,6 +107,33 @@ class WorkspaceFileRaceTests(unittest.TestCase):
             self.assertNotIn("external-secret-marker", result)
             self.assertNotIn("apparently-safe.txt:1:", result)
 
+    def test_read_rejects_hard_link_created_during_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "input.txt"
+            source.write_text("safe-content", encoding="utf-8")
+            outside = root / "outside-alias.txt"
+            try:
+                os.link(source, outside)
+                outside.unlink()
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            original_read = file_io._read_descriptor
+
+            def create_link_after_read(fd: int) -> bytes:
+                content = original_read(fd)
+                os.link(source, outside)
+                return content
+
+            with patch.object(
+                file_io, "_read_descriptor", side_effect=create_link_after_read
+            ):
+                result = _execute_read({"path": "input.txt"}, workspace)
+            self.assertTrue(result.startswith("ERROR:"), result)
+            self.assertNotIn("safe-content", result)
+
     def test_grep_descriptor_rechecks_hard_links_after_read(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
