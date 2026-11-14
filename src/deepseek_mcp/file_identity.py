@@ -94,9 +94,16 @@ def write_baseline(
     return mode, baseline
 
 
-def validate_readable_file(info: os.stat_result) -> None:
-    """Reject non-regular and multiply-linked files at the opened-handle boundary."""
+def validate_readable_file(
+    info: os.stat_result, *, previous: os.stat_result | None = None,
+) -> None:
+    """Reject linked files and identity changes at the opened-handle boundary."""
     if not stat.S_ISREG(info.st_mode):
         raise ToolInputError("file is not a regular file")
     if getattr(info, "st_nlink", 1) > 1:
         raise ToolInputError("workspace files with multiple hard links are not readable")
+    if previous is not None and (
+        FileIdentity.from_stat(info) != FileIdentity.from_stat(previous)
+        or getattr(info, "st_nlink", 1) != getattr(previous, "st_nlink", 1)
+    ):
+        raise ToolInputError("file changed while reading")
