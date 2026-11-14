@@ -140,11 +140,11 @@ class SandboxExecutorTests(unittest.TestCase):
     def test_container_command_is_networkless_readonly_and_unprivileged(self):
         args = _container_argv(
             "/usr/bin/docker", _IMAGE, Path("/tmp/source"), Path("/tmp/tests"),
-            Path("/tmp/container.id"),
+            Path("/tmp/container.id"), "deepseek-test-" + "a" * 32,
         )
         joined = " ".join(args)
         for flag in ("--network=none", "--read-only", "--cap-drop=ALL",
-                     "--security-opt=no-new-privileges=true", "--pids-limit=64",
+                     "--security-opt=no-new-privileges=true", "--security-opt=seccomp=default", "--pids-limit=64",
                      "--memory=512m", "--memory-swap=512m", "--cpus=1",
                      "--user=65534:65534", "--ipc=none", "--pull=never"):
             self.assertIn(flag, joined)
@@ -152,7 +152,7 @@ class SandboxExecutorTests(unittest.TestCase):
         self.assertIn("dst=/tests,readonly", joined)
         self.assertNotIn("DEEPSEEK_API_KEY", joined)
         self.assertNotIn("bash", args)
-        self.assertEqual(args[-10:], ["python", "-I", "-m", "unittest",
+        self.assertEqual(args[-10:], ["python", "-I", "-B", "-m", "unittest",
                                       "discover", "-s", "/tests", "-p", "test_*.py", "-v"])
 
     def test_image_requires_immutable_digest_and_docker_is_fail_closed(self):
