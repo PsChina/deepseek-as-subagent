@@ -95,12 +95,14 @@ def _decode_record(raw: object) -> tuple[dict, bytes]:
     for name in ("contract_sha256", "source_sha256"):
         if not isinstance(raw[name], str) or _SHA256.fullmatch(raw[name]) is None:
             raise ValueError("benchmark digest is invalid")
-    for name in ("duration_ms", "tool_calls"):
-        if type(raw[name]) is not int or not 0 <= raw[name] <= 3_600_000:
-            raise ValueError("benchmark metric is invalid")
+    if (type(raw["duration_ms"]) is not int
+            or not 0 <= raw["duration_ms"] <= 3_600_000
+            or type(raw["tool_calls"]) is not int or not 0 <= raw["tool_calls"] <= 8):
+        raise ValueError("benchmark metric is invalid")
     tokens = raw["tokens"]
     if (not isinstance(tokens, dict) or set(tokens) != {"prompt", "completion", "total"}
-            or any(type(tokens[name]) is not int or not 0 <= tokens[name] <= 1_000_000_000 for name in tokens)):
+            or any(type(tokens[name]) is not int or not 0 <= tokens[name] <= 1_000_000_000 for name in tokens)
+            or tokens["total"] != tokens["prompt"] + tokens["completion"]):
         raise ValueError("benchmark token usage is invalid")
     encoded = raw["source_b64"]
     if not isinstance(encoded, str) or len(encoded) > 2 * 1024 * 1024:
