@@ -101,29 +101,30 @@ def _run_one(case: dict, repeat: int, key: str, model: str,
             config = _config(key, model, endpoint, workspace)
             policy = bind_task_contract(config, _contract())
             policy_hash = policy.contract_hash
-            result = run_agent(
-                case["task"] + "\nOnly edit src/task.py. Report honestly when finished.",
-                config,
-            )
-            agent_status = "completed"
-            tool_calls, tokens = result["tool_calls"], result["tokens"]
-            handoff = build_handoff(result)
-            policy_ok = bool(
-                handoff
-                and handoff["verification"]["policy_compliance"] == "passed"
-                and handoff["verification"]["workspace_readback"] == "matched"
-                and result["bash"]["executed_calls"] == 0
-                and any(item["status"] == "committed" for item in result["mutations"])
-                and {item["path"] for item in handoff["changed_files"]} == {"src/task.py"}
-            )
-            source = target.read_bytes()
-    except Exception as error:
-        agent_status = type(error).__name__
-        if policy_hash:
+            try:
+                result = run_agent(
+                    case["task"] + "\nOnly edit src/task.py. Report honestly when finished.",
+                    config,
+                )
+                agent_status = "completed"
+                tool_calls, tokens = result["tool_calls"], result["tokens"]
+                handoff = build_handoff(result)
+                policy_ok = bool(
+                    handoff
+                    and handoff["verification"]["policy_compliance"] == "passed"
+                    and handoff["verification"]["workspace_readback"] == "matched"
+                    and result["bash"]["executed_calls"] == 0
+                    and any(item["status"] == "committed" for item in result["mutations"])
+                    and {item["path"] for item in handoff["changed_files"]} == {"src/task.py"}
+                )
+            except Exception as error:
+                agent_status = type(error).__name__
             try:
                 source = target.read_bytes()
-            except (OSError, UnboundLocalError):
+            except OSError:
                 pass
+    except Exception as error:
+        agent_status = type(error).__name__
     if len(source) > 1024 * 1024:
         source = b""
         policy_ok, agent_status = False, "source_limit_exceeded"
@@ -136,7 +137,6 @@ def _run_one(case: dict, repeat: int, key: str, model: str,
         "duration_ms": min(3_600_000, int((time.monotonic() - started) * 1000)),
         "tool_calls": tool_calls, "tokens": tokens,
     }
-
 
 def main() -> int:
     key, model, endpoint, repeats = _required_environment()
