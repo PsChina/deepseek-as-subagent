@@ -112,9 +112,16 @@ def _checked_read(descriptor: int, *, strict_utf8: bool, reject_binary: bool) ->
     before = FileIdentity.from_stat(initial_stat)
     validate_readable_file(initial_stat)
     data = _read_descriptor(descriptor)
-    if len(data) != before.size or FileIdentity.from_stat(os.fstat(descriptor)) != before:
+    final_stat = os.fstat(descriptor)
+    validate_readable_file(final_stat)
+    if (
+        len(data) != before.size
+        or FileIdentity.from_stat(final_stat) != before
+        or getattr(initial_stat, "st_nlink", 1)
+        != getattr(final_stat, "st_nlink", 1)
+    ):
         raise ToolInputError("file changed while reading")
-    identity = FileIdentity.from_stat(os.fstat(descriptor), hashlib.sha256(data).digest())
+    identity = FileIdentity.from_stat(final_stat, hashlib.sha256(data).digest())
     return _decode(data, strict_utf8=strict_utf8, reject_binary=reject_binary), identity
 def _read_posix(
     root: Path, relative: Path, *, strict_utf8: bool, reject_binary: bool
