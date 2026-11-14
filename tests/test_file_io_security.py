@@ -86,6 +86,25 @@ class WorkspaceFileRaceTests(unittest.TestCase):
             self.assertTrue(result.startswith("ERROR:"), result)
             self.assertNotIn("external-secret-marker", result)
 
+    def test_grep_rejects_hard_link_to_file_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "outside-secret.txt"
+            outside.write_text("external-secret-marker", encoding="utf-8")
+            alias = workspace / "apparently-safe.txt"
+            try:
+                os.link(outside, alias)
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            result = _execute_grep(
+                {"pattern": "external-secret-marker"}, workspace
+            )
+            self.assertTrue(result.startswith("ERROR:"), result)
+            self.assertNotIn("external-secret-marker", result)
+            self.assertNotIn("apparently-safe.txt:1:", result)
+
     def test_file_tools_cannot_access_vcs_control_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
