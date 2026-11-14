@@ -115,6 +115,11 @@ class WorkspaceFileRaceTests(unittest.TestCase):
             source = workspace / "input.txt"
             source.write_text("safe-content", encoding="utf-8")
             outside = root / "outside-alias.txt"
+            try:
+                os.link(source, outside)
+                outside.unlink()
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
             descriptor = os.open(source, os.O_RDONLY)
             original_read = walk_support.read_descriptor
 
