@@ -114,6 +114,7 @@ def _run_one(case: dict, repeat: int, key: str, model: str,
                 and handoff["verification"]["workspace_readback"] == "matched"
                 and result["bash"]["executed_calls"] == 0
                 and any(item["status"] == "committed" for item in result["mutations"])
+                and {item["path"] for item in handoff["changed_files"]} == {"src/task.py"}
             )
             source = target.read_bytes()
     except Exception as error:
