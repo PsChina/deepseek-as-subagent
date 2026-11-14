@@ -85,16 +85,8 @@ def read_open_entry(descriptor: int, max_bytes: int) -> bytes:
         data = read_descriptor(descriptor, max_bytes)
         after = os.fstat(descriptor)
         after_change = windows_walk.descriptor_change_time(descriptor)
-        validate_readable_file(after)
-        fields = (
-            "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
-            "st_mtime_ns", "st_ctime_ns",
-        )
-        if (
-            len(data) != before.st_size
-            or before_change != after_change
-            or any(getattr(before, name, 1) != getattr(after, name, 1) for name in fields)
-        ):
+        validate_readable_file(after, previous=before)
+        if len(data) != before.st_size or before_change != after_change:
             raise ToolInputError("workspace entry changed while reading")
         return data
     except WorkspaceEntryTooLarge:
