@@ -661,6 +661,10 @@ server._record_usage(1, {
             "get_deepseek_result": (False, False, True, False),
             "get_deepseek_recovery": (False, False, True, False),
             "acknowledge_deepseek_mutations": (False, True, True, False),
+            "delegate_to_deepseek_with_contract": (False, True, False, True),
+            "delegate_to_deepseek_readonly_with_contract": (True, False, False, True),
+            "start_deepseek_with_contract": (False, True, False, True),
+            "start_deepseek_readonly_with_contract": (True, False, False, True),
         }
 
         self.assertEqual(set(tools), set(expected))
@@ -675,6 +679,16 @@ server._record_usage(1, {
                 annotations.openWorldHint,
             )
             self.assertEqual(actual, hints, name)
+
+    def test_contract_api_publishes_nested_strict_schema(self) -> None:
+        tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+        schema = json.dumps(tools["delegate_to_deepseek_with_contract"].inputSchema)
+        self.assertIn("read_paths", schema)
+        self.assertIn("write_paths", schema)
+        self.assertIn("deny_paths", schema)
+        self.assertIn("success_checks", schema)
+        self.assertIn("max_tool_calls", schema)
+        self.assertIn("max_mutation_bytes", schema)
 
     def test_public_tool_schemas_add_only_flash_pro_model_selector(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}

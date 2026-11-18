@@ -19,7 +19,7 @@ from .transaction_journal import (
     append_warning,
     record_intent,
 )
-from .transaction_report import bind_reporter
+from .transaction_report import bind_reporter, current_mutation_path
 from .workspace_guard import bind_workspace_identity
 
 # A 5 MB valid mutation can expand to 30 MB when every byte needs a six-byte
@@ -140,8 +140,8 @@ def _execute(payload: dict, lease_fd: int | None) -> dict:
     with (
         bind_workspace_identity(config.expected_workspace_identity),
         bind_reporter(
-            lambda digest: _persist_mutation_ready(
-                config, transaction_id, name, arguments, digest
+            lambda digest, baseline: _persist_mutation_ready(
+                config, transaction_id, name, arguments, digest, baseline
             ),
             lambda detail: _persist_mutation_warning(
                 config, transaction_id, detail
@@ -160,22 +160,26 @@ def _execute(payload: dict, lease_fd: int | None) -> dict:
 
 
 def _persist_mutation_ready(
-    config, transaction_id: str, name: str, arguments: dict, digest: bytes,
+    config, transaction_id: str, name: str, arguments: dict,
+    digest: bytes, baseline,
 ) -> None:
     try:
-        record_intent(config, transaction_id, name, arguments, digest)
+        record_intent(
+            config, transaction_id, name, arguments, digest, baseline,
+            canonical_path=current_mutation_path(),
+        )
     except JournalUpdatePublishedWarning:
-        _write_mutation_ready(digest)
+        _write_mutation_ready(digest, current_mutation_path())
         raise
-    _write_mutation_ready(digest)
+    _write_mutation_ready(digest, current_mutation_path())
 
 
-def _write_mutation_ready(digest: bytes) -> None:
+def _write_mutation_ready(digest: bytes, canonical_path: str | None = None) -> None:
+    payload = {"kind": "mutation_ready", "sha256": digest.hex()}
+    if canonical_path is not None:
+        payload["path"] = canonical_path
     _write_bytes(
-        json.dumps(
-            {"kind": "mutation_ready", "sha256": digest.hex()},
-            separators=(",", ":"),
-        ).encode("ascii") + b"\n"
+        json.dumps(payload, separators=(",", ":")).encode("ascii") + b"\n"
     )
 
 

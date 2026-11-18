@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import stat
+import threading
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,51 @@ class WorkspaceExecutionLeaseTests(unittest.TestCase):
         process.start()
         self.assertTrue(ready.wait(5.0), f"holder failed with exit={process.exitcode}")
         return process, release
+
+
+    def test_parallel_threads_cannot_acquire_the_same_workspace_lease(self) -> None:
+        workers = 8
+        barrier = threading.Barrier(workers)
+        release_owner = threading.Event()
+        all_attempted = threading.Event()
+        outcomes: list[str] = []
+        guard = threading.Lock()
+
+        def attempt() -> None:
+            lease = None
+            outcome = "error"
+            try:
+                barrier.wait(timeout=5)
+                lease = acquire_workspace_lease(self.workspace, self.lock_directory)
+                outcome = "owner"
+            except WorkspaceLockBusy:
+                outcome = "busy"
+            except WorkspaceLockError:
+                outcome = "failed_closed"
+            finally:
+                with guard:
+                    outcomes.append(outcome)
+                    if len(outcomes) == workers:
+                        all_attempted.set()
+            if lease is not None:
+                release_owner.wait(timeout=5)
+                lease.release()
+
+        threads = [threading.Thread(target=attempt) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        self.assertTrue(all_attempted.wait(5), "not all lease attempts completed")
+        release_owner.set()
+        for thread in threads:
+            thread.join(5)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(outcomes.count("owner"), 1)
+        self.assertEqual(
+            outcomes.count("busy") + outcomes.count("failed_closed"),
+            workers - 1,
+        )
+        self.assertEqual(outcomes.count("error"), 0)
+        self.assertLessEqual(outcomes.count("failed_closed"), 1)
 
     def test_same_workspace_is_exclusive_across_processes(self) -> None:
         process, release = self._start_holder()

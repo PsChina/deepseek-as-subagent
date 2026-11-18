@@ -109,6 +109,36 @@ class ExecutionProfileTests(unittest.TestCase):
         self.assertEqual([call.args[1].delegation_capability for call in sync.call_args_list], ["coding", "readonly"])
         self.assertEqual([call.args[2].delegation_capability for call in start.call_args_list], ["coding", "readonly"])
 
+    def test_contract_is_bound_for_sync_and_background_entrypoints(self) -> None:
+        contract = {
+            "permissions": {
+                "tools": ["Read", "Write"],
+                "read_paths": ["src/**"],
+                "write_paths": ["src/**"],
+            },
+            "limits": {"max_tool_calls": 12, "max_mutation_bytes": 4096},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = self._config(Path(tmpdir))
+            with (
+                patch.object(server.Config, "load", return_value=base),
+                patch.object(server.job_manager, "start", return_value={"job_id": "job"}) as start,
+            ):
+                sync_config, task = server._prepare_sync_request(
+                    "implement feature", "", CODING_PROFILE, "flash", contract,
+                )
+                background = json.loads(server._start_delegation(
+                    "implement feature", "", CODING_PROFILE, "flash", contract,
+                ))
+
+        self.assertEqual(task, "implement feature")
+        self.assertTrue(background["ok"])
+        self.assertIsNotNone(sync_config.effective_policy)
+        self.assertEqual(sync_config.effective_policy.max_mutation_bytes, 4096)
+        self.assertEqual(sync_config.effective_policy.allowed_tools, ("Read", "Write"))
+        background_config = start.call_args.args[2]
+        self.assertEqual(background_config.effective_policy, sync_config.effective_policy)
+
     def test_readonly_api_starts_without_a_container_runtime(self) -> None:
         result = {
             "final_message": "done", "turns_used": 1, "tool_calls": 0,

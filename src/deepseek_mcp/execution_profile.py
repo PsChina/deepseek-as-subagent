@@ -14,9 +14,10 @@ class ExecutionProfile:
     allowed_tools: tuple[str, ...]
 
     def bind(self, config: Config) -> Config:
+        effective_tools = [tool for tool in self.allowed_tools if tool in config.allowed_tools]
         return replace(
             config,
-            allowed_tools=list(self.allowed_tools),
+            allowed_tools=effective_tools,
             delegation_capability=self.capability,
         )
 

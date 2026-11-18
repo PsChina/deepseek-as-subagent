@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Only the latest revision of a pull request needs the full nine-job matrix.
+# Preserve every main-branch push run for release auditability.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: "${{ matrix.os }} / Python ${{ matrix.python-version }}"

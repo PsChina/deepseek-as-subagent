@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 from deepseek_mcp.agent_loop import run_agent
 from deepseek_mcp.config import Config
+from deepseek_mcp.handoff import build_handoff
+from deepseek_mcp.policy_engine import bind_task_contract
 
 
 class _FakeOpenAIHandler(BaseHTTPRequestHandler):
@@ -153,6 +155,86 @@ class LocalOpenAIEndpointTests(unittest.TestCase):
         self.assertTrue(all(not output.startswith("ERROR:") for output in outputs), outputs)
         self.assertIn("VERIFIED", outputs[-1])
         self.assertEqual(_FakeOpenAIHandler.authorizations, ["Bearer local-auth"] * 5)
+
+    def test_contract_bound_multi_step_local_e2e_enforces_scopes_and_handoff(self) -> None:
+        """Exercise provider, agent, child I/O, journal, and host verification."""
+        base_url = self._start_server([
+            ("Read", {"path": "src/input.txt"}),
+            ("Write", {"path": "src/output.txt", "content": "draft\\n"}),
+            ("Edit", {
+                "path": "src/output.txt", "old_string": "draft",
+                "new_string": "verified",
+            }),
+            ("Read", {"path": "private/secret.txt"}),
+            ("Write", {"path": "private/tampered.txt", "content": "blocked"}),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            home = root / "home"
+            home.mkdir()
+            workspace = root / "workspace"
+            (workspace / "src").mkdir(parents=True)
+            (workspace / "private").mkdir()
+            (workspace / "src/input.txt").write_text(
+                "safe input", encoding="utf-8"
+            )
+            (workspace / "private/secret.txt").write_text(
+                "PRIVATE_DO_NOT_LEAK", encoding="utf-8"
+            )
+            config = Config(
+                "local", workspace, model="local", base_url=base_url,
+                allowed_tools=["Read", "Write", "Edit", "Bash"],
+                max_turns=7,
+            )
+            bind_task_contract(config, {
+                "permissions": {
+                    "tools": ["Read", "Write", "Edit"],
+                    "read_paths": ["src/**"],
+                    "write_paths": ["src/**"],
+                },
+                "limits": {"max_tool_calls": 6, "max_mutation_bytes": 8192},
+            })
+            self.assertNotIn("Bash", config.allowed_tools)
+            # Tool subprocesses import the journal independently. Override
+            # only the child home so this test never touches real user state.
+            with patch.dict(os.environ, {
+                "HOME": str(home), "USERPROFILE": str(home),
+            }):
+                result = run_agent("Apply the safe edit and report", config)
+            self.assertEqual(
+                (workspace / "src/output.txt").read_text(encoding="utf-8"),
+                "verified\\n",
+            )
+            self.assertFalse((workspace / "private/tampered.txt").exists())
+
+        history = _FakeOpenAIHandler.requests[-1]["messages"]
+        outputs = [
+            item["content"] for item in history if item["role"] == "tool"
+        ]
+        self.assertEqual(len(outputs), 5)
+        self.assertEqual(outputs[0], "safe input")
+        self.assertTrue(outputs[1].startswith("OK:"), outputs[1])
+        self.assertTrue(outputs[2].startswith("OK:"), outputs[2])
+        self.assertIn("outside the task contract read scope", outputs[3])
+        self.assertIn("outside the task contract write scope", outputs[4])
+        self.assertNotIn("PRIVATE_DO_NOT_LEAK", repr(outputs))
+        self.assertEqual(result["tool_calls"], 5)
+        self.assertEqual(len(result["mutations"]), 2)
+        self.assertTrue(all(
+            item["status"] == "committed" for item in result["mutations"]
+        ))
+        self.assertEqual(result["workspace_evidence"], [{
+            "path": "src/output.txt",
+            "expected_sha256": result["mutations"][-1]["sha256"],
+            "status": "matched",
+            "observed_sha256": result["mutations"][-1]["sha256"],
+        }])
+        handoff = build_handoff(result)
+        self.assertIsNotNone(handoff)
+        self.assertEqual(handoff["verification"]["policy_compliance"], "passed")
+        self.assertEqual(handoff["verification"]["workspace_readback"], "matched")
+        self.assertEqual(handoff["verification"]["functional_correctness"],
+                         "not_independently_verified")
 
     def test_readonly_local_loop_rejects_model_requested_write(self) -> None:
         base_url = self._start_server([("Write", {"path": "forbidden.txt", "content": "x"})])

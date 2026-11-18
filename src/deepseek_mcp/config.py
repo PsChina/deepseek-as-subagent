@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .child_runtime import ChildRuntimeError, runtime_is_within_workspace
+from .policy_engine import EffectivePolicy
 from . import windows_file_io
 from .safety import is_unsafe_workspace_root
 from .workspace_guard import configure_workspace_identity
@@ -412,6 +413,7 @@ class Config:
     flash_reasoning_effort: str = PROVIDER_DEFAULT_REASONING_EFFORT
     pro_reasoning_effort: str = PROVIDER_DEFAULT_REASONING_EFFORT
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    effective_policy: EffectivePolicy | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if is_unsafe_workspace_root(self.workspace):
@@ -435,8 +437,10 @@ class Config:
         self.max_turns = _validate_max_turns(self.max_turns)
         self.max_output_tokens = _validate_max_output_tokens(self.max_output_tokens)
         self.max_run_seconds = _validate_max_run_seconds(self.max_run_seconds)
-        if self.delegation_capability not in {"coding", "readonly"}:
-            raise RuntimeError("invalid delegation capability")
+        if self.delegation_capability not in {"coding", "readonly"}: raise RuntimeError("invalid delegation capability")
+        if self.effective_policy is not None:
+            self.effective_policy = EffectivePolicy.from_dict(self.effective_policy) if isinstance(self.effective_policy, dict) else self.effective_policy
+            if not isinstance(self.effective_policy, EffectivePolicy) or tuple(self.allowed_tools) != self.effective_policy.allowed_tools: raise RuntimeError("invalid or mismatched effective task policy")
         self._validate_mutation_runtime()
 
     def _validate_mutation_runtime(self) -> None:

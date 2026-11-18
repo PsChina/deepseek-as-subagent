@@ -585,6 +585,7 @@ class RetryPolicyTests(unittest.TestCase):
         self.assertEqual(result["final_message"], "fixed and verified")
         self.assertEqual(result["bash"], {
             "calls": 2,
+            "executed_calls": 2,
             "failure_count": 1,
             "last_status": "success",
             "failures": [{"turn": 1, "status": "nonzero_exit", "exit_code": 1}],

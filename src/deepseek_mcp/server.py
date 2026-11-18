@@ -32,6 +32,8 @@ from .agent_loop import AgentIncompleteResponse, AgentLoopCancelled, AgentLoopEr
 from .provider_retry import AgentBudgetExceeded, MutationOutcomeError, MutationOutcomeCancelled, ProviderOutputError
 from .mutation_outcome import mutation_failure_message, records_from_result
 from .config import Config
+from .policy_engine import bind_task_contract
+from .contract_api import register_contract_tools
 from .execution_profile import (
     CODING_PROFILE, READONLY_PROFILE, ExecutionProfile, configure_delegation,
 )
@@ -61,11 +63,9 @@ _PACKAGE_LOGGER.propagate = False
 _LOG_SETUP_LOCK = Lock()
 _LOG_READY = False
 
-
 def _runtime_paths() -> tuple[Path, Path, Path]:
     log_dir = Path.home() / ".deepseek-mcp"
     return log_dir, log_dir / "server.log", log_dir / "usage.log"
-
 
 def _prepare_private_log_dir() -> tuple[Path, Path]:
     # Python's Windows os.open cannot securely open a directory with no-follow
@@ -195,7 +195,7 @@ def ping() -> str:
 
 @mcp.tool(annotations=_RESULT_WITH_BOOKKEEPING)
 def get_deepseek_recovery() -> str:
-    """List durable, unacknowledged workspace mutation outcomes."""
+    """List pending mutation outcomes as committed, not_committed, or uncertain."""
     try:
         records = query_with_lease(load_recovery_config())
     except (RuntimeError, TransactionRecoveryError) as error:
@@ -204,7 +204,7 @@ def get_deepseek_recovery() -> str:
 
 @mcp.tool(annotations=_RECOVERY_ACK)
 def acknowledge_deepseek_mutations(transaction_ids: list[str]) -> str:
-    """Acknowledge exact transaction IDs after the host verifies their files."""
+    """Acknowledge exact IDs only when files match the committed or original baseline state."""
     try:
         removed, pending = acknowledge_with_lease(
             load_recovery_config(), transaction_ids
@@ -231,11 +231,16 @@ def _json(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice = "flash") -> Config:
+def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice = "flash", contract: dict | None = None) -> Config:
     if _deepseek_mode() == "off":
         raise JobError("DeepSeek delegation is disabled (DEEPSEEK_MODE=off)")
     try:
         config = configure_delegation(Config.load(), profile)
+        if contract is not None:
+            try:
+                bind_task_contract(config, contract)
+            except ValueError as error:
+                raise JobError(f"invalid task contract: {error}") from None
         config.model, config.reasoning_effort = resolve_profile(
             model, flash_model=config.flash_model, pro_model=config.pro_model,
             flash_effort=config.flash_reasoning_effort,
@@ -247,11 +252,9 @@ def _load_config(profile: ExecutionProfile = CODING_PROFILE, model: ModelChoice 
     except Exception as e:
         raise JobError(f"deepseek-mcp not configured: {e}") from e
 
-
 def _build_full_task(task: str, context: str) -> str:
     validate_delegation_input(task, context)
     return f"{task}\n\n# Additional context\n{context}" if context else task
-
 
 def _consume_cancelled_worker(worker: asyncio.Task) -> None:
     """Always retrieve a detached thread task outcome after repeated cancellation."""
@@ -292,9 +295,9 @@ async def _run_sync_cancellable(full_task: str, config: Config) -> dict:
                 raise MutationOutcomeCancelled(message, tuple(records)) from None
         raise
 
-async def _delegate(task: str, context: str, profile: ExecutionProfile, model: ModelChoice) -> str:
+async def _delegate(task: str, context: str, profile: ExecutionProfile, model: ModelChoice, contract: dict | None = None) -> str:
     try:
-        config, full_task = _prepare_sync_request(task, context, profile, model)
+        config, full_task = _prepare_sync_request(task, context, profile, model, contract)
     except JobError as e:
         return str(e)
     try:
@@ -334,14 +337,14 @@ async def delegate_to_deepseek_readonly(task: str, context: str = "", model: Mod
     return await _delegate(task, context, READONLY_PROFILE, model)
 
 
-def _prepare_sync_request(task: str, context: str, profile: ExecutionProfile, model: ModelChoice = "flash") -> tuple[Config, str]:
+def _prepare_sync_request(task: str, context: str, profile: ExecutionProfile, model: ModelChoice = "flash", contract: dict | None = None) -> tuple[Config, str]:
     if _deepseek_mode() == "off":
         raise JobError(
             "DeepSeek delegation is disabled (DEEPSEEK_MODE=off). "
             "Continue the task yourself in the main conversation."
         )
     try:
-        config = _load_config(profile, model)
+        config = _load_config(profile, model) if contract is None else _load_config(profile, model, contract)
     except JobError:
         raise
     except Exception as error:
@@ -369,9 +372,10 @@ def _log_sync_completion(result: dict) -> None:
     )
 
 
-def _start_delegation(task: str, context: str, profile: ExecutionProfile, model: ModelChoice) -> str:
+def _start_delegation(task: str, context: str, profile: ExecutionProfile, model: ModelChoice, contract: dict | None = None) -> str:
     try:
-        payload = job_manager.start(task, context, _load_config(profile, model))
+        config = _load_config(profile, model) if contract is None else _load_config(profile, model, contract)
+        payload = job_manager.start(task, context, config)
     except JobError as e:
         return _json({"ok": False, "error": str(e)})
     logger.info("Background DeepSeek job started: %s model=%s", payload["job_id"], model)
@@ -467,6 +471,9 @@ def _record_usage(task_length: int, result: dict) -> bool:
             stream.close()
     except Exception:
         return False
+
+
+register_contract_tools(mcp, _delegate, _start_delegation, CODING_PROFILE, READONLY_PROFILE, _AGENT_EXECUTION, _READONLY_AGENT_EXECUTION)
 
 
 def main() -> None:
