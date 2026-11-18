@@ -1,7 +1,6 @@
 """Runtime checks for immutable task-contract policies."""
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
@@ -80,9 +79,10 @@ def _is_normalized_relative_path(relative_path: str) -> bool:
 
 
 def path_is_allowed(relative_path: str, allowed_paths: tuple[str, ...], deny_paths: tuple[str, ...]) -> bool:
-    if not _is_normalized_relative_path(relative_path): return False
+    if not _is_normalized_relative_path(relative_path):
+        return False
     return not path_is_denied(relative_path, deny_paths) and any(
-        path_matches_pattern(relative_path, pattern, case_sensitive=os.name != "nt")
+        path_matches_pattern(relative_path, pattern)
         for pattern in allowed_paths
     )
 

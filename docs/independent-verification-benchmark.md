@@ -20,7 +20,8 @@ Three independent pieces of evidence must remain distinct:
 
 The verifier returns `artifact_verified`, `incomplete`, `failed`, or
 `invalid_plan`; even `artifact_verified` is **not** a blanket declaration of
-functional correctness. Declared success checks remain `not_run`.
+functional correctness. The verifier lists every declared Task Contract success
+check as `not_run`, even if a verification plan lists only a subset.
 
 ## API
 
@@ -77,8 +78,8 @@ journal. Its current fixed tasks are:
 
 For each task it verifies the expected code digest, an untouched guard file,
 the structured handoff's policy and readback evidence, and a tiny **trusted
-fixture-specific behavioral test**. It executes only source that has just been
-securely read and whose SHA-256 matches the fixed trusted fixture. No arbitrary
+fixture-specific behavioral test**. After the verifier matches the workspace
+digest, the script executes the fixed source embedded in the benchmark. No arbitrary
 model output is executed, and no model-controlled shell command is accepted.
 
 CI runs this suite on Ubuntu/Python 3.11; ordinary unit tests cover the verifier

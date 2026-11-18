@@ -30,6 +30,7 @@ permissions:
 jobs:
   model:
     name: Credentialed model task preparation (no code execution)
+    if: github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -59,7 +60,7 @@ jobs:
           DEEPSEEK_LIVE_MODEL: ${{ inputs.model }}
           DEEPSEEK_BENCHMARK_REPEATS: ${{ inputs.repeats }}
           DEEPSEEK_BENCHMARK_ARTIFACT: ${{ runner.temp }}/benchmark-input.json
-        run: python scripts/prepare_live_code_benchmark.py
+        run: python -m scripts.prepare_live_code_benchmark
 
       - name: Upload fixed-path source snapshots
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -111,4 +112,4 @@ jobs:
         env:
           DEEPSEEK_TEST_SANDBOX_IMAGE: ${{ inputs.sandbox_image }}
           DEEPSEEK_BENCHMARK_ARTIFACT: ${{ runner.temp }}/benchmark-artifact/benchmark-input.json
-        run: python scripts/verify_live_code_benchmark.py
+        run: python -m scripts.verify_live_code_benchmark

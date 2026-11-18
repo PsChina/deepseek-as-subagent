@@ -107,7 +107,8 @@ class WorkspaceWalk:
 
     def __init__(self, base: str, workspace: Path, raw_pattern: str, *, open_files: bool = False, allowed_paths: tuple[str, ...] | None = None, denied_paths: tuple[str, ...] = ()) -> None:
         self.root, self.base, relative = _resolve_base(base, workspace)
-        self.pruned = walk_support.PrunedDirectories(self.root)
+        walk_support.validate_base_scope(relative, denied_paths)
+        self.pruned = walk_support.PrunedDirectories(self.root, allowed_paths, denied_paths)
         self.pattern = _GlobPattern.parse(raw_pattern)
         self.truncated = False
         self._deadline = time.monotonic() + MAX_WALK_SECONDS
@@ -147,7 +148,7 @@ class WorkspaceWalk:
                 raise ToolInputError("path identity changed before traversal") from exc
             stack.append(root_frame)
             while stack and not self._budget_exhausted():
-                entry = _next_entry(stack)
+                entry = walk_support.next_entry(stack)
                 if entry is None:
                     continue
                 self._entries += 1
@@ -172,11 +173,12 @@ class WorkspaceWalk:
         states = self.pruned.advance(self.pattern, parent, entry.name, is_dir)
         if not states:
             return None, None
-        parts = (*parent.relative_parts, entry.name)
         path = parent.display_path / entry.name
         if is_protected_host_path(path):
             return None, None
-        if path_is_denied(path.relative_to(self.root).as_posix(), self._denied_paths): return None, None
+        if path_is_denied(path.relative_to(self.root).as_posix(), self._denied_paths):
+            return None, None
+        parts = (*parent.relative_parts, entry.name)
         matched = self._matched_entry(path, parts, states, is_file, is_dir, info, parent)
         child = self._child_frame(path, parts, states, info, parent) if is_dir else None
         return matched, child
@@ -463,9 +465,6 @@ def _open_fallback_regular(
         if descriptor is not None:
             os.close(descriptor)
         return walk_support.skip_race_or_raise(error)
-
-def _next_entry(stack: list[_Frame]) -> os.DirEntry[str] | None:
-    return walk_support.next_entry(stack)
 
 def _real_path_info(path: Path) -> os.stat_result | None:
     try:

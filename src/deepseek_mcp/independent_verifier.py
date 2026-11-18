@@ -21,16 +21,15 @@ def _verify_one(config, expected: ArtifactExpectation) -> dict:
         return outcome
     operation = "Write" if expected.role == "output" else "Read"
     try:
-        with bind_workspace_identity(config.expected_workspace_identity):
-            with bind_file_policy(policy, operation):
-                _content, identity = read_workspace_text(
-                    config.workspace, expected.path, require_canonical=True
-                )
-        actual = identity.digest.hex() if identity.digest is not None else None
+        with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(policy, operation):
+            _, identity = read_workspace_text(
+                config.workspace, expected.path, require_canonical=True
+            )
     except (OSError, RuntimeError, ValueError, SandboxViolation):
         return outcome
-    if actual is None:
+    if identity.digest is None:
         return outcome
+    actual = identity.digest.hex()
     outcome["observed_sha256"] = actual
     outcome["status"] = "matched" if actual == expected.sha256 else "changed"
     return outcome
@@ -54,7 +53,7 @@ def verify_artifacts(config, plan: VerificationPlan | dict) -> dict:
         return {"status": "invalid_plan", "artifacts": [], "success_checks": [],
                 "functional_correctness": "not_independently_verified"}
     artifacts = [_verify_one(config, item) for item in plan.artifacts]
-    checks = [{"name": name, "status": "not_run"} for name in plan.success_checks]
+    checks = [{"name": name, "status": "not_run"} for name in policy.success_checks]
     states = {item["status"] for item in artifacts}
     if states.intersection({"denied", "changed"}):
         status = "failed"

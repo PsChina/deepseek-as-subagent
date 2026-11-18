@@ -148,6 +148,13 @@ class ToolProcessTests(unittest.TestCase):
                 config, "Write", {"path": "src/alias.txt"}, raw
             )
             self.assertEqual(details, ("committed", "src/actual.txt", digest))
+            incomplete = json.dumps(
+                {"kind": "mutation_ready", "sha256": digest}
+            ).encode("utf-8")
+            self.assertEqual(
+                _mutation_details(config, "Write", {"path": "src/actual.txt"}, incomplete),
+                ("uncertain", None, digest),
+            )
 
             actual.unlink()
             try:
@@ -157,8 +164,7 @@ class ToolProcessTests(unittest.TestCase):
             details = _mutation_details(
                 config, "Write", {"path": "src/alias.txt"}, raw
             )
-            self.assertEqual(details[0], "uncertain")
-            self.assertEqual(details[1], "src/alias.txt")
+            self.assertEqual(details, ("uncertain", "src/actual.txt", digest))
 
     def test_real_write_runs_in_child_and_returns_mutation_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

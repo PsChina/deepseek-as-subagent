@@ -11,7 +11,7 @@ from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
 from deepseek_mcp.independent_verifier import verify_artifacts
 from deepseek_mcp.policy_engine import compile_task_policy
 from deepseek_mcp.task_contract import TaskContract
-from deepseek_mcp.verification_plan import VerificationPlan
+from deepseek_mcp.verification_plan import ArtifactExpectation, VerificationPlan
 
 
 def _sha(value: str) -> str:
@@ -26,15 +26,18 @@ class IndependentVerifierTests(unittest.TestCase):
         (self.root / "src").mkdir()
         (self.root / "src" / "output.py").write_bytes(b"good\n")
         (self.root / "src" / "guard.txt").write_text("keep", encoding="utf-8")
+        self.config = self._config()
+
+    def _config(self, checks=()):
         contract = TaskContract.from_dict({
             "permissions": {
                 "tools": ["Read", "Write", "Edit"],
                 "read_paths": ["src/**"], "write_paths": ["src/**"],
             },
-            "constraints": {"success_checks": ["python -m unittest discover"]},
+            "constraints": {"success_checks": list(checks)},
         })
         policy = compile_task_policy(contract, DEFAULT_ALLOWED_TOOLS)
-        self.config = Config(
+        return Config(
             "", self.root, allowed_tools=list(policy.allowed_tools),
             effective_policy=policy,
         )
@@ -66,10 +69,16 @@ class IndependentVerifierTests(unittest.TestCase):
         (self.root / "src" / "output.py").unlink()
         report = verify_artifacts(self.config, self._plan())
         self.assertEqual(report["status"], "incomplete")
-        report = verify_artifacts(self.config, self._plan(
-            checks=["python -m unittest discover"]))
-        self.assertEqual(report["success_checks"][0]["status"], "not_run")
-        self.assertEqual(report["status"], "incomplete")
+        (self.root / "src" / "output.py").write_bytes(b"good\n")
+        checks = ["python -m unittest discover", "inspect public API"]
+        self.config = self._config(checks)
+        for plan_checks in ([], checks[:1], checks):
+            with self.subTest(plan_checks=plan_checks):
+                report = verify_artifacts(self.config, self._plan(checks=plan_checks))
+                self.assertEqual(report["success_checks"], [
+                    {"name": name, "status": "not_run"} for name in checks
+                ])
+                self.assertEqual(report["status"], "incomplete")
 
     def test_cannot_swap_contract_hash_or_invent_test_evidence(self):
         plan = self._plan()
@@ -111,6 +120,19 @@ class IndependentVerifierTests(unittest.TestCase):
             plan = self._plan()
             plan["unexpected"] = "ignore"
             VerificationPlan.from_dict(plan)
+
+    def test_direct_plan_construction_enforces_the_manifest_schema(self):
+        digest = self.config.effective_policy.contract_hash
+        item = ArtifactExpectation("src/output.py", _sha("good\n"), "output")
+        for artifacts in ((), (item, item), (object(),), [item]):
+            with self.subTest(artifacts=artifacts), self.assertRaises(ValueError):
+                VerificationPlan(digest, artifacts, ())
+        with self.assertRaises(ValueError):
+            ArtifactExpectation("src/output.py", _sha("good\n"), "unknown")
+        with self.assertRaisesRegex(ValueError, "32 KiB"):
+            VerificationPlan(digest, (item,), tuple("🧪" * 255 + chr(65 + i) for i in range(16)))
+        plan = VerificationPlan(digest, (item,), ())
+        self.assertEqual(verify_artifacts(self.config, plan)["status"], "artifact_verified")
 
     def test_benchmark_fails_closed_for_unknown_or_unsafe_cases(self):
         records = [

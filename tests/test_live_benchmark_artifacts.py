@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts import prepare_live_code_benchmark as prepare
+from scripts import verify_live_code_benchmark as verify
 from scripts.verify_live_code_benchmark import _decode_record, _read_artifact
 
 
@@ -87,6 +89,33 @@ class LiveBenchmarkArtifactTests(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True):
                 parsed = _read_artifact(path)
             self.assertEqual(len(parsed["records"]), 2)
+
+    def test_provider_error_preserves_a_valid_incomplete_record(self):
+        with patch.object(prepare, "run_agent", side_effect=RuntimeError("offline")):
+            raw = prepare._run_one(
+                prepare._CASES[0], 1, "test-key", "test-model", "https://example.invalid",
+            )
+        item, source = _decode_record(raw)
+        self.assertEqual(item["tokens"], {"prompt": 0, "completion": 0, "total": 0})
+        with patch.object(verify, "_evaluate_candidate") as run:
+            result = verify._run_record(item, source, "unused-image")
+        run.assert_not_called()
+        self.assertEqual(result["verdict"], "incomplete")
+        self.assertEqual(result["sandbox_status"], "not_run")
+
+    def test_duplicate_run_is_rejected_before_starting_any_candidate(self):
+        with patch.object(prepare, "run_agent", side_effect=RuntimeError("offline")):
+            raw = prepare._run_one(
+                prepare._CASES[0], 1, "test-key", "test-model", "https://example.invalid",
+            )
+        artifact = {"repeats_per_task": 1, "records": [raw, raw]}
+        with (
+            patch.object(verify, "_read_artifact", return_value=artifact),
+            patch.object(verify, "_evaluate_candidate") as run,
+            self.assertRaisesRegex(ValueError, "duplicate task run"),
+        ):
+            verify.main()
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

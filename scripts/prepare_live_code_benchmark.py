@@ -17,8 +17,17 @@ from urllib.parse import urlsplit
 
 from deepseek_mcp.agent_loop import run_agent
 from deepseek_mcp.config import Config
+from deepseek_mcp.file_io import read_workspace_text
 from deepseek_mcp.handoff import build_handoff
+from deepseek_mcp.policy_enforcement import bind_file_policy
 from deepseek_mcp.policy_engine import bind_task_contract
+from deepseek_mcp.task_contract import TaskContract
+from deepseek_mcp.workspace_guard import bind_workspace_identity
+
+if __package__:
+    from .live_benchmark_contract import TASK_PATH, TASK_TOOLS, task_contract
+else:
+    from live_benchmark_contract import TASK_PATH, TASK_TOOLS, task_contract
 
 _CASES = (
     {
@@ -63,76 +72,68 @@ def _required_environment() -> tuple[str, str, str, int]:
     return key, model, endpoint, repeats
 
 
-def _contract() -> dict:
-    return {
-        "intent": "implement",
-        "permissions": {
-            "tools": ["Read", "Write", "Edit"],
-            "read_paths": ["src/**"], "write_paths": ["src/**"],
-        },
-        "constraints": {
-            "success_checks": ["trusted host-side hidden acceptance tests"],
-            "expected_outputs": ["src/task.py"],
-        },
-        "limits": {"max_tool_calls": 8, "max_mutation_bytes": 4096},
-    }
-
-
 def _config(key: str, model: str, endpoint: str, workspace: Path) -> Config:
     return Config(
         api_key=key, workspace=workspace, model=model, base_url=endpoint,
-        allowed_tools=["Read", "Write", "Edit"], max_turns=8,
+        allowed_tools=list(TASK_TOOLS), max_turns=8,
         max_output_tokens=2048, max_run_seconds=240,
+    )
+
+
+def _policy_passed(result: dict, source_sha256: str) -> bool:
+    handoff = build_handoff(result)
+    mutations = result["mutations"]
+    if not handoff or not mutations:
+        return False
+    verification = handoff["verification"]
+    return (
+        verification["policy_compliance"] == "passed"
+        and verification["resource_compliance"] == "passed"
+        and verification["mutation_integrity"] == "verified_at_commit"
+        and verification["workspace_readback"] == "matched"
+        and all(item["status"] == "committed" and item["path"] == TASK_PATH for item in mutations)
+        and mutations[-1]["sha256"] == source_sha256
     )
 
 
 def _run_one(case: dict, repeat: int, key: str, model: str,
              endpoint: str) -> dict:
     started = time.monotonic()
-    policy_hash, tool_calls, tokens = "", 0, {}
-    policy_ok, agent_status = False, "error"
+    contract = task_contract()
+    policy_hash = TaskContract.from_dict(contract).digest()
+    tool_calls = 0
+    tokens = {"prompt": 0, "completion": 0, "total": 0}
+    policy_ok, agent_status = False, "not_started"
     source = case["initial"].encode("utf-8")
     try:
         with tempfile.TemporaryDirectory(prefix="deepseek-agent-benchmark-") as temporary:
             workspace = Path(temporary).resolve()
             (workspace / "src").mkdir()
-            target = workspace / "src" / "task.py"
+            target = workspace / TASK_PATH
             target.write_bytes(source)
             config = _config(key, model, endpoint, workspace)
-            policy = bind_task_contract(config, _contract())
-            policy_hash = policy.contract_hash
-            try:
-                result = run_agent(
-                    case["task"] + "\nOnly edit src/task.py. Report honestly when finished.",
-                    config,
+            policy = bind_task_contract(config, contract)
+            result = run_agent(
+                case["task"] + "\nOnly edit src/task.py. Report honestly when finished.",
+                config,
+            )
+            tool_calls, tokens = result["tool_calls"], result["tokens"]
+            with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(policy, "Read"):
+                content, identity = read_workspace_text(
+                    workspace, TASK_PATH, require_canonical=True, strict_utf8=True, reject_binary=True,
                 )
-                agent_status = "completed"
-                tool_calls, tokens = result["tool_calls"], result["tokens"]
-                handoff = build_handoff(result)
-                policy_ok = bool(
-                    handoff
-                    and handoff["verification"]["policy_compliance"] == "passed"
-                    and handoff["verification"]["workspace_readback"] == "matched"
-                    and result["bash"]["executed_calls"] == 0
-                    and 1 <= result["tool_calls"] <= 8
-                    and bool(result["mutations"])
-                    and all(
-                        item["status"] == "committed" and item["path"] == "src/task.py"
-                        for item in result["mutations"]
-                    )
-                    and {item["path"] for item in handoff["changed_files"]} == {"src/task.py"}
-                )
-            except Exception as error:
-                agent_status = type(error).__name__
-            try:
-                source = target.read_bytes()
-            except OSError:
-                pass
+            source = content.encode("utf-8")
+            current_digest = identity.digest.hex() if identity.digest is not None else ""
+            policy_ok = _policy_passed(result, current_digest)
+            agent_status = "completed"
     except Exception as error:
         agent_status = type(error).__name__
     if len(source) > 1024 * 1024:
         source = b""
         policy_ok, agent_status = False, "source_limit_exceeded"
+    if key.encode("utf-8") in source:
+        source = b""
+        policy_ok, agent_status = False, "credential_redacted"
     return {
         "task_id": case["id"], "repeat": repeat,
         "agent_status": agent_status, "policy_passed": policy_ok,

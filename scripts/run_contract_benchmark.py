@@ -18,9 +18,6 @@ from unittest.mock import patch
 from deepseek_mcp.agent_loop import run_agent
 from deepseek_mcp.benchmark_metrics import summarize_benchmark
 from deepseek_mcp.config import Config, DEFAULT_ALLOWED_TOOLS
-from deepseek_mcp.file_io import read_workspace_text
-from deepseek_mcp.policy_enforcement import bind_file_policy
-from deepseek_mcp.workspace_guard import bind_workspace_identity
 from deepseek_mcp.handoff import build_handoff
 from deepseek_mcp.independent_verifier import verify_artifacts
 from deepseek_mcp.policy_engine import compile_task_policy
@@ -130,32 +127,32 @@ def _execute(case_id, initial, expected, old, new):
                      "role": "unchanged"},
                 ],
             })
-            handoff = build_handoff(result)
-            policy_ok = handoff["verification"]["policy_compliance"] == "passed"
-            committed = handoff["verification"]["workspace_readback"] == "matched"
+            verification = build_handoff(result)["verification"]
+            policy_ok = all(verification[field] == "passed" for field in (
+                "policy_compliance", "resource_compliance",
+            ))
+            committed = (
+                verification["mutation_integrity"] == "verified_at_commit"
+                and verification["workspace_readback"] == "matched"
+            )
             artifact_ok = evidence["status"] == "artifact_verified"
-            # Never execute model-written code if its bytes differ from the
-            # trusted fixture. This is NOT an isolation mechanism for arbitrary code.
-            behavior_ok = False
-            if artifact_ok:
-                with bind_workspace_identity(config.expected_workspace_identity):
-                    with bind_file_policy(policy, "Write"):
-                        source, identity = read_workspace_text(
-                            workspace, "src/task.py", require_canonical=True
-                        )
-                if identity.digest == bytes.fromhex(_sha(expected)):
-                    behavior_ok = _trusted_fixture_behavior(case_id, source)
-            success = artifact_ok and behavior_ok and policy_ok and committed
             calls = result["tool_calls"]
+            # The verifier already re-opened the output and matched its digest.
+            # Execute the trusted constant from this script.
+            success = (
+                artifact_ok and policy_ok and committed and calls == len(sequence)
+                and _trusted_fixture_behavior(case_id, expected)
+            )
+            verdict = "passed" if success else "failed"
         except Exception as error:
             print(f"{case_id}: {type(error).__name__}", file=sys.stderr)
-            policy_ok, success, calls = False, False, 0
+            policy_ok, verdict, calls = False, "incomplete", 0
         finally:
             server.shutdown()
             thread.join(5)
             server.server_close()
         duration = min(3_600_000, int((time.monotonic() - started) * 1000))
-        return {"id": case_id, "verdict": "passed" if success else "failed",
+        return {"id": case_id, "verdict": verdict,
                 "policy_passed": policy_ok, "duration_ms": duration,
                 "tool_calls": calls}
 

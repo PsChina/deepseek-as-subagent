@@ -18,6 +18,12 @@ from deepseek_mcp.sandbox_executor import (
     compute_test_suite_digest,
     execute_sandboxed_tests,
 )
+from deepseek_mcp.task_contract import TaskContract
+
+if __package__:
+    from .live_benchmark_contract import TASK_CALL_LIMIT, TASK_PATH, TASK_TOOLS, task_contract
+else:
+    from live_benchmark_contract import TASK_CALL_LIMIT, TASK_PATH, TASK_TOOLS, task_contract
 
 ROOT = Path(__file__).resolve().parents[1]
 _HIDDEN = ROOT / "benchmarks" / "hidden"
@@ -42,14 +48,22 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict:
     return value
 
 
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"benchmark artifact contains a nonfinite value: {value}")
+
+
 def _read_artifact(path: Path) -> dict:
     if os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("verification job must not receive provider credentials")
-    payload = path.read_bytes()
+    with path.open("rb") as handle:
+        payload = handle.read(_MAX_ARTIFACT_BYTES + 1)
     if len(payload) > _MAX_ARTIFACT_BYTES:
         raise ValueError("benchmark artifact exceeds 20 MiB")
     try:
-        value = json.loads(payload, object_pairs_hook=_unique_object)
+        value = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant,
+        )
     except _DuplicateArtifactKey:
         raise ValueError("benchmark artifact contains duplicate JSON keys") from None
     except (UnicodeError, ValueError, RecursionError):
@@ -70,7 +84,7 @@ def _read_artifact(path: Path) -> dict:
     repeats = value["repeats_per_task"]
     if type(repeats) is not int or not 1 <= repeats <= 5:
         raise ValueError("benchmark repeat count is invalid")
-    if not isinstance(value["records"], list) or len(value["records"]) != 2 * repeats:
+    if not isinstance(value["records"], list) or len(value["records"]) != len(_SUITES) * repeats:
         raise ValueError("benchmark artifact has an invalid record count")
     return value
 
@@ -97,8 +111,10 @@ def _decode_record(raw: object) -> tuple[dict, bytes]:
             raise ValueError("benchmark digest is invalid")
     if (type(raw["duration_ms"]) is not int
             or not 0 <= raw["duration_ms"] <= 3_600_000
-            or type(raw["tool_calls"]) is not int or not 0 <= raw["tool_calls"] <= 8):
+            or type(raw["tool_calls"]) is not int or not 0 <= raw["tool_calls"] <= TASK_CALL_LIMIT):
         raise ValueError("benchmark metric is invalid")
+    if raw["policy_passed"] and (raw["agent_status"] != "completed" or not raw["tool_calls"]):
+        raise ValueError("benchmark policy evidence conflicts with the Agent status")
     tokens = raw["tokens"]
     if (not isinstance(tokens, dict) or set(tokens) != {"prompt", "completion", "total"}
             or any(type(tokens[name]) is not int or not 0 <= tokens[name] <= 1_000_000_000 for name in tokens)
@@ -119,31 +135,19 @@ def _decode_record(raw: object) -> tuple[dict, bytes]:
 
 def _config(workspace: Path):
     config = Config(
-        api_key="", workspace=workspace, allowed_tools=["Read", "Write", "Edit"],
+        api_key="", workspace=workspace, allowed_tools=list(TASK_TOOLS),
     )
-    policy = bind_task_contract(config, {
-        "intent": "implement",
-        "permissions": {
-            "tools": ["Read", "Write", "Edit"],
-            "read_paths": ["src/**"], "write_paths": ["src/**"],
-        },
-        "constraints": {
-            "success_checks": ["trusted host-side hidden acceptance tests"],
-            "expected_outputs": ["src/task.py"],
-        },
-        "limits": {"max_tool_calls": 8, "max_mutation_bytes": 4096},
-    })
+    policy = bind_task_contract(config, task_contract())
     return config, policy
 
 
-def _run_record(raw: dict, source: bytes, image: str) -> dict:
+def _evaluate_candidate(raw: dict, source: bytes, image: str) -> dict:
     started = time.monotonic()
-    sandbox = {"status": "not_run", "duration_ms": 0}
     try:
         with tempfile.TemporaryDirectory(prefix="deepseek-hidden-eval-") as temporary:
             workspace = Path(temporary).resolve()
             (workspace / "src").mkdir()
-            (workspace / "src" / "task.py").write_bytes(source)
+            (workspace / TASK_PATH).write_bytes(source)
             config, policy = _config(workspace)
             if policy.contract_hash != raw["contract_sha256"]:
                 raise ValueError("prepared Task Contract does not match verifier contract")
@@ -153,27 +157,38 @@ def _run_record(raw: dict, source: bytes, image: str) -> dict:
                 "contract_sha256": policy.contract_hash,
                 "test_suite_sha256": compute_test_suite_digest(suite),
                 "source_files": [{
-                    "path": "src/task.py",
+                    "path": TASK_PATH,
                     "sha256": hashlib.sha256(source).hexdigest(),
                 }],
             }
-            sandbox = execute_sandboxed_tests(
+            return execute_sandboxed_tests(
                 config, plan, suite, image=image, timeout_seconds=60,
             )
     except Exception as error:
-        sandbox = {"status": "incomplete", "error_type": type(error).__name__,
-                   "duration_ms": int((time.monotonic() - started) * 1000)}
+        return {
+            "status": "incomplete", "error_type": type(error).__name__,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+
+
+def _run_record(raw: dict, source: bytes, image: str) -> dict:
+    agent_completed = raw["agent_status"] == "completed"
+    sandbox = (
+        _evaluate_candidate(raw, source, image) if agent_completed and raw["policy_passed"]
+        else {"status": "not_run", "duration_ms": 0}
+    )
     status = sandbox.get("status")
-    incomplete = raw["agent_status"] != "completed" or status in {"not_run", "incomplete", "sandbox_unavailable",
-                            "runner_error", "timed_out", "output_limit"}
-    verdict = "passed" if raw["policy_passed"] and status == "passed" else (
-        "incomplete" if incomplete else "failed"
+    incomplete = not agent_completed or status in {
+        "incomplete", "runner_error", "timed_out", "output_limit"
+    }
+    verdict = (
+        "passed" if status == "passed" else "incomplete" if incomplete else "failed"
     )
     return {
         "id": f"{raw['task_id']}-run-{raw['repeat']}",
         "verdict": verdict,
         "policy_passed": raw["policy_passed"],
-        "duration_ms": raw["duration_ms"] + sandbox.get("duration_ms", 0),
+        "duration_ms": min(3_600_000, raw["duration_ms"] + sandbox["duration_ms"]),
         "tool_calls": raw["tool_calls"],
         "task_id": raw["task_id"], "repeat": raw["repeat"],
         "agent_status": raw["agent_status"],
@@ -184,18 +199,19 @@ def _run_record(raw: dict, source: bytes, image: str) -> dict:
     }
 
 
-def main() -> int:
-    artifact_path = Path(os.environ.get("DEEPSEEK_BENCHMARK_ARTIFACT", "benchmark-input.json"))
-    image = os.environ.get("DEEPSEEK_TEST_SANDBOX_IMAGE", "")
-    artifact = _read_artifact(artifact_path)
-    records, seen = [], set()
+def _validated_records(artifact: dict) -> list[tuple[dict, bytes]]:
+    records = []
+    seen = set()
+    contract_digest = TaskContract.from_dict(task_contract()).digest()
     for raw in artifact["records"]:
         item, source = _decode_record(raw)
+        if item["contract_sha256"] != contract_digest:
+            raise ValueError("prepared Task Contract does not match verifier contract")
         key = (item["task_id"], item["repeat"])
         if key in seen:
             raise ValueError("benchmark artifact contains a duplicate task run")
         seen.add(key)
-        records.append(_run_record(item, source, image))
+        records.append((item, source))
     expected = {
         (task_id, repeat)
         for task_id in _SUITES
@@ -203,6 +219,14 @@ def main() -> int:
     }
     if seen != expected:
         raise ValueError("benchmark artifact is missing a task or repeat")
+    return records
+
+
+def main() -> int:
+    artifact_path = Path(os.environ.get("DEEPSEEK_BENCHMARK_ARTIFACT", "benchmark-input.json"))
+    image = os.environ.get("DEEPSEEK_TEST_SANDBOX_IMAGE", "")
+    artifact = _read_artifact(artifact_path)
+    records = [_run_record(item, source, image) for item, source in _validated_records(artifact)]
     summary = summarize_benchmark([
         {key: row[key] for key in (
             "id", "verdict", "policy_passed", "duration_ms", "tool_calls"
@@ -215,7 +239,8 @@ def main() -> int:
         "provider": artifact["provider"],
         "model": artifact["model"],
         "repeats_per_task": artifact["repeats_per_task"],
-        "hidden_tests": "private; not sent to provider",
+        "hidden_tests": "host_only_not_sent_to_provider",
+        "sandbox_image": image,
         "execution": "separate no-secret job; Docker network=none; non-root; read-only mounts",
         "records": records,
         "summary": summary,

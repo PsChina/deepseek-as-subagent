@@ -12,6 +12,10 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_VERIFIER_ENV = {
+    "LANG", "LC_ALL", "PATH", "SYSTEMROOT", "TMP", "TEMP", "TMPDIR", "TZ",
+    "DEEPSEEK_BENCHMARK_ARTIFACT", "DEEPSEEK_DOCKER_BIN", "DEEPSEEK_TEST_SANDBOX_IMAGE",
+}
 
 
 def main() -> int:
@@ -27,7 +31,7 @@ def main() -> int:
             return prepared.returncode
         verification_environment = {
             name: value for name, value in environment.items()
-            if name not in {"DEEPSEEK_API_KEY", "OPENAI_API_KEY"}
+            if name in _VERIFIER_ENV
         }
         verified = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "verify_live_code_benchmark.py")],

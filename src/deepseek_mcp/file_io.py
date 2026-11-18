@@ -109,12 +109,13 @@ def _decode(data: bytes, *, strict_utf8: bool, reject_binary: bool) -> str:
         raise ToolInputError("file is not valid UTF-8") from None
 def _checked_read(descriptor: int, *, strict_utf8: bool, reject_binary: bool) -> tuple[str, FileIdentity]:
     initial_stat = os.fstat(descriptor)
-    before = FileIdentity.from_stat(initial_stat)
     validate_readable_file(initial_stat)
     data = _read_descriptor(descriptor)
-    if len(data) != before.size or FileIdentity.from_stat(os.fstat(descriptor)) != before:
+    final_stat = os.fstat(descriptor)
+    validate_readable_file(final_stat, previous=initial_stat)
+    if len(data) != initial_stat.st_size:
         raise ToolInputError("file changed while reading")
-    identity = FileIdentity.from_stat(os.fstat(descriptor), hashlib.sha256(data).digest())
+    identity = FileIdentity.from_stat(final_stat, hashlib.sha256(data).digest())
     return _decode(data, strict_utf8=strict_utf8, reject_binary=reject_binary), identity
 def _read_posix(
     root: Path, relative: Path, *, strict_utf8: bool, reject_binary: bool

@@ -7,7 +7,8 @@ import stat
 from pathlib import Path
 from typing import Iterator, Any
 
-from .file_io import ToolInputError
+from .file_identity import ToolInputError, validate_readable_file
+from .policy_enforcement import path_is_allowed, path_is_denied
 from . import windows_walk
 
 _RACE_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ELOOP})
@@ -25,8 +26,12 @@ class WorkspaceEntryTooLarge(ToolInputError):
 class PrunedDirectories:
     """Pattern advance that keeps `**` out of generated directories."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self, root: Path, allowed_paths: tuple[str, ...] | None, denied_paths: tuple[str, ...]
+    ) -> None:
         self.root = root
+        self.allowed_paths = allowed_paths
+        self.denied_paths = denied_paths
         self.paths: list[Path] = []
         self.count = 0
 
@@ -36,10 +41,17 @@ class PrunedDirectories:
             return states
         pruned = pattern.advance(parent.states, name, prune=True)
         if pruned != states:
-            self.count += 1
-            if len(self.paths) < MAX_REPORTED_PRUNED_DIRECTORIES:
-                self.paths.append((parent.display_path / name).relative_to(self.root))
+            self._report((parent.display_path / name).relative_to(self.root))
         return pruned
+
+    def _report(self, relative: Path) -> None:
+        if self.allowed_paths is not None and not path_is_allowed(
+            relative.as_posix(), self.allowed_paths, self.denied_paths
+        ):
+            return
+        self.count += 1
+        if len(self.paths) < MAX_REPORTED_PRUNED_DIRECTORIES:
+            self.paths.append(relative)
 
     def note(self) -> str:
         if not self.count:
@@ -51,6 +63,12 @@ class PrunedDirectories:
             f"\nSkipped generated directories: {shown}. "
             "Pass one as 'path' to search inside it."
         )
+
+
+def validate_base_scope(relative: Path, deny_paths: tuple[str, ...]) -> None:
+    for directory in (relative, *relative.parents):
+        if directory.parts and path_is_denied(directory.as_posix(), deny_paths):
+            raise ToolInputError("search base is outside the task contract read scope")
 
 
 def skip_race_or_raise(error: OSError):
@@ -78,22 +96,15 @@ def read_open_entry(descriptor: int, max_bytes: int) -> bytes:
     try:
         before = os.fstat(descriptor)
         before_change = windows_walk.descriptor_change_time(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise ToolInputError("workspace entry is not a regular file")
+        validate_readable_file(before)
         if before.st_size > max_bytes:
             raise WorkspaceEntryTooLarge(f"file exceeds {max_bytes} bytes")
         os.lseek(descriptor, 0, os.SEEK_SET)
         data = read_descriptor(descriptor, max_bytes)
         after = os.fstat(descriptor)
         after_change = windows_walk.descriptor_change_time(descriptor)
-        fields = (
-            "st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns"
-        )
-        if (
-            len(data) != before.st_size
-            or before_change != after_change
-            or any(getattr(before, name) != getattr(after, name) for name in fields)
-        ):
+        validate_readable_file(after, previous=before)
+        if len(data) != before.st_size or before_change != after_change:
             raise ToolInputError("workspace entry changed while reading")
         return data
     except WorkspaceEntryTooLarge:
