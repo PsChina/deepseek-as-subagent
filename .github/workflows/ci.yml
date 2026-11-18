@@ -67,6 +67,14 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         run: python scripts/run_contract_benchmark.py
 
+      - name: Run networkless Docker acceptance smoke
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        env:
+          DEEPSEEK_SANDBOX_SMOKE_IMAGE: docker.io/library/python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+        run: |
+          docker pull "$DEEPSEEK_SANDBOX_SMOKE_IMAGE"
+          python -m unittest discover -s tests -p test_sandbox_executor.py -k real_docker -v
+
       - name: Check installed dependency consistency
         run: python -m pip check
 
