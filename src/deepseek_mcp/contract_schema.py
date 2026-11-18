@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .resource_budget import MAX_MUTATION_BYTES_PER_RUN, MAX_TOOL_CALLS_PER_RUN
 from .task_contract import (
@@ -27,16 +27,16 @@ class ContractPermissionsInput(_StrictInput):
         default=None, max_length=6,
         description="Optional tool subset. Bash is intentionally unavailable in contract-bound runs.",
     )
-    read_paths: list[PathPattern] | None = Field(
-        default=None, max_length=MAX_LIST_ITEMS,
+    read_paths: list[PathPattern] = Field(
+        default_factory=lambda: ["**/*"], max_length=MAX_LIST_ITEMS,
         description="Workspace-relative paths the agent may read.",
     )
-    write_paths: list[PathPattern] | None = Field(
-        default=None, max_length=MAX_LIST_ITEMS,
+    write_paths: list[PathPattern] = Field(
+        default_factory=list, max_length=MAX_LIST_ITEMS,
         description="Workspace-relative paths the agent may create or modify.",
     )
-    deny_paths: list[PathPattern] | None = Field(
-        default=None, max_length=MAX_LIST_ITEMS - len(DEFAULT_DENY_PATHS),
+    deny_paths: list[PathPattern] = Field(
+        default_factory=list, max_length=MAX_LIST_ITEMS - len(DEFAULT_DENY_PATHS),
         description="Additional deny patterns. Built-in credential denies cannot be removed.",
     )
 
@@ -48,9 +48,11 @@ class ContractConstraintsInput(_StrictInput):
 
 
 class ContractLimitsInput(_StrictInput):
-    max_tool_calls: int | None = Field(default=None, ge=1, le=MAX_TOOL_CALLS_PER_RUN)
-    max_mutation_bytes: int | None = Field(
-        default=None, ge=1, le=MAX_MUTATION_BYTES_PER_RUN
+    max_tool_calls: int = Field(
+        default=MAX_TOOL_CALLS_PER_RUN, ge=1, le=MAX_TOOL_CALLS_PER_RUN
+    )
+    max_mutation_bytes: int = Field(
+        default=MAX_MUTATION_BYTES_PER_RUN, ge=1, le=MAX_MUTATION_BYTES_PER_RUN
     )
 
 
@@ -62,6 +64,13 @@ class TaskContractInput(_StrictInput):
     permissions: ContractPermissionsInput = Field(default_factory=ContractPermissionsInput)
     constraints: ContractConstraintsInput = Field(default_factory=ContractConstraintsInput)
     limits: ContractLimitsInput = Field(default_factory=ContractLimitsInput)
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _require_integer_version(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("version must be an integer")
+        return value
 
 
 def contract_payload(contract: TaskContractInput | dict) -> dict:

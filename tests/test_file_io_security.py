@@ -18,6 +18,8 @@ import deepseek_mcp.windows_workspace_write as windows_workspace_write
 import deepseek_mcp.transaction_report as transaction_report
 import deepseek_mcp.tools as tools
 import deepseek_mcp.workspace_walk as workspace_walk
+from deepseek_mcp import walk_support
+from deepseek_mcp.file_identity import ToolInputError
 from deepseek_mcp import windows_file_io
 from deepseek_mcp.safety import SandboxViolation
 from deepseek_mcp.tools import (
@@ -85,6 +87,85 @@ class WorkspaceFileRaceTests(unittest.TestCase):
             result = _execute_read({"path": "apparently-safe.txt"}, workspace)
             self.assertTrue(result.startswith("ERROR:"), result)
             self.assertNotIn("external-secret-marker", result)
+
+    def test_grep_rejects_hard_link_to_file_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "outside-secret.txt"
+            outside.write_text("external-secret-marker", encoding="utf-8")
+            alias = workspace / "apparently-safe.txt"
+            try:
+                os.link(outside, alias)
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            result = _execute_grep(
+                {"pattern": "external-secret-marker"}, workspace
+            )
+            self.assertTrue(result.startswith("ERROR:"), result)
+            self.assertNotIn("external-secret-marker", result)
+            self.assertNotIn("apparently-safe.txt:1:", result)
+
+    def test_read_rejects_hard_link_created_during_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "input.txt"
+            source.write_text("safe-content", encoding="utf-8")
+            outside = root / "outside-alias.txt"
+            try:
+                os.link(source, outside)
+                outside.unlink()
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            original_read = file_io._read_descriptor
+
+            def create_link_after_read(fd: int) -> bytes:
+                content = original_read(fd)
+                os.link(source, outside)
+                return content
+
+            with patch.object(
+                file_io, "_read_descriptor", side_effect=create_link_after_read
+            ):
+                result = _execute_read({"path": "input.txt"}, workspace)
+            self.assertTrue(result.startswith("ERROR:"), result)
+            self.assertNotIn("safe-content", result)
+
+    def test_grep_descriptor_rechecks_hard_links_after_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "input.txt"
+            source.write_text("safe-content", encoding="utf-8")
+            outside = root / "outside-alias.txt"
+            try:
+                os.link(source, outside)
+                outside.unlink()
+            except OSError as error:
+                self.skipTest(f"hard-link creation unavailable: {error}")
+            descriptor = os.open(source, os.O_RDONLY)
+            original_read = walk_support.read_descriptor
+
+            def create_link_after_read(fd: int, max_bytes: int) -> bytes:
+                content = original_read(fd, max_bytes)
+                os.link(source, outside)
+                return content
+
+            try:
+                with patch.object(
+                    walk_support, "read_descriptor",
+                    side_effect=create_link_after_read,
+                ):
+                    with self.assertRaisesRegex(
+                        ToolInputError, "multiple hard links"
+                    ):
+                        walk_support.read_open_entry(descriptor, 1024)
+            finally:
+                os.close(descriptor)
 
     def test_file_tools_cannot_access_vcs_control_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1132,7 +1213,7 @@ class WorkspaceWalkFallbackRaceTests(unittest.TestCase):
     def _walk_with_active_swap(
         self, workspace: Path, safe: Path, outside: Path, execute, args: dict
     ) -> tuple[str, bool]:
-        real_next = workspace_walk._next_entry
+        real_next = workspace_walk.walk_support.next_entry
         safe_display = safe.resolve()
         swapped = False
 
@@ -1152,7 +1233,7 @@ class WorkspaceWalkFallbackRaceTests(unittest.TestCase):
 
         with (
             patch.object(workspace_walk, "_HAS_SECURE_DIR_FDS", False),
-            patch.object(workspace_walk, "_next_entry", side_effect=next_then_swap),
+            patch.object(workspace_walk.walk_support, "next_entry", side_effect=next_then_swap),
         ):
             return execute(args, workspace), swapped
 
