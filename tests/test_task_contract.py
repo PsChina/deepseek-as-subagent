@@ -161,8 +161,7 @@ class TaskContractTests(unittest.TestCase):
         for unsafe in ("/etc/passwd", "../outside", "src/../outside", "C:/secret", "src\\secret"):
             self.assertFalse(path_is_allowed(unsafe, ("**/*",), ()))
         self.assertFalse(path_is_allowed("src/.ENV.local", ("src/**",), DEFAULT_DENY_PATHS))
-        if os.name != "nt":
-            self.assertFalse(path_is_allowed("SRC/app.py", ("src/**",), ()))
+        self.assertFalse(path_is_allowed("SRC/app.py", ("src/**",), ()))
 
     def test_policy_round_trips_through_isolated_tool_process_config(self) -> None:
         contract = TaskContract.from_dict({
@@ -262,6 +261,30 @@ class TaskContractTests(unittest.TestCase):
         self.assertIn("src/visible.txt", grep_result)
         self.assertNotIn("private/hidden.txt", grep_result)
         self.assertNotIn("needle secret", grep_result)
+
+    def test_workspace_search_reports_only_visible_generated_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for directory in ("src/build", "private/build", "src/internal/build"):
+                (root / directory).mkdir(parents=True)
+            policy = compile_task_policy(TaskContract.from_dict({
+                "permissions": {
+                    "tools": ["Glob", "Grep"],
+                    "read_paths": ["src/**"],
+                    "deny_paths": ["src/internal"],
+                },
+            }), DEFAULT_ALLOWED_TOOLS)
+            config = Config("", root, allowed_tools=list(policy.allowed_tools), effective_policy=policy)
+            for tool, pattern in (("Glob", "**/*"), ("Grep", "needle")):
+                with self.subTest(tool=tool):
+                    result = execute_tool(tool, {"pattern": pattern}, config)
+                    self.assertIn("Skipped generated directories: src/build.", result)
+                    self.assertNotIn("private/build", result)
+                    self.assertNotIn("src/internal", result)
+                    denied = execute_tool(
+                        tool, {"pattern": pattern, "path": "src/internal/build"}, config
+                    )
+                    self.assertIn("outside the task contract read scope", denied)
 
     def test_git_remote_metadata_is_unreadable_with_broad_read_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

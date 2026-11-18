@@ -1213,7 +1213,7 @@ class WorkspaceWalkFallbackRaceTests(unittest.TestCase):
     def _walk_with_active_swap(
         self, workspace: Path, safe: Path, outside: Path, execute, args: dict
     ) -> tuple[str, bool]:
-        real_next = workspace_walk._next_entry
+        real_next = workspace_walk.walk_support.next_entry
         safe_display = safe.resolve()
         swapped = False
 
@@ -1233,7 +1233,7 @@ class WorkspaceWalkFallbackRaceTests(unittest.TestCase):
 
         with (
             patch.object(workspace_walk, "_HAS_SECURE_DIR_FDS", False),
-            patch.object(workspace_walk, "_next_entry", side_effect=next_then_swap),
+            patch.object(workspace_walk.walk_support, "next_entry", side_effect=next_then_swap),
         ):
             return execute(args, workspace), swapped
 

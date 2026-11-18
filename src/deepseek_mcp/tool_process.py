@@ -225,23 +225,28 @@ def _mutation_warning(raw: bytes) -> str | None:
 
 def _mutation_details(config, name: str, arguments: dict, raw: bytes) -> tuple[str, str | None, str] | None:
     digest, canonical_path = mutation_evidence(raw)
-    if digest is None or name not in {"Write", "Edit", "NotebookEdit"}: return None
+    if digest is None or name not in MUTATION_TOOL_NAMES:
+        return None
+    digest_hex = digest.hex()
+    policy = getattr(config, "effective_policy", None)
+    if policy is not None and not canonical_path:
+        return "uncertain", None, digest_hex
     label = canonical_path if canonical_path is not None else arguments.get("path")
-    if not isinstance(label, str) or not label: return "uncertain", None, digest.hex()
-    relative = None
+    if not isinstance(label, str) or not label:
+        return "uncertain", None, digest_hex
+    relative = canonical_path
     try:
         assert config.expected_workspace_identity is not None
-        with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(getattr(config, "effective_policy", None), name):
-            target = resolve_safe_path(label, config.workspace)
-            relative = target.relative_to(config.workspace.resolve()).as_posix()
-            if canonical_path is not None and relative != canonical_path:
-                return "uncertain", relative, digest.hex()
+        with bind_workspace_identity(config.expected_workspace_identity), bind_file_policy(policy, name):
+            if relative is None:
+                target = resolve_safe_path(label, config.workspace)
+                relative = target.relative_to(config.workspace.resolve()).as_posix()
             _text, identity = read_workspace_text(
                 config.workspace, label, require_canonical=canonical_path is not None
             )
     except Exception:
-        return "uncertain", relative, digest.hex()
-    return ("committed" if identity.digest == digest else "uncertain", relative, digest.hex())
+        return "uncertain", relative, digest_hex
+    return ("committed" if identity.digest == digest else "uncertain", relative, digest_hex)
 
 
 def _interrupted_mutation_state(config, name: str, arguments: dict, raw: bytes) -> str | None:

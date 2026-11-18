@@ -36,6 +36,23 @@ class ContractSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             contract_payload({"limits": {"max_tool_calls": 129}})
 
+    def test_schema_does_not_coerce_versions_or_replace_explicit_null_scopes(self):
+        for raw in (
+            {"version": True},
+            {"version": 1.0},
+            {"permissions": {"read_paths": None}},
+            {"permissions": {"write_paths": None}},
+            {"permissions": {"deny_paths": None}},
+            {"limits": {"max_tool_calls": None}},
+        ):
+            with self.subTest(raw=raw), self.assertRaises(ValidationError):
+                contract_payload(raw)
+        self.assertEqual(contract_payload({"version": 1}), {"version": 1})
+        self.assertEqual(
+            contract_payload({"permissions": {"read_paths": []}}),
+            {"permissions": {"read_paths": []}},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

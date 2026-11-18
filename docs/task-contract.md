@@ -54,8 +54,8 @@ by the file-I/O resolver immediately before descriptor-based access or commit.
 - Read and Grep reject files with multiple hard links, even if all links appear to be within the workspace. Link count and file identity are checked before and after reading; copy a needed file to a normal single-link file rather than weakening this boundary.
 - Patterns are workspace-relative, slash-separated globs. `**` matches zero
   or more path segments. Built-in deny rules are always case-insensitive;
-  allowed-path matching is case-insensitive on Windows and case-sensitive on
-  POSIX to avoid broadening scopes on case-sensitive filesystems. Absolute paths, parent traversal, backslashes, and
+  allowed-path matching uses the exact case of canonical workspace names on
+  every platform. Absolute paths, parent traversal, backslashes, and
   overlong patterns are rejected. Built-in denies cover common environment,
   package-manager, SSH, cloud, Kubernetes, Docker, Git internal metadata
   (including remote configuration), and private-key credentials.
