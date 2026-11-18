@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from . import windows_walk
 from .file_identity import validate_readable_file
 from .file_io import read_workspace_text
 from .policy_enforcement import bind_file_policy, path_is_allowed
@@ -129,13 +130,34 @@ def _read_suite_file(path: Path, info: os.stat_result) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_BINARY", 0)
     with os.fdopen(os.open(path, flags), "rb") as handle:
-        before = os.fstat(handle.fileno())
-        validate_readable_file(before, previous=info)
+        descriptor = handle.fileno()
+        before = os.fstat(descriptor)
+        _check_open_suite_file(path, info, descriptor, before)
+        before_change = windows_walk.descriptor_change_time(descriptor)
         contents = handle.read(_MAX_TEST_FILE_BYTES + 1)
-        validate_readable_file(os.fstat(handle.fileno()), previous=before)
-    if len(contents) != before.st_size or len(contents) > _MAX_TEST_FILE_BYTES:
-        raise ValueError("hidden test file changed while reading")
+        after = os.fstat(descriptor)
+        validate_readable_file(after, previous=before)
+        _check_open_suite_file(path, info, descriptor, after)
+        if (
+            len(contents) != info.st_size
+            or len(contents) > _MAX_TEST_FILE_BYTES
+            or before_change != windows_walk.descriptor_change_time(descriptor)
+        ):
+            raise ValueError("hidden test file changed while reading")
     return contents
+
+
+def _check_open_suite_file(
+    path: Path, listed: os.stat_result, descriptor: int, opened: os.stat_result
+) -> None:
+    if os.name != "nt":
+        validate_readable_file(opened, previous=listed)
+        return
+    # Windows path stat and descriptor stat may represent different metadata fields.
+    validate_readable_file(opened)
+    if not windows_walk.descriptor_matches(descriptor, path):
+        raise ValueError("hidden test file handle no longer matches its path")
+    validate_readable_file(path.lstat(), previous=listed)
 
 
 def read_hidden_suite(root: Path) -> list[tuple[str, bytes]]:
